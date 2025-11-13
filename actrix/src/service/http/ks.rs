@@ -8,7 +8,7 @@ use actrix_common::config::ActrixConfig;
 use actrix_common::storage::nonce::SqliteNonceStorage;
 use anyhow::Result;
 use async_trait::async_trait;
-use axum::{Router, routing::get};
+use axum::Router;
 use ks::{create_ks_state, create_router};
 use tracing::info;
 
@@ -55,7 +55,8 @@ impl HttpRouterService for KsHttpService {
             .ok_or_else(|| anyhow::anyhow!("KS service configuration not found"))?;
 
         // 创建 nonce storage 实例（用于防重放攻击）
-        let nonce_storage = SqliteNonceStorage::new(ks_service_config.nonce_db_path.clone())
+        let nonce_storage = SqliteNonceStorage::new_async(ks_service_config.nonce_db_path.clone())
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to create nonce storage: {e}"))?;
 
         // 创建 KS state（注入 nonce storage 和 shared key）
@@ -68,11 +69,7 @@ impl HttpRouterService for KsHttpService {
         .map_err(|e| anyhow::anyhow!("Failed to create KS state: {e}"))?;
 
         // 获取 KS 路由器
-        let ks_router = create_router(ks_state);
-
-        let router = Router::new()
-            .route("/health", get(|| async { "KS is healthy" }))
-            .merge(ks_router);
+        let router = create_router(ks_state);
 
         info!("KS router built successfully");
         Ok(router)

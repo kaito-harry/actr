@@ -53,7 +53,8 @@ impl KsGrpcService {
             .ok_or_else(|| anyhow::anyhow!("KS service configuration not found"))?;
 
         // 创建 nonce storage 实例（用于防重放攻击）
-        let nonce_storage = SqliteNonceStorage::new(ks_service_config.nonce_db_path.clone())
+        let nonce_storage = SqliteNonceStorage::new_async(ks_service_config.nonce_db_path.clone())
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to create nonce storage: {e}"))?;
 
         // 创建密钥加密器
