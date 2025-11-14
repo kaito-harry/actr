@@ -34,7 +34,7 @@ use url::Url;
 
 // 重新导出服务实现
 pub use grpc::KsGrpcService;
-pub use http::{KsHttpService, SignalingService, SupervisorService};
+pub use http::{AisService, KsHttpService, SignalingService, SupervisorService};
 pub use ice::{StunService, TurnService};
 
 // 重新导出核心组件

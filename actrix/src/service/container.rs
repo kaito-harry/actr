@@ -3,8 +3,10 @@
 //\! 管理各种服务的容器和生命周期
 //! 服务容器模块 - 封装不同类型的服务
 
+use super::{
+    AisService, KsHttpService, SignalingService, StunService, SupervisorService, TurnService,
+};
 use super::{HttpRouterService, IceService};
-use super::{KsHttpService, SignalingService, StunService, SupervisorService, TurnService};
 use crate::service::info::ServiceInfo;
 use axum::Router;
 use url::Url;
@@ -15,6 +17,7 @@ use url::Url;
 pub enum ServiceContainer {
     Supervit(SupervisorService),
     Signaling(SignalingService),
+    Ais(AisService),
     Ks(KsHttpService),
     Stun(StunService),
     Turn(TurnService),
@@ -29,6 +32,11 @@ impl ServiceContainer {
     /// 创建Signaling服务容器
     pub fn signaling(service: SignalingService) -> Self {
         Self::Signaling(service)
+    }
+
+    /// 创建AIS服务容器
+    pub fn ais(service: AisService) -> Self {
+        Self::Ais(service)
     }
 
     /// 创建KS服务容器
@@ -51,6 +59,7 @@ impl ServiceContainer {
         match self {
             ServiceContainer::Supervit(_) => "Supervit",
             ServiceContainer::Signaling(_) => "Signaling",
+            ServiceContainer::Ais(_) => "AIS",
             ServiceContainer::Ks(_) => "KS",
             ServiceContainer::Stun(_) => "STUN",
             ServiceContainer::Turn(_) => "TURN",
@@ -61,6 +70,7 @@ impl ServiceContainer {
         match self {
             ServiceContainer::Supervit(service) => service.info(),
             ServiceContainer::Signaling(service) => service.info(),
+            ServiceContainer::Ais(service) => service.info(),
             ServiceContainer::Ks(service) => service.info(),
             ServiceContainer::Stun(service) => service.info(),
             ServiceContainer::Turn(service) => service.info(),
@@ -72,6 +82,7 @@ impl ServiceContainer {
             self,
             ServiceContainer::Supervit(_)
                 | ServiceContainer::Signaling(_)
+                | ServiceContainer::Ais(_)
                 | ServiceContainer::Ks(_)
         )
     }
@@ -85,6 +96,7 @@ impl ServiceContainer {
         match self {
             ServiceContainer::Supervit(service) => Some(service.route_prefix()),
             ServiceContainer::Signaling(service) => Some(service.route_prefix()),
+            ServiceContainer::Ais(service) => Some(service.route_prefix()),
             ServiceContainer::Ks(service) => Some(service.route_prefix()),
             _ => None,
         }
@@ -95,6 +107,7 @@ impl ServiceContainer {
         match self {
             ServiceContainer::Supervit(service) => Some(service.build_router().await),
             ServiceContainer::Signaling(service) => Some(service.build_router().await),
+            ServiceContainer::Ais(service) => Some(service.build_router().await),
             ServiceContainer::Ks(service) => Some(service.build_router().await),
             _ => None,
         }
@@ -105,6 +118,7 @@ impl ServiceContainer {
         match self {
             ServiceContainer::Supervit(service) => Some(service.on_start(base_url).await),
             ServiceContainer::Signaling(service) => Some(service.on_start(base_url).await),
+            ServiceContainer::Ais(service) => Some(service.on_start(base_url).await),
             ServiceContainer::Ks(service) => Some(service.on_start(base_url).await),
             _ => None,
         }

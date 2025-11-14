@@ -406,6 +406,7 @@ impl ServiceManager {
             match service {
                 ServiceContainer::Supervit(s) => s.on_stop().await.unwrap(),
                 ServiceContainer::Signaling(s) => s.on_stop().await.unwrap(),
+                ServiceContainer::Ais(s) => s.on_stop().await.unwrap(),
                 ServiceContainer::Stun(s) => s.stop().await.unwrap(),
                 ServiceContainer::Turn(s) => s.stop().await.unwrap(),
                 ServiceContainer::Ks(s) => s.on_stop().await.unwrap(),

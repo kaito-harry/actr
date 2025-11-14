@@ -11,8 +11,8 @@ mod service;
 use actrix_common::config::ActrixConfig;
 use clap::Parser;
 use service::{
-    KsGrpcService, KsHttpService, ServiceContainer, ServiceManager, SignalingService, StunService,
-    SupervisorService, TurnService,
+    AisService, KsGrpcService, KsHttpService, ServiceContainer, ServiceManager, SignalingService,
+    StunService, SupervisorService, TurnService,
 };
 use std::path::{Path, PathBuf};
 
@@ -546,6 +546,12 @@ impl ApplicationLauncher {
             service_manager.add_service(ServiceContainer::signaling(signaling_service));
         }
 
+        if config.is_ais_enabled() {
+            info!("  - AIS Service (/ais)");
+            let ais_service = AisService::new(config.clone());
+            service_manager.add_service(ServiceContainer::ais(ais_service));
+        }
+
         if config.is_ks_enabled() {
             info!("  - KS Service (/ks)");
             let ks_service = KsHttpService::new(config.clone());
@@ -593,6 +599,10 @@ impl ApplicationLauncher {
                 }
                 if config.is_ks_enabled() {
                     info!("  - {}/ks/health", http_url);
+                }
+                if config.is_ais_enabled() {
+                    info!("  - {}/ais/health", http_url);
+                    info!("  - {}/ais/register (POST protobuf)", http_url);
                 }
             }
         } else {
