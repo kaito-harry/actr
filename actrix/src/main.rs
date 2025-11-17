@@ -20,6 +20,18 @@ use tracing::{error, info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{filter::EnvFilter, fmt, prelude::*};
 
+macro_rules! bootstrap_info {
+    ($($arg:tt)*) => {
+        println!($($arg)*);
+    };
+}
+
+macro_rules! bootstrap_error {
+    ($($arg:tt)*) => {
+        eprintln!($($arg)*);
+    };
+}
+
 #[cfg(feature = "opentelemetry")]
 use opentelemetry::KeyValue;
 #[cfg(feature = "opentelemetry")]
@@ -83,10 +95,10 @@ impl ApplicationLauncher {
         // If the provided path is not the default "config.toml", check if it exists
         if provided_path != Path::new("config.toml") {
             if provided_path.exists() {
-                info!("Using provided config file: {:?}", provided_path);
+                bootstrap_info!("Using provided config file: {:?}", provided_path);
                 return Ok(provided_path.clone());
             } else {
-                error!("Provided config file not found: {:?}", provided_path);
+                bootstrap_error!("Provided config file not found: {:?}", provided_path);
                 return Err(Error::custom(format!(
                     "Config file not found: {provided_path:?}"
                 )));
@@ -101,24 +113,24 @@ impl ApplicationLauncher {
             PathBuf::from("/etc/actor-rtc-actrix/config.toml"),
         ];
 
-        info!("Searching for config file in default locations...");
+        bootstrap_info!("Searching for config file in default locations...");
 
         for path in &fallback_paths {
             if path.exists() {
-                info!("Found config file: {:?}", path);
+                bootstrap_info!("Found config file: {:?}", path);
                 return Ok(path.clone());
             } else {
-                info!("Config not found at: {:?}", path);
+                bootstrap_info!("Config not found at: {:?}", path);
             }
         }
 
         // If no config file found, provide helpful error message
-        error!("No configuration file found!");
-        error!("Please create a config file in one of these locations:");
+        bootstrap_error!("No configuration file found!");
+        bootstrap_error!("Please create a config file in one of these locations:");
         for (i, path) in fallback_paths.iter().enumerate() {
-            error!("  {}. {:?}", i + 1, path);
+            bootstrap_error!("  {}. {:?}", i + 1, path);
         }
-        error!("Or specify a custom path with: actrix --config <path>");
+        bootstrap_error!("Or specify a custom path with: actrix --config <path>");
 
         Err(Error::custom(
             "No configuration file found. Please create one or specify path with --config",
@@ -375,22 +387,22 @@ impl ApplicationLauncher {
 
     /// 运行应用程序的主入口
     fn run_application(config_path: &PathBuf) -> Result<()> {
-        info!("📄 加载配置文件: {:?}", config_path);
+        bootstrap_info!("📄 加载配置文件: {:?}", config_path);
 
         // 加载配置文件
         let config = match ActrixConfig::from_file(config_path) {
             Ok(config) => {
-                info!("✅ 配置加载成功");
+                bootstrap_info!("✅ 配置加载成功");
 
                 // 验证配置
                 if let Err(errors) = config.validate() {
-                    error!("❌ 配置验证发现问题:");
+                    bootstrap_error!("❌ 配置验证发现问题:");
                     let mut has_critical_errors = false;
                     for (i, err) in errors.iter().enumerate() {
                         if err.starts_with("Warning:") {
-                            info!("  {}. ⚠️  {}", i + 1, err);
+                            bootstrap_info!("  {}. ⚠️  {}", i + 1, err);
                         } else {
-                            error!("  {}. ❌ {}", i + 1, err);
+                            bootstrap_error!("  {}. ❌ {}", i + 1, err);
                             has_critical_errors = true;
                         }
                     }
@@ -402,7 +414,7 @@ impl ApplicationLauncher {
                 config
             }
             Err(e) => {
-                error!("❌ 配置加载失败: {}", e);
+                bootstrap_error!("❌ 配置加载失败: {}", e);
                 return Err(Error::custom(format!("配置加载失败: {e}")));
             }
         };
