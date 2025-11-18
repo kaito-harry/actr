@@ -84,7 +84,7 @@ impl KeyStorageBackend for RedisBackend {
 
         // 编码为 Base64
         let secret_key_b64 = BASE64_STANDARD.encode(secret_key.serialize());
-        let public_key_b64 = BASE64_STANDARD.encode(public_key.serialize());
+        let public_key_b64 = BASE64_STANDARD.encode(public_key.serialize_compressed());
 
         // 原子性生成 key_id
         let key_id: u32 = conn

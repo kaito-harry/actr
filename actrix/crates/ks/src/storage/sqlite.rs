@@ -123,7 +123,7 @@ impl KeyStorageBackend for SqliteBackend {
 
         // 编码为 Base64
         let secret_key_b64 = BASE64_STANDARD.encode(secret_key.serialize());
-        let public_key_b64 = BASE64_STANDARD.encode(public_key.serialize());
+        let public_key_b64 = BASE64_STANDARD.encode(public_key.serialize_compressed());
 
         // 加密私钥（如果启用）
         let encrypted_secret_key = self.encryptor.encrypt(&secret_key_b64)?;

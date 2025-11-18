@@ -391,7 +391,7 @@ impl AIdIssuer {
         *key_cache.write().await = Some(cache);
 
         // 保存到存储 - 需要 Base64 编码的公钥字符串
-        let public_key_str = BASE64_STANDARD.encode(public_key.serialize());
+        let public_key_str = BASE64_STANDARD.encode(public_key.serialize_compressed());
         let record = KeyRecord {
             key_id,
             public_key: public_key_str,

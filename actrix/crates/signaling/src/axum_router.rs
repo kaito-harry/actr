@@ -5,7 +5,7 @@
 use crate::server::{SignalingServer, SignalingServerHandle};
 use actrix_common::aid::credential::validator::AIdCredentialValidator;
 use actrix_common::config::ActrixConfig;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::{
     Router,
     extract::{
@@ -16,6 +16,7 @@ use axum::{
     routing::get,
 };
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
@@ -74,17 +75,29 @@ pub async fn create_signaling_router_with_config(config: &ActrixConfig) -> Resul
 
     // 初始化 ServiceRegistry 持久化缓存（用于重启恢复）
     let cache_ttl_secs = 3600; // 1 小时 TTL
-    let db_path = format!("{}.signaling_cache.db", config.sqlite);
-
+    let cache_db_path = PathBuf::from(&config.sqlite).join("signaling_cache.db");
+    if let Some(parent) = cache_db_path.parent() {
+        if !parent.exists() {
+            tokio::fs::create_dir_all(parent).await.with_context(|| {
+                format!(
+                    "Failed to create ServiceRegistry cache directory: {}",
+                    parent.display()
+                )
+            })?;
+        }
+    }
     match crate::service_registry_storage::ServiceRegistryStorage::new(
-        &db_path,
+        &cache_db_path,
         Some(cache_ttl_secs),
     )
     .await
     {
         Ok(storage) => {
             let storage_arc = Arc::new(storage);
-            info!("✅ ServiceRegistry cache initialized at: {}", db_path);
+            info!(
+                "✅ ServiceRegistry cache initialized at: {}",
+                cache_db_path.display()
+            );
 
             // 设置存储到 ServiceRegistry
             {
@@ -117,14 +130,14 @@ pub async fn create_signaling_router_with_config(config: &ActrixConfig) -> Resul
                             }
                         }
                         Err(e) => {
-                            error!("Failed to cleanup expired services: {}", e);
+                            error!("Failed to cleanup expired services: {:?}", e);
                         }
                     }
                 }
             });
         }
         Err(e) => {
-            warn!("⚠️  Failed to initialize ServiceRegistry cache: {}", e);
+            warn!("⚠️  Failed to initialize ServiceRegistry cache: {:?}", e);
             warn!("    Service discovery will work but won't survive restarts");
         }
     }
@@ -180,7 +193,7 @@ pub async fn create_signaling_router_with_config(config: &ActrixConfig) -> Resul
                     info!("✅ AIS client initialized successfully");
                 }
                 Err(e) => {
-                    error!("Failed to initialize AIS client: {}", e);
+                    error!("Failed to initialize AIS client: {:?}", e);
                     warn!("⚠️  Credential refresh will not be available");
                 }
             }

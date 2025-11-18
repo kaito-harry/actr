@@ -99,7 +99,7 @@ impl KeyStorageBackend for PostgresBackend {
 
         // 编码为 Base64
         let secret_key_b64 = BASE64_STANDARD.encode(secret_key.serialize());
-        let public_key_b64 = BASE64_STANDARD.encode(public_key.serialize());
+        let public_key_b64 = BASE64_STANDARD.encode(public_key.serialize_compressed());
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)

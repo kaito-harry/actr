@@ -8,7 +8,7 @@ use actrix_common::config::ActrixConfig;
 use ais::create_ais_router;
 use anyhow::Result;
 use async_trait::async_trait;
-use axum::{Router, routing::get};
+use axum::Router;
 use tracing::info;
 
 /// AIS HTTP 服务实现
@@ -57,9 +57,7 @@ impl HttpRouterService for AisService {
         // 创建 AIS 路由器（传递配置）
         let ais_router = create_ais_router(ais_config, &self.config).await?;
 
-        let router = Router::new()
-            .route("/health", get(|| async { "AIS is healthy" }))
-            .merge(ais_router);
+        let router = Router::new().merge(ais_router);
 
         info!("AIS router built successfully");
         Ok(router)

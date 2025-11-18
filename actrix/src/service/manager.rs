@@ -247,12 +247,12 @@ impl ServiceManager {
                     };
 
                     if let Err(e) = start_result {
-                        error!("Failed to start service '{}': {}", service_name, e);
+                        error!("Failed to start service '{}': {:?}", service_name, e);
                     }
                 }
                 Err(e) => {
                     error!(
-                        "Failed to build router for service '{}': {}",
+                        "Failed to build router for service '{}': {:?}",
                         service_name, e
                     );
                 }
@@ -341,7 +341,7 @@ impl ServiceManager {
                 let (tx, rx) = tokio::sync::oneshot::channel::<ServiceInfo>();
                 let handle = tokio::spawn(async move {
                     if let Err(e) = s.start(shutdown_rx, tx).await {
-                        error!("Failed to start STUN service: {}", e);
+                        error!("Failed to start STUN service: {:?}", e);
                         let _ = shutdown_tx.send(());
                     }
                 });
@@ -359,7 +359,7 @@ impl ServiceManager {
                 let (tx, rx) = tokio::sync::oneshot::channel::<ServiceInfo>();
                 let handle = tokio::spawn(async move {
                     if let Err(e) = s.start(shutdown_rx, tx).await {
-                        error!("Failed to start TURN service: {}", e);
+                        error!("Failed to start TURN service: {:?}", e);
                         let _ = shutdown_tx.send(());
                     }
                 });

@@ -20,7 +20,10 @@ use anyhow::{Context, Result};
 use prost::Message as ProstMessage;
 use serde_json;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    path::Path,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tracing::{debug, error, info};
 
 /// ServiceRegistry 持久化存储
@@ -33,12 +36,17 @@ pub struct ServiceRegistryStorage {
 
 impl ServiceRegistryStorage {
     /// 创建存储实例
-    pub async fn new(database_path: &str, ttl_secs: Option<u64>) -> Result<Self> {
+    pub async fn new(database_path: impl AsRef<Path>, ttl_secs: Option<u64>) -> Result<Self> {
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
-            .connect(&format!("sqlite:{database_path}"))
+            .connect(&format!("sqlite:{}", database_path.as_ref().display()))
             .await
-            .with_context(|| format!("Failed to connect to database: {database_path}"))?;
+            .with_context(|| {
+                format!(
+                    "Failed to connect to database: {}",
+                    database_path.as_ref().display()
+                )
+            })?;
 
         let storage = Self {
             pool,
@@ -303,7 +311,7 @@ impl ServiceRegistryStorage {
             match self.row_to_service_info(row) {
                 Ok(service) => services.push(service),
                 Err(e) => {
-                    error!("Failed to deserialize service from cache: {}", e);
+                    error!("Failed to deserialize service from cache: {:?}", e);
                 }
             }
         }

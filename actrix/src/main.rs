@@ -469,6 +469,8 @@ impl ApplicationLauncher {
 
             handle_futs.push(grpc_future);
         }
+        // wait for gRPC service to start
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
         let mut service_manager =
             Self::create_service_manager(config.clone(), shutdown_tx.clone()).await?;

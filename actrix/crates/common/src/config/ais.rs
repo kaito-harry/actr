@@ -60,7 +60,7 @@ impl Default for AisServerConfig {
     fn default() -> Self {
         Self {
             ip: "0.0.0.0".to_string(),
-            port: 8091,
+            port: 8081,
             database_path: "ais.db".to_string(),
             signaling_heartbeat_interval_secs: default_signaling_heartbeat_interval_secs(),
             token_ttl_secs: default_token_ttl_secs(),

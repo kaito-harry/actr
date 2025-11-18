@@ -11,7 +11,7 @@ use tracing::{debug, error};
 /// AIS 客户端配置
 #[derive(Debug, Clone)]
 pub struct AisClientConfig {
-    /// AIS 服务端点 URL (例如: "https://127.0.0.1:8443")
+    /// AIS 服务端点 URL (例如: "http://127.0.0.1:8443")
     pub endpoint: String,
     /// 请求超时时间（秒）
     pub timeout_seconds: u64,
@@ -20,7 +20,7 @@ pub struct AisClientConfig {
 impl Default for AisClientConfig {
     fn default() -> Self {
         Self {
-            endpoint: "https://127.0.0.1:8443".to_string(),
+            endpoint: "http://127.0.0.1:8443".to_string(),
             timeout_seconds: 30,
         }
     }

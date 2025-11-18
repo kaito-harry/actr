@@ -6,7 +6,6 @@ use actrix_common::status::services::ServiceStatus;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::net::UdpSocket;
 use tracing::{error, info};
 use url::Url;
@@ -103,13 +102,9 @@ impl IceService for TurnService {
             }
         };
 
-        tokio::time::sleep(Duration::from_secs(10)).await;
         // 等待关闭信号
-        tokio::select! {
-            _ = shutdown_rx.recv() => {
-                info!("TURN service received shutdown signal");
-            }
-        }
+        let _ = shutdown_rx.recv().await;
+        info!("TURN service received shutdown signal");
 
         // 关闭TURN服务器
         if let Err(e) = turn::shutdown_turn_server(&turn_server).await {
