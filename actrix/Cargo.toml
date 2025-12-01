@@ -5,7 +5,8 @@ resolver = "2"
 
 [patch.crates-io]
 # Use local protocol definition that includes tracing headers
-actr-protocol = { git = "https://github.com/actor-rtc/actr", rev = "00618c733d25a8586b09aa84eedd4a88396a6b8e" }
+actr-protocol = { git = "https://github.com/actor-rtc/actr", rev = "7a79a5b8729463e0921ab4fef8926d808907833e" }
+actr-framework = { git = "https://github.com/actor-rtc/actr", rev = "7a79a5b8729463e0921ab4fef8926d808907833e" }
 
 [workspace.package]
 version = "0.1.1"
@@ -16,7 +17,7 @@ repository = "https://github.com/actor-rtc/actrix"
 keywords = ["web-rtc", "signaling", "turn", "stun"]
 
 [workspace.dependencies]
-webrtc = { version = "0.13.0" }
+webrtc = { version = "0.14.0" }
 tokio = { version = "1.0", features = ["full"] }
 # Actor-RTC framework dependencies
 actr-framework = { version = "0.1.3" }
