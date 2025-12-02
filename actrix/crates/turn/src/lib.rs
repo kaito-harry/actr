@@ -4,15 +4,12 @@
 
 // TURN server implementation modules
 mod authenticator;
-mod claims;
 pub mod error;
-mod token;
 
 // Re-export types for convenience
+pub use actr_protocol::turn::{Claims, Token};
 pub use authenticator::Authenticator;
-pub use claims::Claims;
 pub use error::{ErrorSeverity, TurnError};
-pub use token::Token;
 
 use std::net::IpAddr;
 use std::str::FromStr;

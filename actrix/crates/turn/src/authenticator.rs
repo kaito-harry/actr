@@ -2,7 +2,7 @@
 //!
 //! 实现 TURN 服务器的认证和授权功能，带 LRU 缓存优化
 
-use super::{Claims, Token};
+use actr_protocol::turn::{Claims, Token};
 use lru::LruCache;
 use once_cell::sync::Lazy;
 use std::hash::Hasher;
@@ -102,8 +102,8 @@ impl AuthHandler for Authenticator {
             Ok(token) => token,
             Err(e) => {
                 error!(
-                    "无法解密 token: tid={}, key_id={}, error={}",
-                    claims.tid, claims.key_id, e
+                    "无法解密 token: tenant_id={}, key_id={}, error={}",
+                    claims.tenant_id, claims.key_id, e
                 );
                 return Err(Error::Other(format!("Failed to decrypt token: {e}")));
             }
@@ -113,8 +113,8 @@ impl AuthHandler for Authenticator {
         let psk = token.psk;
 
         debug!(
-            "成功解密 token: tenant={}, act_type={}, psk_len={}",
-            token.tenant,
+            "成功解密 token: tenant_id={}, act_type={}, psk_len={}",
+            token.tenant_id,
             token.act_type,
             psk.len()
         );

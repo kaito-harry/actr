@@ -9,9 +9,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-
-turn_crate = { package = "turn", version = "0.10.0" }
-webrtc-util = "0.11.0"
+turn_crate = { workspace = true }
+webrtc-util = { workspace = true }
 
 tokio = { workspace = true }
 tracing = { workspace = true }

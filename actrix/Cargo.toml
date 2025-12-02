@@ -4,9 +4,9 @@ members = ["crates/*", "deploy"]
 resolver = "2"
 
 [patch.crates-io]
-# Use local protocol definition that includes tracing headers
-actr-protocol = { git = "https://github.com/actor-rtc/actr", rev = "7a79a5b8729463e0921ab4fef8926d808907833e" }
-actr-framework = { git = "https://github.com/actor-rtc/actr", rev = "7a79a5b8729463e0921ab4fef8926d808907833e" }
+# Use remote protocol/framework definitions that include tracing headers
+actr-protocol = { git = "https://github.com/actor-rtc/actr", rev = "facef0aef347f60eba3b0f5a0717dee813da95c5" }
+actr-framework = { git = "https://github.com/actor-rtc/actr", rev = "facef0aef347f60eba3b0f5a0717dee813da95c5" }
 
 [workspace.package]
 version = "0.1.1"
@@ -18,13 +18,15 @@ keywords = ["web-rtc", "signaling", "turn", "stun"]
 
 [workspace.dependencies]
 webrtc = { version = "0.14.0" }
+turn_crate = { package = "turn", version = "0.11.0" }
+webrtc-util = "0.12.0"
 tokio = { version = "1.0", features = ["full"] }
 # Actor-RTC framework dependencies
 actr-framework = { version = "0.1.3" }
 actr-protocol = { version = "0.1.3" }
 prost = "0.14.1"
 prost-types = "0.14.1"
-tracing = "0.1.41"
+tracing = "0.1.43"
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -41,7 +43,7 @@ rustls-pemfile = "2.0.0"
 nonce-auth = { version = "0.6.3" }
 sha2 = "0.10"
 ecies = { version = "0.2", features = ["std"] }
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.12.24", features = ["json"] }
 base64 = "0.22.1"
 pwrzv = "0.6.2"
 chrono = "0.4"
