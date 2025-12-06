@@ -30,7 +30,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run tests
-        run: cargo test --workspace --exclude signaling
+        run: cargo test --workspace
 
   fmt:
     name: Format Check
