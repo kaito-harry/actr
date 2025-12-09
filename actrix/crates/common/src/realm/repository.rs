@@ -10,21 +10,6 @@ use crate::storage::db::get_database;
 
 /// Realm 数据库操作实现
 impl Realm {
-    pub async fn get_keys(key_id: u32, app_id: u32) -> Result<(Vec<u8>, Vec<u8>), RealmError> {
-        let db = get_database();
-        let pool = db.get_pool();
-
-        let result = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
-            "SELECT public_key, secret_key FROM realm WHERE realm_id = ? AND key_id = ?",
-        )
-        .bind(app_id)
-        .bind(key_id)
-        .fetch_optional(pool)
-        .await?;
-
-        result.ok_or(RealmError::NotFound)
-    }
-
     /// 保存 Realm 到数据库
     /// 如果是新 Realm 则插入，如果已存在提示已存在
     pub async fn save(&mut self) -> Result<u32, RealmError> {
@@ -50,14 +35,12 @@ impl Realm {
 
             // 插入新记录
             let result = sqlx::query(
-                "INSERT INTO realm (realm_id, key_id, secret_key, name, public_key, expires_at, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO realm (realm_id, name, status, expires_at, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?)",
             )
             .bind(self.realm_id)
-            .bind(self.key_id)
-            .bind(&self.secret_key)
             .bind(&self.name)
-            .bind(&self.public_key)
+            .bind(&self.status)
             .bind(self.expires_at)
             .bind(self.created_at)
             .bind(self.updated_at)
@@ -72,14 +55,12 @@ impl Realm {
 
             // 更新现有记录
             sqlx::query(
-                "UPDATE realm SET realm_id = ?, key_id = ?, secret_key = ?, name = ?, public_key = ?, expires_at = ?, updated_at = ?
-                 WHERE rowid = ?"
+                "UPDATE realm SET realm_id = ?, name = ?, status = ?, expires_at = ?, updated_at = ?
+                 WHERE rowid = ?",
             )
             .bind(self.realm_id)
-            .bind(self.key_id)
-            .bind(&self.secret_key)
             .bind(&self.name)
-            .bind(&self.public_key)
+            .bind(&self.status)
             .bind(self.expires_at)
             .bind(self.updated_at)
             .bind(self.rowid)
@@ -92,32 +73,13 @@ impl Realm {
         }
     }
 
-    pub async fn get_by_realm_key_id_service(
-        realm_id: u32,
-        key_id: u32,
-    ) -> Result<Option<Realm>, RealmError> {
-        let db = get_database();
-        let pool = db.get_pool();
-
-        let result = sqlx::query_as::<_, Realm>(
-            "SELECT rowid, realm_id, key_id, secret_key, name, public_key, expires_at, created_at, updated_at
-             FROM realm WHERE realm_id = ? AND key_id = ?"
-        )
-        .bind(realm_id)
-        .bind(key_id)
-        .fetch_optional(pool)
-        .await?;
-
-        Ok(result)
-    }
-
     pub async fn get_all() -> Result<Vec<Realm>, RealmError> {
         let db = get_database();
         let pool = db.get_pool();
 
         let realms = sqlx::query_as::<_, Realm>(
-            "SELECT rowid, realm_id, key_id, secret_key, name, public_key, expires_at, created_at, updated_at
-             FROM realm"
+            "SELECT rowid, realm_id, name, status, expires_at, created_at, updated_at
+             FROM realm",
         )
         .fetch_all(pool)
         .await?;
@@ -143,8 +105,8 @@ impl Realm {
         let pool = db.get_pool();
 
         let result = sqlx::query_as::<_, Realm>(
-            "SELECT rowid, realm_id, key_id, secret_key, name, public_key, expires_at, created_at, updated_at
-             FROM realm WHERE rowid = ?"
+            "SELECT rowid, realm_id, name, status, expires_at, created_at, updated_at
+             FROM realm WHERE rowid = ?",
         )
         .bind(id)
         .fetch_optional(pool)
@@ -158,8 +120,8 @@ impl Realm {
         let pool = db.get_pool();
 
         let result = sqlx::query_as::<_, Realm>(
-            "SELECT rowid, realm_id, key_id, secret_key, name, public_key, expires_at, created_at, updated_at
-             FROM realm WHERE name = ?"
+            "SELECT rowid, realm_id, name, status, expires_at, created_at, updated_at
+             FROM realm WHERE name = ?",
         )
         .bind(name)
         .fetch_optional(pool)
@@ -173,7 +135,7 @@ impl Realm {
         let pool = db.get_pool();
 
         let result = sqlx::query_as::<_, Realm>(
-            "SELECT rowid, realm_id, key_id, secret_key, name, public_key, expires_at, created_at, updated_at
+            "SELECT rowid, realm_id, name, status, expires_at, created_at, updated_at
              FROM realm WHERE realm_id = ?",
         )
         .bind(realm_id)
@@ -201,13 +163,7 @@ mod tests {
 
         // 创建一个 Realm 来触发表创建，使用唯一名称
         let realm_id = rand::random::<u32>();
-        let mut realm = Realm::new(
-            realm_id,
-            1,
-            b"public_key".to_vec(),
-            b"secret_key".to_vec(),
-            "test_name".to_string(),
-        );
+        let mut realm = Realm::new(realm_id, "test_name".to_string());
         let _rowid = realm.save().await?;
 
         // 查询表结构
@@ -237,24 +193,12 @@ mod tests {
 
         let realm_id = rand::random::<u32>();
 
-        let mut realm1 = Realm::new(
-            realm_id,
-            1,
-            b"public_key".to_vec(),
-            b"secret_key".to_vec(),
-            "test_name".to_string(),
-        );
+        let mut realm1 = Realm::new(realm_id, "test_name".to_string());
         let realm1_id = realm1.save().await?;
         println!("Created first realm with ID: {realm1_id}");
 
         // Try to create another Realm with the same realm_id
-        let mut realm2 = Realm::new(
-            realm_id,
-            2,
-            b"public_key".to_vec(),
-            b"secret_key".to_vec(),
-            "test_name".to_string(),
-        );
+        let mut realm2 = Realm::new(realm_id, "test_name".to_string());
         let result = realm2.save().await;
 
         println!("Second realm save result: {result:?}");

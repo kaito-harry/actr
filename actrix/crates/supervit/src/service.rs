@@ -236,20 +236,14 @@ impl SupervisedService for Supervisord {
         let req = request.into_inner();
         tracing::info!("CreateRealm request received: realm_id={}", req.realm_id);
 
-        let secret_key = req.secret_key.clone().unwrap_or_default();
         let use_servers: Vec<ResourceType> = req
             .use_servers
             .iter()
             .filter_map(|v| ResourceType::try_from(*v).ok())
             .collect();
 
-        let mut realm = Realm::new(
-            req.realm_id,
-            req.key_id,
-            req.public_key.clone(),
-            secret_key,
-            req.name.clone(),
-        );
+        let mut realm =
+            Realm::new(req.realm_id, req.name.clone()).with_expires_at(req.expires_at as i64);
 
         let save_result = realm.save().await;
 

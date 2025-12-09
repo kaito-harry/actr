@@ -35,10 +35,10 @@ pub fn realm_to_proto(realm: &Realm, metadata: &RealmMetadata) -> RealmInfo {
         enabled: metadata.enabled,
         created_at,
         updated_at: Some(updated_at),
-        public_key: realm.public_key.clone(),
-        key_id: realm.key_id,
         use_servers,
         version: metadata.version,
+        expires_at: realm.expires_at.unwrap_or(0) as u64,
+        status: realm.status.clone(),
     }
 }
 

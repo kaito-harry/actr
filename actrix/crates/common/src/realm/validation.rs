@@ -2,70 +2,77 @@
 //!
 //! 包含 Realm 相关的业务规则验证和检查
 
-use chrono::Utc;
-
-use super::model::Realm;
+use super::model::{Realm, RealmStatus};
 
 /// Realm 验证相关实现
 impl Realm {
     /// 检查 Realm 是否存在
-    pub async fn exists(realm_id: u32, key_id: u32) -> bool {
-        Self::get_by_realm_key_id_service(realm_id, key_id)
+    pub async fn exists_by_realm_id(realm_id: u32) -> bool {
+        Self::get_by_realm_id(realm_id)
             .await
             .unwrap_or(None)
             .is_some()
     }
 
-    /// 验证密钥
-    pub fn verify_secret_key(&self, secret_key: &Vec<u8>) -> bool {
-        self.secret_key == *secret_key
-    }
+    /// 验证 Realm 是否可用（存在、未过期、状态正常）
+    ///
+    /// 返回 Ok(Realm) 表示 Realm 可用
+    /// 返回 Err(msg) 表示 Realm 不可用，附带原因
+    pub async fn validate_realm(realm_id: u32) -> Result<Realm, String> {
+        let realm = Self::get_by_realm_id(realm_id)
+            .await
+            .map_err(|e| format!("Failed to query realm: {}", e))?
+            .ok_or_else(|| format!("Realm {} not found", realm_id))?;
 
-    /// 检查是否过期（用于 Turn 服务）
-    pub fn is_expired(&self) -> bool {
-        if let Some(expires_at) = self.expires_at {
-            expires_at < Utc::now().timestamp()
-        } else {
-            false
+        if realm.is_expired() {
+            return Err(format!("Realm {} has expired", realm_id));
         }
+
+        if realm.status() != RealmStatus::Normal {
+            return Err(format!(
+                "Realm {} is not in Normal status (current: {})",
+                realm_id,
+                realm.status()
+            ));
+        }
+
+        Ok(realm)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
 
     #[test]
     fn test_expiration_check() {
         let past_time = Utc::now().timestamp() - 3600; // 1 hour ago
-        let mut realm = Realm::new(
-            99999,
-            1,
-            b"expired_public".to_vec(),
-            b"expired_secret".to_vec(),
-            "Expired App".to_string(),
-        );
+        let realm = Realm::new(99999, "Expired App".to_string()).with_expires_at(past_time);
 
         // Set expired time to test expiration
-        realm.expires_at = Some(past_time);
         assert!(realm.is_expired());
 
         // Test non-expiring realm
-        realm.expires_at = None;
-        assert!(!realm.is_expired());
+        let realm2 = Realm::new(99998, "Non-Expired App".to_string());
+        assert!(!realm2.is_expired());
     }
 
     #[test]
-    fn test_verify_secret_key() {
-        let realm = Realm::new(
-            12345,
-            1,
-            b"correct_public".to_vec(),
-            b"correct_secret".to_vec(),
-            "test_name".to_string(),
-        );
+    fn test_is_active() {
+        // Active realm
+        let future_time = Utc::now().timestamp() + 3600; // 1 hour in the future
+        let realm = Realm::new(11111, "Active App".to_string()).with_expires_at(future_time);
+        assert!(realm.is_active());
 
-        assert!(realm.verify_secret_key(&b"correct_secret".to_vec()));
-        assert!(!realm.verify_secret_key(&b"wrong_secret".to_vec()));
+        // Expired realm
+        let past_time = Utc::now().timestamp() - 3600;
+        let realm2 = Realm::new(22222, "Expired App".to_string()).with_expires_at(past_time);
+        assert!(!realm2.is_active());
+
+        // Suspended realm
+        let mut realm3 = Realm::new(33333, "Suspended App".to_string());
+        realm3.set_status(RealmStatus::Suspended);
+        assert!(!realm3.is_active());
     }
 }

@@ -64,13 +64,11 @@ message GetConfigResponse {
 message CreateRealmRequest {
   required uint32 realm_id = 1;            // Realm identifier
   required string name = 2;                 // Realm name
-  required bytes public_key = 3;            // Public key (authentication)
-  optional bytes secret_key = 4;            // Secret key (optional, some scenarios only need public key)
-  required bool enabled = 5;                // Enabled status
-  required uint32 key_id = 6;               // Key ID (for key rotation)
-  repeated ResourceType use_servers = 7;    // Allowed server types
-  required NonceCredential credential = 8;  // Authentication credential
-  required uint64 version = 9;              // Realm version (assigned by Boss)
+  required bool enabled = 3;                // Enabled status
+  repeated ResourceType use_servers = 4;    // Allowed server types
+  required NonceCredential credential = 5;  // Authentication credential
+  required uint64 version = 6;              // Realm version (assigned by Boss)
+  required uint64 expires_at = 7;           // Expiration timestamp (Unix timestamp)
 }
 
 message CreateRealmResponse {

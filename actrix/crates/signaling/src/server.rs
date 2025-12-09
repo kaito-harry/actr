@@ -38,6 +38,7 @@ use actr_protocol::{
     peer_to_signaling, register_response, signaling_envelope, signaling_to_actr,
 };
 use actrix_common::aid::credential::validator::AIdCredentialValidator;
+use actrix_common::realm::Realm as RealmEntity;
 use futures_util::{SinkExt, StreamExt};
 use prost::Message as ProstMessage;
 use std::collections::HashMap;
@@ -741,6 +742,22 @@ async fn handle_actr_to_server(
     let source = actr_to_server.source.clone();
 
     info!("📬 处理来自 Actor {} 的消息", source.serial_number);
+
+    // 验证 Realm 是否存在、未过期、状态正常
+    let realm_id = source.realm.realm_id;
+    if let Err(e) = RealmEntity::validate_realm(realm_id).await {
+        warn!("⚠️  Actor {} realm 验证失败: {}", source.serial_number, e);
+        send_error_response(
+            client_id,
+            &source,
+            403,
+            &format!("Realm validation failed: {e}"),
+            server,
+            Some(request_envelope_id),
+        )
+        .await?;
+        return Ok(());
+    }
 
     // 验证 credential
     if let Err(e) =

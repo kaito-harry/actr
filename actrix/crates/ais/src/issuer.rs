@@ -75,6 +75,7 @@ use actr_protocol::{
     register_response,
 };
 use actrix_common::aid::{AidError, IdentityClaims};
+use actrix_common::realm::Realm as RealmEntity;
 use base64::prelude::*;
 use ecies::{PublicKey, encrypt};
 use prost::bytes::Bytes;
@@ -429,6 +430,12 @@ impl AIdIssuer {
         &self,
         request: &RegisterRequest,
     ) -> Result<register_response::RegisterOk, AidError> {
+        // 验证 Realm 是否存在、未过期、状态正常
+        let realm_id = request.realm.realm_id;
+        RealmEntity::validate_realm(realm_id)
+            .await
+            .map_err(|e| AidError::GenerationFailed(format!("Realm validation failed: {}", e)))?;
+
         // 确保有可用的密钥
         self.ensure_key_loaded().await?;
 

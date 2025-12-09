@@ -97,8 +97,8 @@ message RealmInfo {
   required bool enabled = 3;                // Enabled status
   required int64 created_at = 4;            // Creation timestamp
   optional int64 updated_at = 5;            // Update timestamp (empty if never updated)
-  required bytes public_key = 6;            // Public key for authentication
-  required uint32 key_id = 7;               // Key ID for key rotation
-  repeated ResourceType use_servers = 8;    // Allowed server types
-  required uint64 version = 9;              // Realm version (assigned by Boss for sync tracking)
+  repeated ResourceType use_servers = 6;    // Allowed server types
+  required uint64 version = 7;              // Realm version (assigned by Boss for sync tracking)
+  required uint64 expires_at = 8;           // Expiration timestamp (Unix timestamp)
+  required string status = 9;               // Realm status (Normal, Suspended, Terminated)
 }

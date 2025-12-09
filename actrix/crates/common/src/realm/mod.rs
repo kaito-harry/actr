@@ -22,5 +22,5 @@ pub mod validation;
 pub use acl::ActorAcl;
 pub use config::RealmConfig;
 pub use error::RealmError;
-pub use model::Realm;
+pub use model::{Realm, RealmStatus};
 pub use service_type::ServiceType;
