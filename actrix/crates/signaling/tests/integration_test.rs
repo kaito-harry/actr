@@ -7,12 +7,16 @@ use actr_protocol::{
     signaling_envelope, signaling_to_actr,
 };
 use actrix_common::config::ActrixConfig;
+use actrix_common::realm::Realm as RealmEntity;
+use actrix_common::storage::db::set_db_path;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use prost::Message as ProstMessage;
 use signaling::axum_router::create_signaling_router;
+use std::path::Path;
 use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::sync::OnceCell;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message as TungsteniteMessage};
 use uuid::Uuid;
@@ -38,6 +42,43 @@ fn create_test_config() -> ActrixConfig {
 
 /// 测试辅助：创建信令服务器
 async fn create_test_server() -> (String, tokio::task::JoinHandle<()>) {
+    // 初始化测试数据库（确保全局数据库已设置）
+    // 使用临时目录作为数据库目录，避免污染本地状态
+    static INIT: OnceCell<()> = OnceCell::const_new();
+
+    INIT.get_or_init(|| async {
+        let db_dir = std::env::temp_dir().join("actrix_signaling_test_db");
+        std::fs::create_dir_all(&db_dir).expect("Failed to create test database directory");
+        let db_file = db_dir.join("actrix.db");
+        if db_file.exists() {
+            let _ = std::fs::remove_file(&db_file);
+        }
+
+        let db_dir_str = db_dir
+            .to_str()
+            .expect("Failed to convert DB directory path to string");
+
+        // 尝试设置全局数据库路径，忽略已初始化的错误
+        match set_db_path(Path::new(db_dir_str)).await {
+            Ok(()) => {}
+            Err(e) => {
+                let err_msg = e.to_string();
+                if !err_msg.contains("already initialized") && !err_msg.contains("Database already")
+                {
+                    panic!("Failed to initialize test database: {}", e);
+                }
+            }
+        }
+    })
+    .await;
+
+    // 确保测试所需的 realm 存在（realm_id = 1001）——避免因为 realm 不存在导致 403 错误
+    if RealmEntity::exists_by_realm_id(1001).await == false {
+        let mut realm = RealmEntity::new(1001, "test_realm".to_string());
+        // 保存到数据库（忽略重复错误）
+        let _ = realm.save().await;
+    }
+
     // 使用 create_signaling_router 创建路由器
     let app = create_signaling_router()
         .await

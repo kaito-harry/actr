@@ -124,7 +124,7 @@ impl AuthHandler for Authenticator {
         // 4️⃣ 验证 Realm 是否存在、未过期、状态正常
         if let Err(e) = tokio::task::block_in_place(|| {
             let handle = tokio::runtime::Handle::try_current()
-                .map_err(|_| format!("Not in tokio runtime context"))?;
+                .map_err(|_| "Not in tokio runtime context")?;
             handle.block_on(async { RealmEntity::validate_realm(identity_claims.realm_id).await })
         }) {
             warn!(

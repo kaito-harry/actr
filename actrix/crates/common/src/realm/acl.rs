@@ -309,7 +309,7 @@ mod tests {
         // Create a realm first with unique name
         let realm_id = rand::random::<u32>();
         let mut realm = Realm::new(realm_id, "test_name".to_string());
-        let realm_row_id = realm.save().await?;
+        let _ = realm.save().await?;
 
         // Test create
         let mut acl = ActorAcl::new(
