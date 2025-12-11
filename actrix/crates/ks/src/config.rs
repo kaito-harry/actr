@@ -16,12 +16,12 @@ pub struct KsServiceConfig {
     #[serde(default)]
     pub storage: StorageConfig,
 
-    /// 宽限期 (秒)
+    /// 容忍期 (秒)
     ///
     /// 密钥过期后的一段时间内，仍然允许获取私钥，用于平滑过渡
     /// 默认: 3600 (1小时)
-    #[serde(default = "default_grace_period")]
-    pub grace_period_seconds: u64,
+    #[serde(default = "default_tolerance")]
+    pub tolerance_seconds: u64,
 
     /// KEK (Key Encryption Key) - 直接配置
     ///
@@ -48,7 +48,7 @@ pub struct KsServiceConfig {
     pub kek_file: Option<String>,
 }
 
-fn default_grace_period() -> u64 {
+fn default_tolerance() -> u64 {
     3600
 }
 
@@ -56,7 +56,7 @@ impl Default for KsServiceConfig {
     fn default() -> Self {
         Self {
             storage: Default::default(),
-            grace_period_seconds: default_grace_period(),
+            tolerance_seconds: default_tolerance(),
             kek: None,
             kek_env: None,
             kek_file: None,
@@ -110,7 +110,7 @@ mod tests {
             kek: None,
             kek_env: None,
             kek_file: None,
-            grace_period_seconds: 3600,
+            tolerance_seconds: 3600,
         };
 
         let toml = toml::to_string(&config).unwrap();

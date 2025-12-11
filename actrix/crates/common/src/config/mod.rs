@@ -942,7 +942,7 @@ mod tests {
             kek: None,
             kek_env: None,
             kek_file: None,
-            grace_period_seconds: 3600,
+            tolerance_seconds: 3600,
         });
 
         // Should not have bitmask consistency errors (may have other validation errors)

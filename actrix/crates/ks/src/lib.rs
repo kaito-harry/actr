@@ -56,7 +56,7 @@ mod tests {
             kek: None,
             kek_env: None,
             kek_file: None,
-            grace_period_seconds: 3600,
+            tolerance_seconds: 3600,
         };
 
         // 使用内存存储进行测试（避免文件系统依赖）
