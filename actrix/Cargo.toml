@@ -8,8 +8,8 @@ resolver = "2"
 # actr-protocol = { path = "../actr/crates/protocol" }
 # actr-framework = { path = "../actr/crates/framework" }
 # Use remote protocol/framework definitions that include tracing headers
-actr-protocol = { git = "https://github.com/actor-rtc/actr.git", rev = "40502e5540699be2b82b199a8a4dd829527a9ef3" }
-actr-framework = { git = "https://github.com/actor-rtc/actr.git", rev = "40502e5540699be2b82b199a8a4dd829527a9ef3" }
+actr-protocol = { git = "https://github.com/actor-rtc/actr.git", rev = "76bf743f0bf95e0374e5cb1bbc0a8d64cfd5462e" }
+actr-framework = { git = "https://github.com/actor-rtc/actr.git", rev = "76bf743f0bf95e0374e5cb1bbc0a8d64cfd5462e" }
 
 [workspace.package]
 version = "0.1.1"

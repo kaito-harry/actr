@@ -289,7 +289,7 @@ async fn handle_websocket(
                 }
             }
             Err(e) => {
-                warn!("⚠️ 无法解析 actor_id 字符串 '{}': {}", actor_str, e);
+                error!("⚠️ 无法解析 actor_id 字符串 '{}': {}", actor_str, e);
             }
         }
     }

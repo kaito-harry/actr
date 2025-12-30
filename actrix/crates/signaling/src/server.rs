@@ -1101,7 +1101,7 @@ async fn handle_actr_relay(
     if let Some(actr_relay::Payload::RoleNegotiation(RoleNegotiation { from, to, .. })) =
         relay.payload.clone()
     {
-        let is_offerer = actor_order_key(&from) < actor_order_key(&to);
+        let is_offerer = actor_order_key(&from) > actor_order_key(&to);
 
         let new_relay = ActrRelay {
             // source: peer actor (对端)，target: 该 assignment 的接收方
@@ -1210,6 +1210,10 @@ async fn send_role_assignment(
                 && id.serial_number == target_actor.serial_number
         })
     }) {
+        debug!(
+            "send_role_assignment: 发送 envelope 到客户端 {:?}",
+            client.actor_id
+        );
         client
             .direct_sender
             .send(WsMessage::Binary(buf.into()))
