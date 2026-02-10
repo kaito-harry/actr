@@ -894,7 +894,51 @@ async fn handle_ping(
         ping.power_reserve,
         ping.mailbox_backlog,
     ) {
-        warn!("更新 Actor {} 负载指标失败: {}", source.serial_number, e);
+        warn!(
+            "更新 Actor {} 负载指标失败: {}, 尝试从数据库恢复服务",
+            source.serial_number, e
+        );
+
+        // 尝试从数据库恢复服务
+        match registry.restore_service_from_storage(&source).await {
+            Ok(true) => {
+                info!(
+                    "✅ 成功从数据库恢复 Actor {} 的服务注册",
+                    source.serial_number
+                );
+
+                // 恢复后再次尝试更新负载指标
+                if let Err(e2) = registry.update_load_metrics(
+                    &source,
+                    ping.availability,
+                    ping.power_reserve,
+                    ping.mailbox_backlog,
+                ) {
+                    error!(
+                        "❌ 从数据库恢复后仍无法更新 Actor {} 的负载指标: {}",
+                        source.serial_number, e2
+                    );
+                } else {
+                    info!(
+                        "✅ Actor {} 服务恢复后负载指标更新成功",
+                        source.serial_number
+                    );
+                }
+            }
+            Ok(false) => {
+                warn!(
+                    "⚠️  数据库中未找到 Actor {} 的服务信息 (可能已过期或从未注册)",
+                    source.serial_number
+                );
+                // TODO: 可选 - 在 Pong 响应中添加警告，提示客户端重新注册
+            }
+            Err(e) => {
+                error!(
+                    "❌ 从数据库恢复 Actor {} 的服务失败: {}",
+                    source.serial_number, e
+                );
+            }
+        }
     }
     drop(registry);
 

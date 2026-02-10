@@ -79,7 +79,7 @@ pub async fn create_signaling_router_with_config(config: &ActrixConfig) -> Resul
     let mut server = SignalingServer::new();
 
     // 初始化 ServiceRegistry 持久化缓存（用于重启恢复）
-    let cache_ttl_secs = 3600; // 1 小时 TTL
+    let cache_ttl_secs = crate::service_registry_storage::DEFAULT_SERVICE_TTL_SECS;
 
     if !config.sqlite_path.exists() {
         std::fs::create_dir_all(&config.sqlite_path).with_context(|| {

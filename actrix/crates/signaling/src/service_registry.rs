@@ -594,6 +594,10 @@ impl ServiceRegistry {
     }
 
     /// 清理过期服务（超过指定时间未更新）
+    ///
+    /// 注意：此方法只清理内存中的服务，不删除数据库中的数据。
+    /// 这样可以在断网 5-60 分钟后通过心跳从数据库恢复服务。
+    /// 数据库的清理由独立的定时任务处理（TTL = 1小时）。
     pub fn cleanup_expired_services(&mut self) {
         let current_time = current_timestamp();
         let expiry_threshold = SERVICE_EXPIRY_THRESHOLD_SECS;
@@ -610,11 +614,136 @@ impl ServiceRegistry {
 
         for (actor_id, service_name) in services_to_remove {
             warn!(
-                "清理过期服务: {} (Actor {})",
+                "清理内存中的过期服务: {} (Actor {}) [数据库保留用于恢复]",
                 service_name, actor_id.serial_number
             );
-            let _ = self.unregister_service(&actor_id, &service_name);
+            // 只清理内存，不删除数据库
+            let _ = self.unregister_service_memory_only(&actor_id, &service_name);
         }
+    }
+
+    /// 只从内存中注销服务，不删除数据库数据
+    ///
+    /// 用于过期服务清理，保留数据库数据以便后续恢复。
+    fn unregister_service_memory_only(
+        &mut self,
+        actor_id: &ActrId,
+        service_name: &str,
+    ) -> Result<(), String> {
+        // 从服务映射表中移除
+        if let Some(services) = self.services.get_mut(service_name) {
+            let original_len = services.len();
+            services.retain(|s| s.actor_id != *actor_id);
+
+            if services.len() == original_len {
+                return Err(format!(
+                    "未找到要注销的服务实例: {} (Actor {})",
+                    service_name, actor_id.serial_number
+                ));
+            }
+
+            // 如果这是最后一个实例，清理消息类型索引
+            if services.is_empty() {
+                self.services.remove(service_name);
+
+                // 从消息类型索引中移除
+                self.message_type_index.retain(|_, service_names| {
+                    service_names.retain(|name| name != service_name);
+                    !service_names.is_empty()
+                });
+            }
+        }
+
+        // 从 Actor 索引中移除
+        if let Some(actor_services) = self.actor_index.get_mut(actor_id) {
+            actor_services.retain(|name| name != service_name);
+
+            if actor_services.is_empty() {
+                self.actor_index.remove(actor_id);
+            }
+        }
+
+        // 注意：不删除数据库数据，保留用于后续恢复
+
+        Ok(())
+    }
+
+    /// 从数据库恢复服务（心跳恢复时使用）
+    ///
+    /// 当收到心跳但内存中找不到服务时，尝试从数据库恢复。
+    /// 这通常发生在断网超过 5 分钟（内存清理阈值）但小于 1 小时（数据库 TTL）的情况。
+    ///
+    /// # Arguments
+    ///
+    /// * `actor_id` - 要恢复的 Actor ID
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)` - 成功从数据库恢复了至少一个服务
+    /// * `Ok(false)` - 数据库中没有找到该 Actor 的服务（可能已过期或从未注册）
+    /// * `Err(String)` - 恢复过程出错
+    pub async fn restore_service_from_storage(
+        &mut self,
+        actor_id: &ActrId,
+    ) -> Result<bool, String> {
+        // 检查是否有存储后端
+        let storage = match &self.storage {
+            Some(s) => s,
+            None => {
+                debug!("No storage backend available for service recovery");
+                return Ok(false);
+            }
+        };
+
+        // 从数据库加载该 Actor 的服务
+        let services = storage
+            .load_services_by_actor_id(actor_id)
+            .await
+            .map_err(|e| format!("Failed to load services from storage: {}", e))?;
+
+        if services.is_empty() {
+            debug!(
+                "No services found in storage for Actor {}",
+                actor_id.serial_number
+            );
+            return Ok(false);
+        }
+
+        info!(
+            "🔄 Restoring {} service(s) from storage for Actor {}",
+            services.len(),
+            actor_id.serial_number
+        );
+
+        // 将每个服务重新注册到内存
+        for service in services {
+            // 添加到服务映射表
+            self.services
+                .entry(service.service_name.clone())
+                .or_default()
+                .push(service.clone());
+
+            // 更新消息类型索引
+            for message_type in &service.message_types {
+                self.message_type_index
+                    .entry(message_type.clone())
+                    .or_default()
+                    .push(service.service_name.clone());
+            }
+
+            // 更新 Actor 索引
+            self.actor_index
+                .entry(service.actor_id.clone())
+                .or_default()
+                .push(service.service_name.clone());
+
+            info!(
+                "  ✅ Restored service: {} (Actor {})",
+                service.service_name, service.actor_id.serial_number
+            );
+        }
+
+        Ok(true)
     }
 
     /// 获取所有服务统计信息

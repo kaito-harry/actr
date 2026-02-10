@@ -36,6 +36,9 @@ pub struct ServiceRegistryStorage {
     proto_ttl_secs: u64,
 }
 
+/// 默认服务 TTL（1 小时）
+pub const DEFAULT_SERVICE_TTL_SECS: u64 = 12 * 3600; // 临时方案
+
 impl ServiceRegistryStorage {
     /// 创建存储实例
     pub async fn new(database_file: impl AsRef<Path>, ttl_secs: Option<u64>) -> Result<Self> {
@@ -59,8 +62,8 @@ impl ServiceRegistryStorage {
 
         let storage = Self {
             pool,
-            default_ttl_secs: ttl_secs.unwrap_or(3600), // 默认 1 小时
-            proto_ttl_secs: 604800,                     // Proto specs 默认 7 天
+            default_ttl_secs: ttl_secs.unwrap_or(DEFAULT_SERVICE_TTL_SECS),
+            proto_ttl_secs: 604800, // Proto specs 默认 7 天
         };
 
         storage.init_schema().await?;
@@ -348,6 +351,70 @@ impl ServiceRegistryStorage {
         }
 
         info!("Loaded {} services from cache", services.len());
+        Ok(services)
+    }
+
+    /// 根据 ActorId 加载服务（用于心跳恢复）
+    ///
+    /// 当收到心跳时发现内存中没有该服务注册，尝试从数据库恢复。
+    /// 只返回未过期的服务（expires_at > now）。
+    ///
+    /// # Arguments
+    ///
+    /// * `actor_id` - Actor ID
+    ///
+    /// # Returns
+    ///
+    /// 该 Actor 的所有未过期服务列表
+    pub async fn load_services_by_actor_id(&self, actor_id: &ActrId) -> Result<Vec<ServiceInfo>> {
+        let now = current_timestamp();
+
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                actor_serial_number, actor_realm_id, actor_manufacturer, actor_device_name,
+                service_name, message_types, capabilities_json, status,
+                service_spec_blob, acl_blob,
+                service_availability_state, power_reserve, mailbox_backlog,
+                worst_dependency_health_state, protocol_compatibility_score,
+                geo_region, geo_longitude, geo_latitude,
+                sticky_client_ids,
+                last_heartbeat_at
+            FROM service_registry
+            WHERE actor_serial_number = ?1 
+              AND actor_realm_id = ?2 
+              AND expires_at > ?3
+            ORDER BY service_name
+            "#,
+        )
+        .bind(actor_id.serial_number as i64)
+        .bind(actor_id.realm.realm_id as i64)
+        .bind(now as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut services = Vec::new();
+
+        for row in rows {
+            match self.row_to_service_info(row) {
+                Ok(service) => services.push(service),
+                Err(e) => {
+                    error!(
+                        "Failed to deserialize service from cache for Actor {}: {:?}",
+                        actor_id.serial_number, e
+                    );
+                }
+            }
+        }
+
+        if !services.is_empty() {
+            debug!(
+                "Loaded {} services from cache for Actor {}",
+                services.len(),
+                actor_id.serial_number
+            );
+        }
+
         Ok(services)
     }
 
