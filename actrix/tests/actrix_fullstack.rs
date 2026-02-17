@@ -60,7 +60,6 @@ impl ActrixHarness {
         Self {
             tmp,
             port,
-            config_path,
             log_path,
             data_dir,
             child,
@@ -877,18 +876,8 @@ async fn signaling_route_candidates_acl_denied() {
 #[tokio::test]
 #[serial]
 async fn signaling_route_candidates_respects_limit_and_sorting() {
-    let tmp = tempfile::tempdir().expect("temp dir");
-    let port = choose_port();
-    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
-    let log_path = tmp.path().join("actrix_fullstack.log");
-    ensure_realm(&tmp.path().join("data"), 1001).await;
-    let mut child = spawn_actrix(&config_path, &log_path);
-
-    let base = format!("http://127.0.0.1:{port}");
-    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
-    wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
-    wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
-    ensure_realm(&tmp.path().join("data"), 1001).await;
+    let harness = ActrixHarness::start(DEFAULT_TOKEN_TTL).await;
+    let port = harness.port;
 
     // ACL: allow client-route to reach the services
     let acl = Acl {
@@ -993,24 +982,14 @@ async fn signaling_route_candidates_respects_limit_and_sorting() {
     let _ = svc1_r.into_future();
     let _ = svc2_r.into_future();
 
-    graceful_shutdown(child);
+    harness.shutdown();
 }
 
 #[tokio::test]
 #[serial]
 async fn signaling_route_candidates_prefers_exact_fingerprint() {
-    let tmp = tempfile::tempdir().expect("temp dir");
-    let port = choose_port();
-    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
-    let log_path = tmp.path().join("actrix_fullstack.log");
-    ensure_realm(&tmp.path().join("data"), 1001).await;
-    let mut child = spawn_actrix(&config_path, &log_path);
-
-    let base = format!("http://127.0.0.1:{port}");
-    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
-    wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
-    wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
-    ensure_realm(&tmp.path().join("data"), 1001).await;
+    let harness = ActrixHarness::start(DEFAULT_TOKEN_TTL).await;
+    let port = harness.port;
 
     // ACL allow client-fp
     let acl = Acl {
@@ -1119,7 +1098,7 @@ async fn signaling_route_candidates_prefers_exact_fingerprint() {
     }
 
     let _ = cli_w.send(WsMessage::Close(None)).await;
-    graceful_shutdown(child);
+    harness.shutdown();
 }
 
 #[tokio::test]
@@ -1194,18 +1173,8 @@ async fn signaling_get_service_spec_returns_spec() {
 #[tokio::test]
 #[serial]
 async fn signaling_get_service_spec_not_found() {
-    let tmp = tempfile::tempdir().expect("temp dir");
-    let port = choose_port();
-    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
-    let log_path = tmp.path().join("actrix_fullstack.log");
-    ensure_realm(&tmp.path().join("data"), 1001).await;
-    let mut child = spawn_actrix(&config_path, &log_path);
-
-    let base = format!("http://127.0.0.1:{port}");
-    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
-    wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
-    wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
-    ensure_realm(&tmp.path().join("data"), 1001).await;
+    let harness = ActrixHarness::start(DEFAULT_TOKEN_TTL).await;
+    let port = harness.port;
 
     // Client without any services, just to issue request
     let (mut cli_w, mut cli_r, cli_ok) = ws_register(port, "mfg", "client-nospec", None).await;
@@ -1238,24 +1207,14 @@ async fn signaling_get_service_spec_not_found() {
         other => panic!("unexpected flow {other:?}"),
     }
 
-    graceful_shutdown(child);
+    harness.shutdown();
 }
 
 #[tokio::test]
 #[serial]
 async fn signaling_subscribe_and_unsubscribe_actr_up() {
-    let tmp = tempfile::tempdir().expect("temp dir");
-    let port = choose_port();
-    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
-    let log_path = tmp.path().join("actrix_fullstack.log");
-    ensure_realm(&tmp.path().join("data"), 1001).await;
-    let mut child = spawn_actrix(&config_path, &log_path);
-
-    let base = format!("http://127.0.0.1:{port}");
-    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
-    wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
-    wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
-    ensure_realm(&tmp.path().join("data"), 1001).await;
+    let harness = ActrixHarness::start(DEFAULT_TOKEN_TTL).await;
+    let port = harness.port;
 
     // Subscriber
     let (mut sub_w, mut sub_r, sub_ok) = ws_register(port, "mfg", "subscriber", None).await;
@@ -1320,24 +1279,14 @@ async fn signaling_subscribe_and_unsubscribe_actr_up() {
         other => panic!("unexpected flow {other:?}"),
     }
 
-    graceful_shutdown(child);
+    harness.shutdown();
 }
 
 #[tokio::test]
 #[serial]
 async fn signaling_route_candidates_compatibility_cache_hit() {
-    let tmp = tempfile::tempdir().expect("temp dir");
-    let port = choose_port();
-    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
-    let log_path = tmp.path().join("actrix_fullstack.log");
-    ensure_realm(&tmp.path().join("data"), 1001).await;
-    let mut child = spawn_actrix(&config_path, &log_path);
-
-    let base = format!("http://127.0.0.1:{port}");
-    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
-    wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
-    wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
-    ensure_realm(&tmp.path().join("data"), 1001).await;
+    let harness = ActrixHarness::start(DEFAULT_TOKEN_TTL).await;
+    let port = harness.port;
 
     let acl = Acl {
         rules: vec![AclRule {
@@ -1485,7 +1434,7 @@ async fn signaling_route_candidates_compatibility_cache_hit() {
     assert!(!info2.is_empty(), "compatibility info should still be present on cache hit");
 
     let _ = cli_w.send(WsMessage::Close(None)).await;
-    graceful_shutdown(child);
+    harness.shutdown();
 }
 
 #[tokio::test]
