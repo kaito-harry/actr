@@ -1284,6 +1284,108 @@ async fn signaling_subscribe_and_unsubscribe_actr_up() {
 
 #[tokio::test]
 #[serial]
+async fn signaling_subscribe_receives_actr_up_and_unsubscribe_stops() {
+    let harness = ActrixHarness::start(DEFAULT_TOKEN_TTL).await;
+    let port = harness.port;
+
+    // Subscriber registers
+    let (mut sub_w, mut sub_r, sub_ok) = ws_register(port, "mfg", "subscriber", None).await;
+
+    // Subscribe to service type
+    let target_type = ActrType {
+        manufacturer: "mfg".into(),
+        name: "svc-presence".into(),
+    };
+    let subscribe = actr_protocol::ActrToSignaling {
+        source: sub_ok.actr_id.clone(),
+        credential: sub_ok.credential.clone(),
+        payload: Some(actr_protocol::actr_to_signaling::Payload::SubscribeActrUpRequest(
+            actr_protocol::SubscribeActrUpRequest {
+                target_type: target_type.clone(),
+            },
+        )),
+    };
+    send_envelope(
+        &mut sub_w,
+        make_envelope(signaling_envelope::Flow::ActrToServer(subscribe)),
+    )
+    .await;
+    // ack
+    let _ = recv_envelope(&mut sub_r).await;
+
+    // allow subscription to settle
+    sleep(Duration::from_millis(100)).await;
+
+    // New service registers -> should trigger ActrUp notification
+    let presence_acl = Acl {
+        rules: vec![AclRule {
+            principals: vec![Principal {
+                realm: Some(Realm { realm_id: 1001 }),
+                actr_type: Some(ActrType {
+                    manufacturer: "mfg".into(),
+                    name: "subscriber".into(),
+                }),
+            }],
+            permission: Permission::Allow as i32,
+        }],
+    };
+    let (_svc_w, _svc_r, _svc_ok) =
+        ws_register(port, "mfg", "svc-presence", Some(presence_acl.clone())).await;
+    sleep(Duration::from_millis(200)).await;
+
+    // Expect ActrUp notification (poll with timeout)
+    let mut got_up = false;
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(8) {
+        if let Ok(env) = timeout(Duration::from_millis(500), recv_envelope(&mut sub_r)).await {
+            if let Some(signaling_envelope::Flow::ServerToActr(server_msg)) = env.flow {
+                if let Some(signaling_to_actr::Payload::ActrUpEvent(evt)) = server_msg.payload {
+                    if evt.actor_id.r#type == target_type {
+                        got_up = true;
+                        break;
+                    }
+                }
+            }
+        } else {
+            continue;
+        }
+    }
+    if !got_up {
+        let logs = fs::read_to_string(harness.log_path()).unwrap_or_default();
+        panic!("subscriber should receive ActrUp notice. Logs:\n{logs}");
+    }
+
+    // Unsubscribe
+    let unsubscribe = actr_protocol::ActrToSignaling {
+        source: sub_ok.actr_id.clone(),
+        credential: sub_ok.credential.clone(),
+        payload: Some(actr_protocol::actr_to_signaling::Payload::UnsubscribeActrUpRequest(
+            actr_protocol::UnsubscribeActrUpRequest {
+                target_type: target_type.clone(),
+            },
+        )),
+    };
+    send_envelope(
+        &mut sub_w,
+        make_envelope(signaling_envelope::Flow::ActrToServer(unsubscribe)),
+    )
+    .await;
+    let _ = recv_envelope(&mut sub_r).await; // unsubscribe ack
+
+    // Register another service; notification should not arrive after unsubscribe
+    let (_svc2_w, _svc2_r, _svc2_ok) =
+        ws_register(port, "mfg", "svc-presence-2", Some(presence_acl)).await;
+
+    // Drain with timeout; expect None
+    use tokio::time::timeout;
+    let no_msg = timeout(Duration::from_millis(300), sub_r.next()).await;
+    assert!(no_msg.is_err(), "should not receive ActrUp after unsubscribe");
+
+    harness.shutdown();
+}
+
+#[tokio::test]
+#[serial]
 async fn signaling_route_candidates_compatibility_cache_hit() {
     let harness = ActrixHarness::start(DEFAULT_TOKEN_TTL).await;
     let port = harness.port;
