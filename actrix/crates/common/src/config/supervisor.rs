@@ -320,7 +320,6 @@ mod tests {
                 node_id: "test-node".to_string(),
                 endpoint: "http://localhost:50051".to_string(),
                 shared_secret: valid_secret(),
-                ..Default::default()
             },
             supervisord: SupervisordConfig::default(),
             ..Default::default()

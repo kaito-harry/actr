@@ -505,14 +505,6 @@ impl ActrixConfig {
                 // 验证存储配置
                 match ks.storage.backend {
                     StorageBackend::Sqlite => {}
-                    StorageBackend::Redis => {
-                        if ks.storage.redis.is_none() {
-                            errors.push(
-                                "KS is configured to use Redis but redis config is missing"
-                                    .to_string(),
-                            );
-                        }
-                    }
                     StorageBackend::Postgres => {
                         if ks.storage.postgres.is_none() {
                             errors.push(
@@ -667,7 +659,10 @@ mod tests {
 
     #[test]
     fn test_service_flags() {
-        let mut config = ActrixConfig::default();
+        let mut config = ActrixConfig {
+            enable: 0,
+            ..ActrixConfig::default()
+        };
 
         // Test Signaling service: bitmask-only control
         // Case 1: Bitmask not set, service not enabled
@@ -749,7 +744,10 @@ mod tests {
 
     #[test]
     fn test_ais_auto_ks_config() {
-        let mut config = ActrixConfig::default();
+        let mut config = ActrixConfig {
+            enable: ENABLE_KS | ENABLE_AIS,
+            ..ActrixConfig::default()
+        };
 
         // 场景 1: 启用本地 KS，AIS 不配置 KS 客户端，应自动使用本地 KS
         config.enable = ENABLE_KS | ENABLE_AIS; // Enable both KS and AIS via bitmask
@@ -819,7 +817,10 @@ mod tests {
 
     #[test]
     fn test_signaling_auto_ks_config() {
-        let mut config = ActrixConfig::default();
+        let mut config = ActrixConfig {
+            enable: ENABLE_KS | ENABLE_SIGNALING,
+            ..ActrixConfig::default()
+        };
 
         // 启用本地 KS 和 Signaling
         config.enable = ENABLE_KS | ENABLE_SIGNALING; // Enable both via bitmask
@@ -850,7 +851,10 @@ mod tests {
 
     #[test]
     fn test_validate_bitmask_consistency() {
-        let mut config = ActrixConfig::default();
+        let mut config = ActrixConfig {
+            enable: ENABLE_AIS,
+            ..ActrixConfig::default()
+        };
 
         // Case 1: AIS bitmask set but services.ais config missing - should warn
         config.enable = ENABLE_AIS;
@@ -936,7 +940,6 @@ mod tests {
                 backend: ::ks::storage::StorageBackend::Sqlite,
                 key_ttl_seconds: 3600,
                 sqlite: Some(::ks::storage::SqliteConfig {}),
-                redis: None,
                 postgres: None,
             },
             kek: None,
@@ -958,8 +961,10 @@ mod tests {
 
     #[test]
     fn test_signaling_dependencies_require_local_services_when_missing_clients() {
-        let mut config = ActrixConfig::default();
-        config.enable = ENABLE_SIGNALING;
+        let mut config = ActrixConfig {
+            enable: ENABLE_SIGNALING,
+            ..ActrixConfig::default()
+        };
         config.services.signaling = Some(SignalingConfig {
             server: signaling::SignalingServerConfig::default(),
             dependencies: signaling::SignalingDependencies::default(),
@@ -984,8 +989,10 @@ mod tests {
 
     #[test]
     fn test_signaling_dependencies_accept_local_services_when_enabled() {
-        let mut config = ActrixConfig::default();
-        config.enable = ENABLE_SIGNALING | ENABLE_KS | ENABLE_AIS;
+        let mut config = ActrixConfig {
+            enable: ENABLE_SIGNALING | ENABLE_KS | ENABLE_AIS,
+            ..ActrixConfig::default()
+        };
         config.services.signaling = Some(SignalingConfig {
             server: signaling::SignalingServerConfig::default(),
             dependencies: signaling::SignalingDependencies::default(),

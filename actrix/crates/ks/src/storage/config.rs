@@ -20,10 +20,6 @@ pub struct StorageConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sqlite: Option<SqliteConfig>,
 
-    /// Redis 配置（当 backend = "redis" 时必需）
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub redis: Option<RedisConfig>,
-
     /// PostgreSQL 配置（当 backend = "postgres" 时必需）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub postgres: Option<PostgresConfig>,
@@ -35,7 +31,6 @@ impl Default for StorageConfig {
             backend: StorageBackend::Sqlite,
             key_ttl_seconds: 3600,
             sqlite: Some(SqliteConfig::default()),
-            redis: None,
             postgres: None,
         }
     }
@@ -47,8 +42,6 @@ impl Default for StorageConfig {
 pub enum StorageBackend {
     /// SQLite 数据库
     Sqlite,
-    /// Redis 内存数据库
-    Redis,
     /// PostgreSQL 数据库
     Postgres,
 }
@@ -59,42 +52,6 @@ pub enum StorageBackend {
 /// TODO: define grain config for sqlite
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SqliteConfig {}
-
-/// Redis 配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RedisConfig {
-    /// Redis 连接 URL
-    ///
-    /// 格式：redis://[username:password@]host[:port][/database]
-    /// 示例：redis://localhost:6379/0
-    pub url: String,
-
-    /// 连接池大小
-    #[serde(default = "default_redis_pool_size")]
-    pub pool_size: usize,
-
-    /// 超时时间（毫秒）
-    #[serde(default = "default_timeout_ms")]
-    pub timeout_ms: u64,
-}
-
-impl Default for RedisConfig {
-    fn default() -> Self {
-        Self {
-            url: "redis://localhost:6379/0".to_string(),
-            pool_size: default_redis_pool_size(),
-            timeout_ms: default_timeout_ms(),
-        }
-    }
-}
-
-fn default_redis_pool_size() -> usize {
-    20
-}
-
-fn default_timeout_ms() -> u64 {
-    5000
-}
 
 /// PostgreSQL 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,7 +120,6 @@ mod tests {
             backend: StorageBackend::Sqlite,
             key_ttl_seconds: 7200,
             sqlite: Some(SqliteConfig {}),
-            redis: None,
             postgres: None,
         };
 
@@ -173,22 +129,30 @@ mod tests {
     }
 
     #[test]
-    fn test_deserialize_redis_config() {
+    fn test_deserialize_postgres_config() {
         let toml_str = r#"
-            backend = "redis"
+            backend = "postgres"
             key_ttl_seconds = 1800
 
-            [redis]
-            url = "redis://localhost:6379/1"
+            [postgres]
+            host = "localhost"
+            port = 5432
+            database = "actrix"
+            username = "actrix"
+            password = "secret"
             pool_size = 30
         "#;
 
         let config: StorageConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.backend, StorageBackend::Redis);
+        assert_eq!(config.backend, StorageBackend::Postgres);
         assert_eq!(config.key_ttl_seconds, 1800);
 
-        let redis = config.redis.unwrap();
-        assert_eq!(redis.url, "redis://localhost:6379/1");
-        assert_eq!(redis.pool_size, 30);
+        let postgres = config.postgres.unwrap();
+        assert_eq!(postgres.host, "localhost");
+        assert_eq!(postgres.port, 5432);
+        assert_eq!(postgres.database, "actrix");
+        assert_eq!(postgres.username, "actrix");
+        assert_eq!(postgres.password, "secret");
+        assert_eq!(postgres.pool_size, 30);
     }
 }

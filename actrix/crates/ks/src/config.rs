@@ -104,7 +104,6 @@ mod tests {
                 backend: StorageBackend::Sqlite,
                 key_ttl_seconds: 7200,
                 sqlite: Some(SqliteConfig {}),
-                redis: None,
                 postgres: None,
             },
             kek: None,

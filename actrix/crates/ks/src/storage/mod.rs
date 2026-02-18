@@ -1,6 +1,6 @@
 //! KS 存储模块
 //!
-//! 提供多种存储后端支持：SQLite, Redis, PostgreSQL
+//! 提供多种存储后端支持：SQLite, PostgreSQL
 //!
 //! # 设计
 //!
@@ -16,9 +16,6 @@ pub mod config;
 // SQLite 始终可用（使用 rusqlite）
 pub mod sqlite;
 
-#[cfg(feature = "backend-redis")]
-pub mod redis;
-
 #[cfg(feature = "backend-postgres")]
 pub mod postgres;
 
@@ -27,12 +24,9 @@ use crate::error::{KsError, KsResult};
 use crate::types::{KeyPair, KeyRecord};
 
 pub use backend::KeyStorageBackend;
-pub use config::{PostgresConfig, RedisConfig, SqliteConfig, StorageBackend, StorageConfig};
+pub use config::{PostgresConfig, SqliteConfig, StorageBackend, StorageConfig};
 
 use sqlite::SqliteBackend;
-
-#[cfg(feature = "backend-redis")]
-use redis::RedisBackend;
 
 #[cfg(feature = "backend-postgres")]
 use postgres::PostgresBackend;
@@ -47,10 +41,6 @@ use postgres::PostgresBackend;
 pub enum KeyStorage {
     /// SQLite 存储后端（始终可用）
     Sqlite(Box<SqliteBackend>),
-
-    /// Redis 存储后端
-    #[cfg(feature = "backend-redis")]
-    Redis(RedisBackend),
 
     /// PostgreSQL 存储后端
     #[cfg(feature = "backend-postgres")]
@@ -89,16 +79,6 @@ impl KeyStorage {
                 Ok(Self::Sqlite(Box::new(backend)))
             }
 
-            #[cfg(feature = "backend-redis")]
-            StorageBackend::Redis => {
-                let cfg = config
-                    .redis
-                    .as_ref()
-                    .ok_or_else(|| KsError::Config("Missing Redis config".into()))?;
-                let backend = RedisBackend::new(cfg, config.key_ttl_seconds).await?;
-                Ok(Self::Redis(backend))
-            }
-
             #[cfg(feature = "backend-postgres")]
             StorageBackend::Postgres => {
                 let cfg = config
@@ -108,11 +88,6 @@ impl KeyStorage {
                 let backend = PostgresBackend::new(cfg, config.key_ttl_seconds).await?;
                 Ok(Self::Postgres(backend))
             }
-
-            #[cfg(not(feature = "backend-redis"))]
-            StorageBackend::Redis => Err(KsError::Config(
-                "Redis backend not enabled. Compile with --features backend-redis".into(),
-            )),
 
             #[cfg(not(feature = "backend-postgres"))]
             StorageBackend::Postgres => Err(KsError::Config(
@@ -126,9 +101,6 @@ impl KeyStorage {
         match self {
             Self::Sqlite(b) => b.generate_and_store_key().await,
 
-            #[cfg(feature = "backend-redis")]
-            Self::Redis(b) => b.generate_and_store_key().await,
-
             #[cfg(feature = "backend-postgres")]
             Self::Postgres(b) => b.generate_and_store_key().await,
         }
@@ -138,9 +110,6 @@ impl KeyStorage {
     pub async fn get_public_key(&self, key_id: u32) -> KsResult<Option<String>> {
         match self {
             Self::Sqlite(b) => b.get_public_key(key_id).await,
-
-            #[cfg(feature = "backend-redis")]
-            Self::Redis(b) => b.get_public_key(key_id).await,
 
             #[cfg(feature = "backend-postgres")]
             Self::Postgres(b) => b.get_public_key(key_id).await,
@@ -152,9 +121,6 @@ impl KeyStorage {
         match self {
             Self::Sqlite(b) => b.get_secret_key(key_id).await,
 
-            #[cfg(feature = "backend-redis")]
-            Self::Redis(b) => b.get_secret_key(key_id).await,
-
             #[cfg(feature = "backend-postgres")]
             Self::Postgres(b) => b.get_secret_key(key_id).await,
         }
@@ -164,9 +130,6 @@ impl KeyStorage {
     pub async fn get_key_record(&self, key_id: u32) -> KsResult<Option<KeyRecord>> {
         match self {
             Self::Sqlite(b) => b.get_key_record(key_id).await,
-
-            #[cfg(feature = "backend-redis")]
-            Self::Redis(b) => b.get_key_record(key_id).await,
 
             #[cfg(feature = "backend-postgres")]
             Self::Postgres(b) => b.get_key_record(key_id).await,
@@ -178,9 +141,6 @@ impl KeyStorage {
         match self {
             Self::Sqlite(b) => b.get_key_count().await,
 
-            #[cfg(feature = "backend-redis")]
-            Self::Redis(b) => b.get_key_count().await,
-
             #[cfg(feature = "backend-postgres")]
             Self::Postgres(b) => b.get_key_count().await,
         }
@@ -191,9 +151,6 @@ impl KeyStorage {
         match self {
             Self::Sqlite(b) => b.cleanup_expired_keys().await,
 
-            #[cfg(feature = "backend-redis")]
-            Self::Redis(b) => b.cleanup_expired_keys().await,
-
             #[cfg(feature = "backend-postgres")]
             Self::Postgres(b) => b.cleanup_expired_keys().await,
         }
@@ -203,9 +160,6 @@ impl KeyStorage {
     pub fn backend_name(&self) -> &'static str {
         match self {
             Self::Sqlite(_) => "SQLite",
-
-            #[cfg(feature = "backend-redis")]
-            Self::Redis(_) => "Redis",
 
             #[cfg(feature = "backend-postgres")]
             Self::Postgres(_) => "Postgres",
@@ -225,7 +179,6 @@ mod tests {
             backend: StorageBackend::Sqlite,
             key_ttl_seconds: 3600,
             sqlite: Some(SqliteConfig {}),
-            redis: None,
             postgres: None,
         };
 
@@ -252,7 +205,6 @@ mod tests {
             backend: StorageBackend::Sqlite,
             key_ttl_seconds: 3600,
             sqlite: None, // 缺少配置
-            redis: None,
             postgres: None,
         };
 

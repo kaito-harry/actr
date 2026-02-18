@@ -4,7 +4,7 @@
 //! 1. 生成椭圆曲线密钥对（使用 ECIES），返回公钥给 Issue 服务
 //! 2. 基于 key_id 查询私钥给验证服务
 //! 3. PSK 签名验证和防重放攻击保护
-//! 4. 多存储后端支持：SQLite, Redis, PostgreSQL
+//! 4. 多存储后端支持：SQLite, PostgreSQL
 
 #[cfg(test)]
 pub mod client;
@@ -50,7 +50,6 @@ mod tests {
                 backend: StorageBackend::Sqlite,
                 key_ttl_seconds: 3600,
                 sqlite: Some(SqliteConfig {}),
-                redis: None,
                 postgres: None,
             },
             kek: None,

@@ -11,9 +11,8 @@ rust-version.workspace = true
 [features]
 default = ["backend-sqlite"]
 backend-sqlite = ["sqlx"]                                             # SQLite 使用 sqlx
-backend-redis = ["redis", "deadpool-redis"]
 backend-postgres = ["sqlx"]
-backend-all = ["backend-sqlite", "backend-redis", "backend-postgres"]
+backend-all = ["backend-sqlite", "backend-postgres"]
 
 [dependencies]
 # Workspace dependencies
@@ -39,13 +38,6 @@ base64 = { workspace = true }
 aes-gcm = "0.10"              # AES-256-GCM for KEK encryption
 
 # Storage backends
-# Redis
-redis = { version = "0.24", features = [
-    "tokio-comp",
-    "connection-manager",
-], optional = true }
-deadpool-redis = { version = "0.14", optional = true }
-
 # SQLite and PostgreSQL - 使用 sqlx 统一异步接口
 sqlx = { workspace = true, default-features = false, features = [
     "runtime-tokio-rustls",

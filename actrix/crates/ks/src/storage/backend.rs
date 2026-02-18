@@ -8,7 +8,7 @@ use async_trait::async_trait;
 
 /// 密钥存储后端抽象接口
 ///
-/// 所有存储后端（SQLite, Redis, PostgreSQL）都需要实现此 trait
+/// 所有存储后端（SQLite, PostgreSQL）都需要实现此 trait
 /// 提供统一的异步 API 用于密钥的生成、存储、查询和管理
 #[async_trait]
 pub trait KeyStorageBackend: Send + Sync {
