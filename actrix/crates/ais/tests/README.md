@@ -3,25 +3,20 @@
 ## 概述
 
 本目录包含 AIS (Actor Identity Service) 的端到端集成测试，验证 Token 签发和验证流程的正确性。
+测试会在进程内自举临时 KS gRPC 服务，不依赖外部 KS 实例。
 
 ## 测试内容
 
-### 1. `test_end_to_end_token_issuance_and_validation`
+### 1. `test_end_to_end_credential_flow`
 完整测试 Token 签发和验证流程：
 - Issuer 从 KS 获取密钥并签发 Token
 - Validator 从 KS 获取私钥并验证 Token
 - 验证 Claims 字段的正确性
 - 验证过期时间的合理性
+- 验证安全性：错误 realm_id 校验失败
+- 验证多次签发/验证的稳定性
 
-### 2. `test_token_validation_with_wrong_realm_fails`
-验证安全性：使用错误的 realm_id 验证 Token 应该失败
-
-### 3. `test_multiple_key_rotations`
-验证密钥轮换：
-- 签发多个 Token
-- 所有 Token 都能被正确验证（即使使用不同的密钥）
-
-### 4. `test_issuer_health_checks`
+### 2. `test_issuer_health_checks`
 验证健康检查：
 - 数据库健康检查
 - 密钥缓存健康检查
@@ -29,33 +24,15 @@
 
 ## 运行测试
 
-### 运行所有测试（不包括需要 KS 的集成测试）
+### 运行所有测试
 
 ```bash
 cargo test -p ais
 ```
 
-### 运行集成测试（需要 KS 服务）
-
-**前提条件**：
-1. 启动 KS 服务：
+### 仅运行 AIS 集成测试
 ```bash
-# 方式 1: 使用 actrix 启动完整服务（包含 KS）
-cargo run --bin actrix -- --config config.toml
-
-# 方式 2: 单独启动 KS 服务（如果配置支持）
-# 确保 KS 监听在 http://localhost:8080
-```
-
-2. 设置环境变量（可选）：
-```bash
-export KS_ENDPOINT="http://localhost:8080"
-export KS_PSK="your-test-psk-key"
-```
-
-3. 运行被忽略的集成测试：
-```bash
-cargo test -p ais --test integration_test -- --ignored
+cargo test -p ais --test integration_test
 ```
 
 ## 测试结果说明
@@ -63,18 +40,12 @@ cargo test -p ais --test integration_test -- --ignored
 ### 正常输出
 
 ```
-running 4 tests
-test test_end_to_end_token_issuance_and_validation ... ok
-test test_token_validation_with_wrong_realm_fails ... ok
-test test_multiple_key_rotations ... ok
+running 2 tests
+test test_end_to_end_credential_flow ... ok
 test test_issuer_health_checks ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored
+test result: ok. 2 passed; 0 failed; 0 ignored
 ```
-
-### 如果 KS 不可用
-
-集成测试会被跳过（标记为 `ignored`），只有 `test_issuer_health_checks` 会运行并显示警告信息。
 
 ## 实现详情
 
@@ -128,14 +99,14 @@ async fn get_secret_key_by_id(&self, key_id: u32) -> Result<SecretKey, AidError>
 
 ## 故障排查
 
-### 测试失败：KS unavailable
+### 测试失败：Embedded KS start failed
 
-**原因**：KS 服务未启动或配置错误
+**原因**：本机端口占用异常、gRPC 依赖未就绪，或测试环境权限限制。
 
 **解决方案**：
-1. 检查 KS 服务是否运行：`curl http://localhost:8080/ks/health`
-2. 检查配置文件中的 KS 配置
-3. 检查防火墙设置
+1. 重试测试命令，确认是否瞬时端口/资源冲突
+2. 检查 gRPC 相关依赖是否可编译（`cargo check -p ais`）
+3. 查看测试输出中的 `Embedded KS` 错误细节
 
 ### 测试失败：Token validation should succeed
 

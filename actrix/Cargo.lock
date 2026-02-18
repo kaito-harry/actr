@@ -3,21 +3,6 @@
 version = 4
 
 [[package]]
-name = "actr-framework"
-version = "0.1.5"
-source = "git+https://github.com/actor-rtc/actr.git?rev=a4fd088b3b774a32aff438fc5d7625af9ae3aa02#a4fd088b3b774a32aff438fc5d7625af9ae3aa02"
-dependencies = [
- "actr-protocol",
- "anyhow",
- "async-trait",
- "bytes",
- "futures-util",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "actr-protocol"
 version = "0.1.7"
 source = "git+https://github.com/actor-rtc/actr.git?rev=a4fd088b3b774a32aff438fc5d7625af9ae3aa02#a4fd088b3b774a32aff438fc5d7625af9ae3aa02"
@@ -56,7 +41,6 @@ dependencies = [
 name = "actrix"
 version = "0.1.1"
 dependencies = [
- "actr-framework",
  "actr-protocol",
  "actrix-common",
  "ais",
@@ -75,6 +59,7 @@ dependencies = [
  "hostname",
  "ks",
  "lazy_static",
+ "libc",
  "nix 0.30.1",
  "nonce-auth",
  "num_cpus",
@@ -92,6 +77,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "serial_test",
  "signaling",
  "strum 0.26.3",
  "stun 0.1.1",
@@ -121,7 +107,6 @@ dependencies = [
 name = "actrix-common"
 version = "0.1.1"
 dependencies = [
- "actr-framework",
  "actr-protocol",
  "actrix-proto",
  "anyhow",
@@ -230,6 +215,7 @@ dependencies = [
  "ecies",
  "governor",
  "ks",
+ "nonce-auth",
  "prost",
  "prost-types",
  "rand 0.8.5",
@@ -239,6 +225,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tonic",
  "tower",
  "tower_governor",
  "tracing",
@@ -3767,7 +3754,6 @@ dependencies = [
 name = "signaling"
 version = "0.1.1"
 dependencies = [
- "actr-framework",
  "actr-protocol",
  "actr-version",
  "actrix-common",

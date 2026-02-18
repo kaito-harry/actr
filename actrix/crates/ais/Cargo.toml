@@ -46,3 +46,5 @@ ks = { path = "../ks" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+nonce-auth = { workspace = true }
+tonic = { workspace = true }

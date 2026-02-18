@@ -232,6 +232,7 @@ pub struct CacheStats {
 mod tests {
     use super::*;
     use actr_version::CompatibilityLevel;
+    use std::time::UNIX_EPOCH;
 
     fn create_mock_analysis_result(level: CompatibilityLevel) -> CompatibilityAnalysisResult {
         CompatibilityAnalysisResult {
@@ -293,5 +294,82 @@ mod tests {
 
         assert_eq!(stats.total_entries, 1);
         assert_eq!(stats.expired_entries, 0);
+    }
+
+    #[test]
+    fn test_cleanup_expired_removes_stale_entries() {
+        let mut cache = GlobalCompatibilityCache::new();
+        let report = CompatibilityReportData {
+            from_fingerprint: "fp-clean-client".to_string(),
+            to_fingerprint: "fp-clean-server".to_string(),
+            service_type: "test/cleanup".to_string(),
+            analysis_result: create_mock_analysis_result(CompatibilityLevel::FullyCompatible),
+        };
+        cache.store(report);
+
+        let key = GlobalCompatibilityCache::build_cache_key(
+            "test/cleanup",
+            "fp-clean-client",
+            "fp-clean-server",
+        );
+        let entry = cache
+            .cache
+            .get_mut(&key)
+            .expect("cache entry should exist before cleanup");
+        entry.expires_at = SystemTime::now() - Duration::from_secs(1);
+
+        cache.cleanup_expired();
+        let response = cache.query(&key);
+        assert!(!response.hit, "expired entry should be removed");
+        assert_eq!(cache.stats().total_entries, 0);
+    }
+
+    #[test]
+    fn test_store_evicts_oldest_when_cache_is_full() {
+        let mut cache = GlobalCompatibilityCache::new();
+        cache.max_entries = 2;
+
+        let report_1 = CompatibilityReportData {
+            from_fingerprint: "fp-client-1".to_string(),
+            to_fingerprint: "fp-server-1".to_string(),
+            service_type: "test/evict".to_string(),
+            analysis_result: create_mock_analysis_result(CompatibilityLevel::FullyCompatible),
+        };
+        cache.store(report_1);
+        let key_1 =
+            GlobalCompatibilityCache::build_cache_key("test/evict", "fp-client-1", "fp-server-1");
+        cache.cache.get_mut(&key_1).expect("entry1").cached_at =
+            UNIX_EPOCH + Duration::from_secs(1);
+
+        let report_2 = CompatibilityReportData {
+            from_fingerprint: "fp-client-2".to_string(),
+            to_fingerprint: "fp-server-2".to_string(),
+            service_type: "test/evict".to_string(),
+            analysis_result: create_mock_analysis_result(CompatibilityLevel::BackwardCompatible),
+        };
+        cache.store(report_2);
+        let key_2 =
+            GlobalCompatibilityCache::build_cache_key("test/evict", "fp-client-2", "fp-server-2");
+        cache.cache.get_mut(&key_2).expect("entry2").cached_at =
+            UNIX_EPOCH + Duration::from_secs(2);
+
+        let report_3 = CompatibilityReportData {
+            from_fingerprint: "fp-client-3".to_string(),
+            to_fingerprint: "fp-server-3".to_string(),
+            service_type: "test/evict".to_string(),
+            analysis_result: create_mock_analysis_result(CompatibilityLevel::FullyCompatible),
+        };
+        cache.store(report_3);
+        let key_3 =
+            GlobalCompatibilityCache::build_cache_key("test/evict", "fp-client-3", "fp-server-3");
+
+        assert!(!cache.query(&key_1).hit, "oldest entry should be evicted");
+        assert!(cache.query(&key_2).hit, "newer entry should remain");
+        assert!(cache.query(&key_3).hit, "latest entry should remain");
+        assert_eq!(
+            cache.stats().total_entries,
+            2,
+            "cache should keep max_entries items"
+        );
     }
 }

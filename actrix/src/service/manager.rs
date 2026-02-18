@@ -100,8 +100,8 @@ impl ServiceManager {
                 .start_http_services(http_services, notify_clone)
                 .await?;
             handle_futs.push(handle);
+            notify.notified().await;
         }
-        notify.notified().await;
         let notify_clone = notify.clone();
 
         // 启动ICE服务

@@ -640,6 +640,10 @@ async fn handle_register_request(
             client.credential = Some(register_ok.credential.clone());
         }
     }
+    {
+        let mut actor_index = server.actor_id_index.write().await;
+        actor_index.insert(register_ok.actr_id.clone(), client_id.to_string());
+    }
 
     // 直接使用 AIS 返回的 register_ok（包含 psk 和 public_key）
     let response = RegisterResponse {

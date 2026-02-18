@@ -166,6 +166,7 @@ impl AuthHandler for Authenticator {
 mod tests {
     use super::*;
     use serial_test::serial;
+    use std::net::SocketAddr;
 
     #[test]
     fn test_authenticator_creation() {
@@ -206,5 +207,51 @@ mod tests {
         // 验证结果一致性
         let result2 = md5::compute(integrity_text.as_bytes());
         assert_eq!(result.to_vec(), result2.to_vec());
+    }
+
+    #[test]
+    #[serial]
+    fn test_auth_handle_rejects_invalid_claims() {
+        Authenticator::clear_cache();
+        let auth = Authenticator::new().expect("authenticator should initialize");
+        let src_addr: SocketAddr = "127.0.0.1:3478".parse().expect("valid socket addr");
+
+        let err = auth
+            .auth_handle("invalid-claims-format", "actor-rtc.local", src_addr)
+            .expect_err("invalid claims should be rejected");
+
+        assert!(
+            err.to_string().contains("Failed to parse claims")
+                || err.to_string().contains("Failed to check credential"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            Authenticator::cache_stats().0,
+            0,
+            "invalid claims should not populate cache"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_auth_handle_uses_cached_key_before_claim_decode() {
+        Authenticator::clear_cache();
+        let auth = Authenticator::new().expect("authenticator should initialize");
+        let username = "non-decodable-user";
+        let server_realm = "actor-rtc.local";
+        let src_addr: SocketAddr = "127.0.0.1:3478".parse().expect("valid socket addr");
+        let expected_key = vec![0xAB; 16];
+
+        let cache_key = compute_cache_key(username, server_realm);
+        AUTH_KEY_CACHE
+            .lock()
+            .expect("auth cache poisoned")
+            .put(cache_key, expected_key.clone());
+
+        let result = auth
+            .auth_handle(username, server_realm, src_addr)
+            .expect("cached value should short-circuit claim decode");
+
+        assert_eq!(result, expected_key);
     }
 }

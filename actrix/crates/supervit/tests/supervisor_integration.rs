@@ -2,7 +2,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use actrix_common::storage::SqliteNonceStorage;
+use actrix_common::{
+    ServiceCollector, ServiceInfo, ServiceState, ServiceType, storage::SqliteNonceStorage,
+};
 use nonce_auth::{CredentialBuilder, CredentialVerifier, NonceError, storage::NonceStorage};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -13,16 +15,22 @@ use tonic::{Request, Response, Status, transport::Server};
 
 use supervit::{
     HealthCheckRequest, HealthCheckResponse, NonceCredential, RegisterNodeRequest,
-    RegisterNodeResponse, ReportRequest, ReportResponse, SupervisorService,
-    SupervisorServiceClient, SupervisorServiceServer,
+    RegisterNodeResponse, ReportRequest, ReportResponse, ServiceAdvertisementStatus,
+    SupervisorService, SupervisorServiceClient, SupervisorServiceServer, SupervitClient,
+    SupervitConfig, SupervitError,
 };
 
 const TEST_SHARED_SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 #[derive(Clone, Default)]
 struct NodeState {
-    last_report_at: Option<i64>,
+    last_register_request: Option<RegisterNodeRequest>,
+    last_report_request: Option<ReportRequest>,
+    report_count: u32,
+    health_check_count: u32,
 }
+
+type NodeMap = Arc<RwLock<std::collections::HashMap<String, NodeState>>>;
 
 #[derive(Clone)]
 struct TestSupervisorService {
@@ -30,7 +38,7 @@ struct TestSupervisorService {
     nonce_storage: Arc<dyn NonceStorage + Send + Sync>,
     max_clock_skew_secs: u64,
     next_report_interval_secs: i32,
-    nodes: Arc<RwLock<std::collections::HashMap<String, NodeState>>>,
+    nodes: NodeMap,
 }
 
 impl TestSupervisorService {
@@ -140,7 +148,8 @@ impl SupervisorService for TestSupervisorService {
         self.verify_credential(&req.credential, payload).await?;
 
         let mut nodes = self.nodes.write().await;
-        nodes.insert(req.node_id.clone(), NodeState::default());
+        let state = nodes.entry(req.node_id.clone()).or_default();
+        state.last_register_request = Some(req);
 
         let response = RegisterNodeResponse {
             success: true,
@@ -165,7 +174,8 @@ impl SupervisorService for TestSupervisorService {
 
         let mut nodes = self.nodes.write().await;
         let state = nodes.entry(req.node_id.clone()).or_default();
-        state.last_report_at = Some(req.timestamp);
+        state.last_report_request = Some(req);
+        state.report_count += 1;
 
         let response = ReportResponse {
             received: true,
@@ -185,6 +195,9 @@ impl SupervisorService for TestSupervisorService {
         let payload = format!("health_check:{}", req.node_id);
 
         self.verify_credential(&req.credential, payload).await?;
+        let mut nodes = self.nodes.write().await;
+        let state = nodes.entry(req.node_id.clone()).or_default();
+        state.health_check_count += 1;
 
         let response = HealthCheckResponse {
             healthy: true,
@@ -200,7 +213,7 @@ async fn spawn_test_supervisor(
     shared_secret: Vec<u8>,
     max_clock_skew_secs: u64,
     next_report_interval_secs: i32,
-) -> Result<(SocketAddr, TempDir, JoinHandle<()>), Box<dyn std::error::Error>> {
+) -> Result<(SocketAddr, TempDir, JoinHandle<()>, NodeMap), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
     let storage = SqliteNonceStorage::new_async(temp_dir.path()).await?;
 
@@ -210,6 +223,7 @@ async fn spawn_test_supervisor(
         max_clock_skew_secs,
         next_report_interval_secs,
     );
+    let nodes = service.nodes.clone();
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
@@ -223,7 +237,7 @@ async fn spawn_test_supervisor(
             .unwrap();
     });
 
-    Ok((addr, temp_dir, handle))
+    Ok((addr, temp_dir, handle, nodes))
 }
 
 fn build_register_request(node_id: &str, shared_secret: &[u8]) -> RegisterNodeRequest {
@@ -243,6 +257,38 @@ fn build_register_request(node_id: &str, shared_secret: &[u8]) -> RegisterNodeRe
     let fingerprint = build_registration_fingerprint(&request);
     let payload = format!("register:{node_id}:{fingerprint}");
     let credential = CredentialBuilder::new(shared_secret)
+        .sign(payload.as_bytes())
+        .expect("credential generation should succeed");
+    let credential = supervit::nonce_auth::to_proto_credential(credential);
+
+    RegisterNodeRequest {
+        credential,
+        ..request
+    }
+}
+
+fn build_register_request_with_timestamp(
+    node_id: &str,
+    shared_secret: &[u8],
+    timestamp: u64,
+) -> RegisterNodeRequest {
+    let request = RegisterNodeRequest {
+        node_id: node_id.to_string(),
+        name: "test-node".to_string(),
+        location_tag: "test-location".to_string(),
+        version: "0.0.1".to_string(),
+        agent_addr: "127.0.0.1:60000".to_string(),
+        credential: NonceCredential::default(),
+        location: None,
+        service_tags: vec![],
+        power_reserve_level_init: Some(1),
+        services: vec![],
+    };
+
+    let fingerprint = build_registration_fingerprint(&request);
+    let payload = format!("register:{node_id}:{fingerprint}");
+    let credential = CredentialBuilder::new(shared_secret)
+        .with_time_provider(move || Ok(timestamp))
         .sign(payload.as_bytes())
         .expect("credential generation should succeed");
     let credential = supervit::nonce_auth::to_proto_credential(credential);
@@ -288,10 +334,61 @@ fn build_health_check_request(node_id: &str, shared_secret: &[u8]) -> HealthChec
     }
 }
 
+fn build_supervit_config(
+    node_id: &str,
+    endpoint: String,
+    shared_secret_hex: &str,
+) -> SupervitConfig {
+    SupervitConfig {
+        node_id: node_id.to_string(),
+        endpoint,
+        location_tag: "test-location".to_string(),
+        name: Some("test-node".to_string()),
+        location: Some("rack-a1".to_string()),
+        agent_addr: "127.0.0.1:60000".to_string(),
+        shared_secret: Some(shared_secret_hex.to_string()),
+        service_tags: vec!["beta".to_string(), "alpha".to_string(), "beta".to_string()],
+        status_report_interval_secs: 1,
+        ..Default::default()
+    }
+}
+
+async fn build_service_collector_with_entries() -> ServiceCollector {
+    let collector = ServiceCollector::new();
+    collector
+        .insert(
+            "turn".to_string(),
+            ServiceInfo {
+                name: "turn-service".to_string(),
+                service_type: ServiceType::Turn,
+                domain_name: "turn:example.com".to_string(),
+                port_info: "3478".to_string(),
+                status: ServiceState::Running("turn:example.com:3478".to_string()),
+                description: None,
+            },
+        )
+        .await;
+    collector
+        .insert(
+            "ks".to_string(),
+            ServiceInfo {
+                name: "ks-service".to_string(),
+                service_type: ServiceType::Ks,
+                domain_name: "http://example.com".to_string(),
+                port_info: "8080".to_string(),
+                status: ServiceState::Error("degraded".to_string()),
+                description: None,
+            },
+        )
+        .await;
+    collector
+}
+
 #[tokio::test]
 async fn register_report_health_flow_succeeds() -> Result<(), Box<dyn std::error::Error>> {
     let shared_secret = hex::decode(TEST_SHARED_SECRET)?;
-    let (addr, _temp_dir, handle) = spawn_test_supervisor(shared_secret.clone(), 300, 15).await?;
+    let (addr, _temp_dir, handle, _nodes) =
+        spawn_test_supervisor(shared_secret.clone(), 300, 15).await?;
 
     // Wait briefly for server to start listening
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -318,5 +415,375 @@ async fn register_report_health_flow_succeeds() -> Result<(), Box<dyn std::error
     handle.abort();
     let _ = handle.await;
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn register_node_rejects_invalid_signature() -> Result<(), Box<dyn std::error::Error>> {
+    let shared_secret = hex::decode(TEST_SHARED_SECRET)?;
+    let wrong_secret =
+        hex::decode("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")?;
+    let (addr, _temp_dir, handle, _nodes) =
+        spawn_test_supervisor(shared_secret.clone(), 300, 15).await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let endpoint = format!("http://{addr}");
+    let mut client = SupervisorServiceClient::connect(endpoint).await?;
+
+    let request = build_register_request("invalid-signature-node", &wrong_secret);
+    let err = client
+        .register_node(request)
+        .await
+        .expect_err("request should fail");
+    assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    assert!(
+        err.message().contains("invalid signature"),
+        "unexpected error: {}",
+        err.message()
+    );
+
+    handle.abort();
+    let _ = handle.await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn register_node_rejects_timestamp_out_of_window() -> Result<(), Box<dyn std::error::Error>> {
+    let shared_secret = hex::decode(TEST_SHARED_SECRET)?;
+    let skew_secs = 30_u64;
+    let (addr, _temp_dir, handle, _nodes) =
+        spawn_test_supervisor(shared_secret.clone(), skew_secs, 15).await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let endpoint = format!("http://{addr}");
+    let mut client = SupervisorServiceClient::connect(endpoint).await?;
+
+    let stale_ts = (chrono::Utc::now().timestamp() as u64).saturating_sub(skew_secs + 120);
+    let request =
+        build_register_request_with_timestamp("stale-timestamp-node", &shared_secret, stale_ts);
+
+    let err = client
+        .register_node(request)
+        .await
+        .expect_err("request should fail");
+    assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    assert!(
+        err.message().contains("timestamp outside allowed window"),
+        "unexpected error: {}",
+        err.message()
+    );
+
+    handle.abort();
+    let _ = handle.await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn register_node_rejects_duplicate_nonce_replay() -> Result<(), Box<dyn std::error::Error>> {
+    let shared_secret = hex::decode(TEST_SHARED_SECRET)?;
+    let (addr, _temp_dir, handle, _nodes) =
+        spawn_test_supervisor(shared_secret.clone(), 300, 15).await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let endpoint = format!("http://{addr}");
+    let mut client = SupervisorServiceClient::connect(endpoint).await?;
+
+    let request = build_register_request("duplicate-nonce-node", &shared_secret);
+    let first = client.register_node(request.clone()).await?.into_inner();
+    assert!(first.success);
+
+    let err = client
+        .register_node(request)
+        .await
+        .expect_err("replay should fail");
+    assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    assert!(
+        err.message().contains("duplicate nonce"),
+        "unexpected error: {}",
+        err.message()
+    );
+
+    handle.abort();
+    let _ = handle.await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn supervit_client_end_to_end_flow_succeeds() -> Result<(), Box<dyn std::error::Error>> {
+    let shared_secret = hex::decode(TEST_SHARED_SECRET)?;
+    let (addr, _temp_dir, handle, nodes) = spawn_test_supervisor(shared_secret, 300, 15).await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let collector = build_service_collector_with_entries().await;
+    let endpoint = format!("http://{addr}");
+    let config = build_supervit_config("supervit-client-node", endpoint, TEST_SHARED_SECRET);
+    let mut client = SupervitClient::new(config, collector)?;
+
+    client.connect().await?;
+    let register_response = client.register_node().await?;
+    assert!(register_response.success);
+
+    let report_response = client.report().await?;
+    assert!(report_response.received);
+
+    let health_response = client.health_check().await?;
+    assert!(health_response.healthy);
+
+    client.disconnect();
+    let disconnected = client
+        .health_check()
+        .await
+        .expect_err("health_check should fail after disconnect");
+    assert!(matches!(disconnected, SupervitError::ConnectionClosed));
+
+    let nodes_read = nodes.read().await;
+    let state = nodes_read
+        .get("supervit-client-node")
+        .expect("node state should exist");
+
+    let register = state
+        .last_register_request
+        .as_ref()
+        .expect("register request should be captured");
+    assert_eq!(register.name, "test-node");
+    assert_eq!(register.location_tag, "test-location");
+    assert_eq!(register.location.as_deref(), Some("rack-a1"));
+    assert_eq!(
+        register.service_tags,
+        vec!["alpha".to_string(), "beta".to_string()]
+    );
+    assert_eq!(register.services.len(), 2);
+    assert!(
+        register
+            .services
+            .iter()
+            .any(|svc| svc.status == ServiceAdvertisementStatus::Running as i32)
+    );
+    assert!(
+        register
+            .services
+            .iter()
+            .any(|svc| svc.status == ServiceAdvertisementStatus::Error as i32)
+    );
+
+    let report = state
+        .last_report_request
+        .as_ref()
+        .expect("report request should be captured");
+    assert_eq!(report.node_id, "supervit-client-node");
+    assert_eq!(report.location_tag, "test-location");
+    assert_eq!(report.name, "test-node");
+    assert_eq!(report.services.len(), 2);
+    assert_eq!(state.health_check_count, 1);
+
+    handle.abort();
+    let _ = handle.await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn supervit_client_methods_require_connection() -> Result<(), Box<dyn std::error::Error>> {
+    let collector = build_service_collector_with_entries().await;
+    let config = build_supervit_config(
+        "supervit-disconnected-node",
+        "http://127.0.0.1:50051".to_string(),
+        TEST_SHARED_SECRET,
+    );
+    let mut client = SupervitClient::new(config, collector)?;
+
+    let register_err = client
+        .register_node()
+        .await
+        .expect_err("register_node should fail when disconnected");
+    assert!(matches!(register_err, SupervitError::ConnectionClosed));
+
+    let report_err = client
+        .report()
+        .await
+        .expect_err("report should fail when disconnected");
+    assert!(matches!(report_err, SupervitError::ConnectionClosed));
+
+    let health_err = client
+        .health_check()
+        .await
+        .expect_err("health_check should fail when disconnected");
+    assert!(matches!(health_err, SupervitError::ConnectionClosed));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn supervit_client_register_rejects_wrong_secret() -> Result<(), Box<dyn std::error::Error>> {
+    let shared_secret = hex::decode(TEST_SHARED_SECRET)?;
+    let (addr, _temp_dir, handle, nodes) = spawn_test_supervisor(shared_secret, 300, 15).await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let collector = ServiceCollector::new();
+    let wrong_secret = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let endpoint = format!("http://{addr}");
+    let config = build_supervit_config("wrong-secret-node", endpoint, wrong_secret);
+    let mut client = SupervitClient::new(config, collector)?;
+
+    client.connect().await?;
+    let err = client
+        .register_node()
+        .await
+        .expect_err("registration should fail with wrong secret");
+    match err {
+        SupervitError::Status(status) => {
+            assert_eq!(status.code(), tonic::Code::Unauthenticated);
+            assert!(
+                status.message().contains("invalid signature"),
+                "unexpected error: {}",
+                status.message()
+            );
+        }
+        other => panic!("unexpected error variant: {other}"),
+    }
+
+    assert!(
+        !nodes.read().await.contains_key("wrong-secret-node"),
+        "node should not be registered after auth failure"
+    );
+
+    handle.abort();
+    let _ = handle.await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn supervit_client_status_reporting_task_sends_reports()
+-> Result<(), Box<dyn std::error::Error>> {
+    let shared_secret = hex::decode(TEST_SHARED_SECRET)?;
+    let (addr, _temp_dir, handle, nodes) = spawn_test_supervisor(shared_secret, 300, 1).await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let collector = build_service_collector_with_entries().await;
+    let endpoint = format!("http://{addr}");
+    let config = build_supervit_config("status-report-node", endpoint, TEST_SHARED_SECRET);
+    let mut client = SupervitClient::new(config, collector)?;
+
+    client.connect().await?;
+    let register_response = client.register_node().await?;
+    assert!(register_response.success);
+
+    client.start_status_reporting().await?;
+
+    let mut reported = false;
+    for _ in 0..30 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let has_report = {
+            let nodes_read = nodes.read().await;
+            nodes_read
+                .get("status-report-node")
+                .and_then(|state| state.last_report_request.as_ref())
+                .is_some()
+        };
+        if has_report {
+            reported = true;
+            break;
+        }
+    }
+    assert!(
+        reported,
+        "status reporting task should send report within timeout"
+    );
+
+    handle.abort();
+    let _ = handle.await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn supervit_client_connect_rejects_invalid_endpoint_url()
+-> Result<(), Box<dyn std::error::Error>> {
+    let collector = ServiceCollector::new();
+    let config = build_supervit_config(
+        "invalid-endpoint-node",
+        "http://[::1".to_string(),
+        TEST_SHARED_SECRET,
+    );
+    let mut client = SupervitClient::new(config, collector)?;
+
+    let err = client
+        .connect()
+        .await
+        .expect_err("connect should fail for malformed endpoint url");
+
+    match err {
+        SupervitError::Config(msg) => {
+            assert!(
+                msg.contains("Invalid server address"),
+                "unexpected config error: {msg}"
+            );
+        }
+        other => panic!("expected config error, got {other}"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn supervit_client_connect_fails_when_supervisor_unreachable()
+-> Result<(), Box<dyn std::error::Error>> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let addr = listener.local_addr()?;
+    drop(listener);
+
+    let collector = ServiceCollector::new();
+    let config = build_supervit_config(
+        "unreachable-endpoint-node",
+        format!("http://{addr}"),
+        TEST_SHARED_SECRET,
+    );
+    let mut client = SupervitClient::new(config, collector)?;
+
+    let err = client
+        .connect()
+        .await
+        .expect_err("connect should fail when endpoint is unreachable");
+    assert!(matches!(err, SupervitError::Transport(_)));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn supervit_client_status_reporting_adjusts_interval_from_server_response()
+-> Result<(), Box<dyn std::error::Error>> {
+    let shared_secret = hex::decode(TEST_SHARED_SECRET)?;
+    let (addr, _temp_dir, handle, nodes) = spawn_test_supervisor(shared_secret, 300, 5).await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let collector = build_service_collector_with_entries().await;
+    let endpoint = format!("http://{addr}");
+    let config = build_supervit_config("interval-adjust-node", endpoint, TEST_SHARED_SECRET);
+    let mut client = SupervitClient::new(config, collector)?;
+
+    client.connect().await?;
+    let register_response = client.register_node().await?;
+    assert!(register_response.success);
+
+    client.start_status_reporting().await?;
+
+    tokio::time::sleep(Duration::from_millis(3500)).await;
+    let report_count = {
+        let nodes_read = nodes.read().await;
+        nodes_read
+            .get("interval-adjust-node")
+            .map(|state| state.report_count)
+            .unwrap_or(0)
+    };
+
+    assert!(
+        report_count >= 1,
+        "status reporting should emit at least one report"
+    );
+    assert!(
+        report_count <= 2,
+        "server-directed interval adjustment should reduce report frequency, got {report_count}"
+    );
+
+    handle.abort();
+    let _ = handle.await;
     Ok(())
 }

@@ -19,6 +19,7 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
 };
 use std::time::Instant;
+use std::{collections::HashMap, str::FromStr};
 use tracing::{debug, info, warn};
 
 lazy_static! {
@@ -296,12 +297,20 @@ async fn generate_key_handler(
 async fn get_secret_key_handler(
     State(app_state): State<KSState>,
     Path(key_id): Path<u32>,
-    Query(request): Query<GetSecretKeyRequest>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<GetSecretKeyResponse>, KsError> {
     let start_time = Instant::now();
     info!("Received secret key request for key_id: {}", key_id);
 
-    if key_id != request.key_id {
+    let request_key_id = params
+        .get("key_id")
+        .ok_or_else(|| KsError::InvalidRequest("Missing key_id query parameter".to_string()))
+        .and_then(|v| {
+            u32::from_str(v)
+                .map_err(|_| KsError::InvalidRequest("Invalid key_id query parameter".to_string()))
+        })?;
+
+    if key_id != request_key_id {
         let duration = start_time.elapsed().as_secs_f64();
         KS_REQUEST_DURATION
             .with_label_values(&["ks", "GET", "/secret", "400"])
@@ -314,6 +323,49 @@ async fn get_secret_key_handler(
             "key_id in path and query parameters must match".to_string(),
         ));
     }
+
+    // Query compatibility:
+    // 1) credential as JSON string (used by ks::client)
+    // 2) flattened fields: credential.timestamp/nonce/signature
+    // 3) bracket fields: credential[timestamp]/[nonce]/[signature]
+    let credential: nonce_auth::NonceCredential = if let Some(credential_json) =
+        params.get("credential")
+    {
+        serde_json::from_str(credential_json).map_err(|_| {
+            KsError::InvalidRequest("Invalid credential query parameter".to_string())
+        })?
+    } else {
+        let timestamp = params
+            .get("credential.timestamp")
+            .or_else(|| params.get("credential[timestamp]"))
+            .ok_or_else(|| KsError::InvalidRequest("Missing credential timestamp".to_string()))
+            .and_then(|v| {
+                u64::from_str(v).map_err(|_| {
+                    KsError::InvalidRequest("Invalid credential timestamp".to_string())
+                })
+            })?;
+        let nonce = params
+            .get("credential.nonce")
+            .or_else(|| params.get("credential[nonce]"))
+            .cloned()
+            .ok_or_else(|| KsError::InvalidRequest("Missing credential nonce".to_string()))?;
+        let signature = params
+            .get("credential.signature")
+            .or_else(|| params.get("credential[signature]"))
+            .cloned()
+            .ok_or_else(|| KsError::InvalidRequest("Missing credential signature".to_string()))?;
+
+        nonce_auth::NonceCredential {
+            timestamp,
+            nonce,
+            signature,
+        }
+    };
+
+    let request = GetSecretKeyRequest {
+        key_id: request_key_id,
+        credential,
+    };
 
     // 验证凭据
     let request_data = request.request_payload();
