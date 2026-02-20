@@ -6,16 +6,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
-const ENABLE_SIGNALING: u8 = 0b00001;
 const ENABLE_STUN: u8 = 0b00010;
 const ENABLE_TURN: u8 = 0b00100;
-const ENABLE_AIS: u8 = 0b01000;
-const ENABLE_KS: u8 = 0b10000;
 
 const DEFAULT_HTTP_PORT: u16 = 8080;
 const DEFAULT_HTTPS_PORT: u16 = 8443;
 const DEFAULT_ICE_PORT: u16 = 3478;
-const DEFAULT_ADMIN_API_PORT: u16 = 50055;
 const DEFAULT_TURN_RELAY_PORT_RANGE: &str = "49152-65535";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,8 +82,6 @@ struct RuntimeConfig {
     bind: BindConfig,
     #[serde(default)]
     turn: TurnConfig,
-    #[serde(default)]
-    admin: Option<AdminConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -112,39 +106,6 @@ struct ListenerConfig {
 struct TurnConfig {
     #[serde(default)]
     relay_port_range: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct AdminConfig {
-    #[serde(default)]
-    api: AdminApiConfig,
-    #[serde(default)]
-    client: AdminClientConfig,
-}
-
-#[derive(Debug, Deserialize)]
-struct AdminApiConfig {
-    #[serde(default)]
-    ip: Option<String>,
-    #[serde(default = "default_admin_api_port")]
-    port: u16,
-}
-
-impl Default for AdminApiConfig {
-    fn default() -> Self {
-        Self {
-            ip: None,
-            port: default_admin_api_port(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct AdminClientConfig {
-    #[serde(default)]
-    node_id: String,
-    #[serde(default)]
-    endpoint: String,
 }
 
 #[derive(Debug, Clone)]
@@ -210,31 +171,29 @@ fn load_runtime_config(config_path: &Path) -> Result<RuntimeConfig> {
 
 fn collect_rules(config: &RuntimeConfig) -> Vec<FirewallRule> {
     let mut raw_rules = Vec::new();
-    let has_http_surface =
-        config.enable & (ENABLE_SIGNALING | ENABLE_AIS | ENABLE_KS) != 0;
     let has_ice_surface = config.enable & (ENABLE_STUN | ENABLE_TURN) != 0;
 
-    if has_http_surface {
-        if let Some(http) = &config.bind.http {
-            let port = http.port.unwrap_or(DEFAULT_HTTP_PORT);
-            if should_open_for_bind(http.ip.as_deref()) {
-                raw_rules.push(FirewallRule {
-                    protocol: Protocol::Tcp,
-                    port: PortSpec::Single(port),
-                    reason: "HTTP endpoints".to_string(),
-                });
-            }
+    // Control plane is always available under /admin and reuses main HTTP/HTTPS listeners.
+    // Therefore HTTP/HTTPS firewall planning is based on bind listeners, not enable bitmask.
+    if let Some(http) = &config.bind.http {
+        let port = http.port.unwrap_or(DEFAULT_HTTP_PORT);
+        if should_open_for_bind(http.ip.as_deref()) {
+            raw_rules.push(FirewallRule {
+                protocol: Protocol::Tcp,
+                port: PortSpec::Single(port),
+                reason: "HTTP endpoints".to_string(),
+            });
         }
+    }
 
-        if let Some(https) = &config.bind.https {
-            let port = https.port.unwrap_or(DEFAULT_HTTPS_PORT);
-            if should_open_for_bind(https.ip.as_deref()) {
-                raw_rules.push(FirewallRule {
-                    protocol: Protocol::Tcp,
-                    port: PortSpec::Single(port),
-                    reason: "HTTPS endpoints".to_string(),
-                });
-            }
+    if let Some(https) = &config.bind.https {
+        let port = https.port.unwrap_or(DEFAULT_HTTPS_PORT);
+        if should_open_for_bind(https.ip.as_deref()) {
+            raw_rules.push(FirewallRule {
+                protocol: Protocol::Tcp,
+                port: PortSpec::Single(port),
+                reason: "HTTPS endpoints".to_string(),
+            });
         }
     }
 
@@ -260,19 +219,6 @@ fn collect_rules(config: &RuntimeConfig) -> Vec<FirewallRule> {
                 protocol: Protocol::Udp,
                 port: PortSpec::Range(start, end),
                 reason: "TURN relay range".to_string(),
-            });
-        }
-    }
-
-    if let Some(admin) = &config.admin
-        && is_admin_enabled(admin)
-    {
-        let port = admin.api.port;
-        if should_open_for_bind(admin.api.ip.as_deref()) {
-            raw_rules.push(FirewallRule {
-                protocol: Protocol::Tcp,
-                port: PortSpec::Single(port),
-                reason: "Admin API gRPC".to_string(),
             });
         }
     }
@@ -308,10 +254,6 @@ fn is_loopback_bind(raw: &str) -> bool {
         || value == "::1"
         || value == "127.0.0.1"
         || value.starts_with("127.")
-}
-
-fn is_admin_enabled(admin: &AdminConfig) -> bool {
-    !admin.client.node_id.trim().is_empty() && !admin.client.endpoint.trim().is_empty()
 }
 
 fn parse_relay_port_range(raw: &str) -> Option<(u16, u16)> {
@@ -491,17 +433,13 @@ fn command_exists(command: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn default_admin_api_port() -> u16 {
-    DEFAULT_ADMIN_API_PORT
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn sample_runtime_config() -> RuntimeConfig {
         RuntimeConfig {
-            enable: ENABLE_SIGNALING | ENABLE_TURN | ENABLE_KS,
+            enable: ENABLE_STUN | ENABLE_TURN,
             bind: BindConfig {
                 http: Some(ListenerConfig {
                     ip: Some("0.0.0.0".to_string()),
@@ -519,21 +457,11 @@ mod tests {
             turn: TurnConfig {
                 relay_port_range: Some("50000-50010".to_string()),
             },
-            admin: Some(AdminConfig {
-                api: AdminApiConfig {
-                    ip: Some("0.0.0.0".to_string()),
-                    port: 50055,
-                },
-                client: AdminClientConfig {
-                    node_id: "node-1".to_string(),
-                    endpoint: "http://admin.example.com:50051".to_string(),
-                },
-            }),
         }
     }
 
     #[test]
-    fn collect_rules_should_include_http_ice_turn_and_admin() {
+    fn collect_rules_should_include_http_ice_and_turn() {
         let rules = collect_rules(&sample_runtime_config());
         let mut signatures: Vec<String> = rules
             .iter()
@@ -545,7 +473,20 @@ mod tests {
         assert!(signatures.contains(&"8443/tcp".to_string()));
         assert!(signatures.contains(&"3478/udp".to_string()));
         assert!(signatures.contains(&"50000-50010/udp".to_string()));
-        assert!(signatures.contains(&"50055/tcp".to_string()));
+    }
+
+    #[test]
+    fn collect_rules_should_include_http_even_if_only_ice_is_enabled() {
+        let mut cfg = sample_runtime_config();
+        cfg.enable = ENABLE_TURN;
+
+        let signatures: Vec<String> = collect_rules(&cfg)
+            .iter()
+            .map(|rule| format!("{}/{}", rule.port.display(), rule.protocol.as_str()))
+            .collect();
+
+        assert!(signatures.contains(&"8080/tcp".to_string()));
+        assert!(signatures.contains(&"8443/tcp".to_string()));
     }
 
     #[test]
