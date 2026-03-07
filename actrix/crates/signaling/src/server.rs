@@ -1135,20 +1135,41 @@ async fn handle_actr_relay(
     }
 
     // 验证 credential
-    if let Err(e) = AIdCredentialValidator::check(&relay.credential, source.realm.realm_id)
+    // 验证 credential，并提取 claims 用于后续身份核查
+    let claims = match AIdCredentialValidator::check(&relay.credential, source.realm.realm_id)
         .await
-        .map(|(claims, _)| claims)
     {
+        Ok((claims, _)) => claims,
+        Err(e) => {
+            warn!(
+                "⚠️  Actor {} credential 验证失败: {}",
+                source.serial_number, e
+            );
+            send_error_response(
+                client_id,
+                &source,
+                401,
+                &format!("Credential validation failed: {e}"),
+                server,
+                Some(request_envelope_id),
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    // 验证 credential 绑定的 actor_id 与 relay.source 一致，防止客户端伪造来源身份
+    let source_repr = source.to_string_repr();
+    if claims.actor_id != source_repr {
         warn!(
-            "⚠️  Actor {} credential 验证失败: {}",
-            source.serial_number, e
+            "⚠️  relay.source 与 credential 绑定的 actor_id 不一致: source={}, credential={}",
+            source_repr, claims.actor_id
         );
-        // 发送错误响应
         send_error_response(
             client_id,
             &source,
-            401,
-            &format!("Credential validation failed: {e}"),
+            403,
+            "Source identity mismatch: relay.source does not match credential",
             server,
             Some(request_envelope_id),
         )
