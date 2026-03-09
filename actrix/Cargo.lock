@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "actr-config"
-version = "0.1.8"
+version = "0.2.0"
 dependencies = [
  "actr-protocol",
  "actr-service-compat",
@@ -17,7 +17,7 @@ dependencies = [
 
 [[package]]
 name = "actr-framework"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "actr-protocol"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -49,7 +49,7 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime"
-version = "0.1.8"
+version = "0.2.0"
 dependencies = [
  "actr-config",
  "actr-framework",
@@ -90,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime-mailbox"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "actr-service-compat"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -3370,7 +3370,7 @@ dependencies = [
 [[package]]
 name = "proto-fingerprint"
 version = "0.1.0"
-source = "git+https://github.com/actor-rtc/proto-kit.git?rev=947af3c#947af3cb2ee47d897910db66c109f63b0b0e9668"
+source = "git+https://github.com/Actrium/proto-kit.git?rev=5649988f2bc67fb1f8f56ec7eedf044422696b5d#5649988f2bc67fb1f8f56ec7eedf044422696b5d"
 dependencies = [
  "anyhow",
  "clap",

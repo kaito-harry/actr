@@ -108,8 +108,8 @@ urlencoding = "2.1"
 base64 = { workspace = true }
 libc = "0.2"
 actr-protocol = { workspace = true }
-actr-runtime = { version = "0.1" }
-actr-runtime-mailbox = { version = "0.1" }
+actr-runtime = { version = "0.2" }
+actr-runtime-mailbox = { version = "0.2" }
 prost = { workspace = true }
 prost-types = { workspace = true }
 serial_test = "3.3"
