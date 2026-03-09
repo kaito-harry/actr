@@ -14,6 +14,9 @@ service KeyServer {
   // 使用指定密钥对消息进行 Ed25519 签名
   rpc Sign(SignRequest) returns (SignResponse);
 
+  // 获取指定 key_id 的验证公钥（verifying key）
+  rpc GetVerifyingKey(GetVerifyingKeyRequest) returns (GetVerifyingKeyResponse);
+
   // 健康检查
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
 }
@@ -59,6 +62,32 @@ message SignRequest {
 message SignResponse {
   // Ed25519 签名（64 字节）
   required bytes signature = 1;
+}
+
+// ============================================================================
+// 获取验证公钥相关消息
+// ============================================================================
+
+message GetVerifyingKeyRequest {
+  // 要查询的密钥 ID
+  required uint32 key_id = 1;
+
+  // nonce-auth 认证凭证
+  required admin.v1.NonceCredential credential = 2;
+}
+
+message GetVerifyingKeyResponse {
+  // 密钥 ID
+  required uint32 key_id = 1;
+
+  // 验证公钥（Base64 编码的 Ed25519 verifying key，32 字节）
+  required string verifying_key = 2;
+
+  // 密钥过期时间（Unix 时间戳，秒）
+  required uint64 expires_at = 3;
+
+  // 容忍期（秒）
+  required uint64 tolerance_seconds = 4;
 }
 
 // ============================================================================

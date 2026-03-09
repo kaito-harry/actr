@@ -3,7 +3,8 @@
 use crate::error::KsError;
 use actrix_proto::admin::v1::NonceCredential;
 use actrix_proto::ks::v1::{
-    GenerateSigningKeyRequest, HealthCheckRequest, SignRequest, key_server_client::KeyServerClient,
+    GenerateSigningKeyRequest, GetVerifyingKeyRequest, HealthCheckRequest, SignRequest,
+    key_server_client::KeyServerClient,
 };
 use base64::prelude::*;
 use ed25519_dalek::VerifyingKey;
@@ -237,6 +238,49 @@ impl GrpcClient {
         crate::recording::info!("Successfully obtained signature for key_id={} via gRPC", key_id);
 
         Ok(resp.signature)
+    }
+
+    /// 获取指定 key_id 的验证公钥（verifying key）
+    ///
+    /// 返回 (verifying_key_bytes [u8;32], expires_at, tolerance_seconds)
+    pub async fn get_verifying_key(
+        &mut self,
+        key_id: u32,
+    ) -> Result<([u8; 32], u64, u64), KsError> {
+        let request_data = format!("get_verifying_key:{key_id}");
+        let nonce_credential = CredentialBuilder::new(self.actrix_shared_key.as_bytes())
+            .sign(request_data.as_bytes())?;
+
+        let credential = NonceCredential {
+            timestamp: nonce_credential.timestamp,
+            nonce: nonce_credential.nonce,
+            signature: nonce_credential.signature,
+        };
+
+        let request =
+            tonic::Request::new(GetVerifyingKeyRequest { key_id, credential });
+
+        let response = self
+            .client
+            .get_verifying_key(request)
+            .await
+            .map_err(|e| KsError::Internal(format!("gRPC GetVerifyingKey failed: {e}")))?;
+
+        let resp = response.into_inner();
+
+        let key_bytes = BASE64_STANDARD
+            .decode(&resp.verifying_key)
+            .map_err(|e| KsError::Internal(format!("Invalid verifying key base64: {e}")))?;
+
+        let key_array: [u8; 32] = key_bytes
+            .try_into()
+            .map_err(|_| KsError::Internal("Verifying key must be 32 bytes".to_string()))?;
+
+        // 验证是有效的 Ed25519 公钥
+        VerifyingKey::from_bytes(&key_array)
+            .map_err(|e| KsError::Internal(format!("Invalid verifying key: {e}")))?;
+
+        Ok((key_array, resp.expires_at, resp.tolerance_seconds))
     }
 
     /// 健康检查

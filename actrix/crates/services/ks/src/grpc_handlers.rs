@@ -168,6 +168,50 @@ impl KeyServer for KsGrpcService {
         Ok(Response::new(SignResponse { signature }))
     }
 
+    /// 获取指定 key_id 的验证公钥
+    async fn get_verifying_key(
+        &self,
+        request: Request<GetVerifyingKeyRequest>,
+    ) -> Result<Response<GetVerifyingKeyResponse>, Status> {
+        let req = request.into_inner();
+        let key_id = req.key_id;
+
+        crate::recording::info!("Received gRPC GetVerifyingKey request for key_id: {}", key_id);
+
+        let request_data = format!("get_verifying_key:{key_id}");
+        self.verify_credential(&req.credential, &request_data)
+            .await
+            .map_err(|e| Status::unauthenticated(format!("Authentication failed: {e}")))?;
+
+        let key_record = self
+            .storage
+            .get_key_record(key_id)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to get key record: {e}")))?
+            .ok_or_else(|| Status::not_found(format!("Key not found: {key_id}")))?;
+
+        // 检查是否超过容忍期
+        if key_record.expires_at > 0 {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            if key_record.expires_at + self.tolerance_seconds < now {
+                crate::recording::warn!("Key {} has expired beyond tolerance period", key_id);
+                return Err(Status::not_found(format!("Key {key_id} has expired")));
+            }
+        }
+
+        crate::recording::debug!("Returning verifying key for key_id: {}", key_id);
+
+        Ok(Response::new(GetVerifyingKeyResponse {
+            key_id,
+            verifying_key: key_record.public_key,
+            expires_at: key_record.expires_at,
+            tolerance_seconds: self.tolerance_seconds,
+        }))
+    }
+
     /// 健康检查
     async fn health_check(
         &self,

@@ -53,6 +53,25 @@ impl KsClientWrapper {
             .await
     }
 
+    /// 获取指定 key_id 的验证公钥（verifying key）
+    ///
+    /// 返回 (verifying_key_bytes [u8;32], expires_at, tolerance_seconds)
+    pub async fn get_verifying_key(
+        &self,
+        key_id: u32,
+    ) -> Result<([u8; 32], u64, u64), ks::KsError> {
+        let mut guard = self.inner.write().await;
+        if guard.is_none() {
+            let client = GrpcClient::new(&self.grpc_config).await?;
+            *guard = Some(client);
+        }
+        guard
+            .as_mut()
+            .expect("grpc client must exist after lazy init")
+            .get_verifying_key(key_id)
+            .await
+    }
+
     /// 健康检查
     pub async fn health_check(&self) -> Result<String, ks::KsError> {
         let mut guard = self.inner.write().await;
