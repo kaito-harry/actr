@@ -1354,8 +1354,32 @@ async fn handle_route_candidates_request(
 
     // 从 ServiceRegistry 查询所有匹配 target_type 的实例
     let registry = server.service_registry.read().await;
-    let candidates = registry.find_by_actr_type(&req.target_type);
+    let candidates_raw = registry.find_by_actr_type(&req.target_type);
     drop(registry);
+
+    // 过滤掉无活跃 WebSocket 连接的幽灵候选（ghost candidates）。
+    // ServiceRegistry 可能因断网等原因短暂保留已离线的条目，
+    // 通过与 clients 映射交叉校验消除它们。
+    let connected_actor_ids: std::collections::HashSet<ActrId> = {
+        let clients = server.clients.read().await;
+        clients
+            .values()
+            .filter_map(|c| c.actor_id.clone())
+            .collect()
+    };
+    let candidates: Vec<_> = candidates_raw
+        .into_iter()
+        .filter(|c| {
+            let connected = connected_actor_ids.contains(&c.actor_id);
+            if !connected {
+                platform::recording::warn!(
+                    "🚫 过滤幽灵候选: Actor {} (无活跃连接)",
+                    c.actor_id.serial_number
+                );
+            }
+            connected
+        })
+        .collect();
 
     let total_candidates = candidates.len();
 
