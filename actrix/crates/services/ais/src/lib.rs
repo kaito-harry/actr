@@ -138,6 +138,7 @@ pub async fn create_ais_router_with_counters(
         key_storage_file: global_config.sqlite_path.join("ais_keys.db"),
         enable_periodic_rotation: false, // 默认禁用，可通过配置文件开启
         key_rotation_interval_secs: 86400, // 24 小时
+        turn_secret: global_config.turn.turn_secret.clone(),
     };
 
     // 创建 AId Token 签发器

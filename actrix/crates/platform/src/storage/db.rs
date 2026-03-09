@@ -112,11 +112,19 @@ impl Database {
                 serial_number INTEGER PRIMARY KEY,
                 realm_id INTEGER NOT NULL,
                 service_spec_blob BLOB,
+                ws_address TEXT,
                 created_at INTEGER NOT NULL
             )",
         )
         .execute(&self.pool)
         .await?;
+
+        // Migrate: add ws_address column if it doesn't exist (for existing databases)
+        let _ = sqlx::query(
+            "ALTER TABLE pending_registration ADD COLUMN ws_address TEXT",
+        )
+        .execute(&self.pool)
+        .await; // intentionally ignore error (column may already exist)
 
         Ok(())
     }

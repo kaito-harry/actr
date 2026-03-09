@@ -89,7 +89,7 @@ impl IceService for TurnService {
         // 创建TURN服务器
         let realm = self.config.turn.realm.clone();
         let auth_handler = Arc::new(
-            turn::Authenticator::new()
+            turn::Authenticator::new(self.config.turn.turn_secret.clone())
                 .map_err(|e| anyhow::anyhow!("Failed to create TURN authenticator: {e}"))?,
         );
 

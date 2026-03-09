@@ -289,6 +289,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "test".to_string(),
                 name: "test-actor".to_string(),
+                version: String::new(),
             },
             realm: Realm { realm_id: 0 },
         }
@@ -298,6 +299,7 @@ mod tests {
         ActrType {
             manufacturer: "test".to_string(),
             name: name.to_string(),
+            version: String::new(),
         }
     }
 

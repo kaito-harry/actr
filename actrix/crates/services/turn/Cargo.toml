@@ -19,7 +19,8 @@ thiserror = { workspace = true }
 webrtc = { workspace = true }
 md5 = "0.8"
 twox-hash = "2.0"
-ecies = { workspace = true }
+hmac = { workspace = true }
+sha1 = "0.10"
 
 serde = { workspace = true }
 serde_json = { workspace = true }

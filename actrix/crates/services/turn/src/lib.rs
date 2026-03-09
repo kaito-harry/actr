@@ -8,7 +8,6 @@ mod authenticator;
 pub mod error;
 
 // Re-export types for convenience
-pub use actr_protocol::turn::Claims;
 pub use authenticator::Authenticator;
 pub use error::{ErrorSeverity, TurnError};
 

@@ -58,6 +58,10 @@ use tracing::Instrument;
 #[cfg(feature = "opentelemetry")]
 use tracing::instrument;
 
+fn type_key(actor_type: &ActrType) -> String {
+    format!("{}:{}", actor_type.manufacturer, actor_type.name)
+}
+
 /// 信令服务器状态
 #[derive(Debug)]
 pub struct SignalingServer {
@@ -213,12 +217,12 @@ pub async fn handle_websocket_connection(
     // Register actor in service registry for discovery/routing (only when URL identity is provided)
     if let Some(actor_id_for_registry) = actor_id_for_registry {
         {
-            // Load pending service_spec from DB (written by AIS during registration)
-            let service_spec = {
+            // Load pending service_spec and ws_address from DB (written by AIS during registration)
+            let (service_spec, ws_address) = {
                 let db = platform::storage::db::get_database();
                 let pool = db.get_pool();
-                let row: Option<(Vec<u8>,)> = sqlx::query_as(
-                    "SELECT service_spec_blob FROM pending_registration \
+                let row: Option<(Option<Vec<u8>>, Option<String>)> = sqlx::query_as(
+                    "SELECT service_spec_blob, ws_address FROM pending_registration \
                      WHERE serial_number = ? AND realm_id = ?",
                 )
                 .bind(actor_id_for_registry.serial_number as i64)
@@ -227,7 +231,13 @@ pub async fn handle_websocket_connection(
                 .await
                 .ok()
                 .flatten();
-                row.and_then(|(blob,)| actr_protocol::ServiceSpec::decode(blob.as_slice()).ok())
+                match row {
+                    Some((blob, ws)) => (
+                        blob.and_then(|b| actr_protocol::ServiceSpec::decode(b.as_slice()).ok()),
+                        ws,
+                    ),
+                    None => (None, None),
+                }
             };
 
             let service_name = format!(
@@ -242,6 +252,7 @@ pub async fn handle_websocket_connection(
                 None,
                 service_spec,
                 None,
+                ws_address,
             ) {
                 platform::recording::warn!("Failed to register actor in service registry: {}", e);
             }
@@ -497,6 +508,7 @@ async fn send_register_error(
         r#type: ActrType {
             manufacturer: "temp".to_string(),
             name: "temp".to_string(),
+            version: String::new(),
         },
     };
 
@@ -614,6 +626,10 @@ async fn handle_actr_to_server(
         }
         Some(actr_to_signaling::Payload::UnsubscribeActrUpRequest(req)) => {
             handle_unsubscribe_actr_up(source, req, client_id, server, request_envelope_id).await?;
+        }
+        Some(actr_to_signaling::Payload::GetSigningKeyRequest(req)) => {
+            handle_get_signing_key_request(source, req, client_id, server, request_envelope_id)
+                .await?;
         }
         Some(actr_to_signaling::Payload::Error(error)) => {
             platform::recording::error!(
@@ -866,9 +882,8 @@ async fn handle_actr_relay(
     let target_realm = target.realm.realm_id;
 
     // ACL 统一判定：同 realm / 跨 realm 都走同一规则查询
-    // 使用完整的 manufacturer:type 格式
-    let source_type = format!("{}:{}", source.r#type.manufacturer, source.r#type.name);
-    let target_type = format!("{}:{}", target.r#type.manufacturer, target.r#type.name);
+    let source_type = type_key(&source.r#type);
+    let target_type = type_key(&target.r#type);
 
     let can_relay = ActorAcl::can_discover(source_realm, target_realm, &source_type, &target_type)
         .await
@@ -934,6 +949,7 @@ async fn handle_actr_relay(
             target: to.clone(),
             payload: Some(actr_relay::Payload::RoleAssignment(RoleAssignment {
                 is_offerer,
+                remote_fixed: None,
             })),
         };
         send_role_assignment(
@@ -953,6 +969,7 @@ async fn handle_actr_relay(
             target: to.clone(),
             payload: Some(actr_relay::Payload::RoleAssignment(RoleAssignment {
                 is_offerer: !is_offerer,
+                remote_fixed: None,
             })),
         };
 
@@ -1205,19 +1222,14 @@ async fn handle_discovery_request(
     // Apply ACL filtering (if ACL is enabled)
     use platform::realm::acl::ActorAcl;
     let source_realm = source.realm.realm_id;
-    // 使用完整的 manufacturer:type 格式
-    let source_type = format!("{}:{}", source.r#type.manufacturer, source.r#type.name);
+    let source_type = type_key(&source.r#type);
 
     let mut acl_filtered_services = Vec::new();
 
     // ACL always enabled: filter services based on ACL rules
     for service in services {
         let target_realm = service.actor_id.realm.realm_id;
-        // 使用完整的 manufacturer:type 格式
-        let target_type = format!(
-            "{}:{}",
-            service.actor_id.r#type.manufacturer, service.actor_id.r#type.name
-        );
+        let target_type = type_key(&service.actor_id.r#type);
 
         match ActorAcl::can_discover(source_realm, target_realm, &source_type, &target_type).await {
             Ok(true) => acl_filtered_services.push(service),
@@ -1254,10 +1266,7 @@ async fn handle_discovery_request(
         HashMap::new();
 
     for service in acl_filtered_services {
-        let type_key = format!(
-            "{}/{}",
-            service.actor_id.r#type.manufacturer, service.actor_id.r#type.name
-        );
+        let type_key = type_key(&service.actor_id.r#type);
 
         // 如果该类型还未添加，创建新条目
         type_map.entry(type_key).or_insert_with(|| {
@@ -1356,15 +1365,12 @@ async fn handle_route_candidates_request(
     // Apply ACL filtering
     use platform::realm::acl::ActorAcl;
     let source_realm = source.realm.realm_id;
-    let source_type = format!("{}:{}", source.r#type.manufacturer, source.r#type.name);
+    let source_type = type_key(&source.r#type);
 
     let mut acl_filtered_candidates = Vec::new();
     for candidate in candidates {
         let target_realm = candidate.actor_id.realm.realm_id;
-        let target_type = format!(
-            "{}:{}",
-            candidate.actor_id.r#type.manufacturer, candidate.actor_id.r#type.name
-        );
+        let target_type = type_key(&candidate.actor_id.r#type);
 
         match ActorAcl::can_discover(source_realm, target_realm, &source_type, &target_type).await {
             Ok(true) => acl_filtered_candidates.push(candidate),
@@ -1404,6 +1410,13 @@ async fn handle_route_candidates_request(
         }
     });
 
+    // Extract ws_address before consuming acl_filtered_candidates
+    let ws_address_by_id: std::collections::HashMap<ActrId, Option<String>> =
+        acl_filtered_candidates
+            .iter()
+            .map(|c| (c.actor_id.clone(), c.ws_address.clone()))
+            .collect();
+
     let ranked_actor_ids = LoadBalancer::rank_candidates(
         acl_filtered_candidates,
         req.criteria.as_ref(),
@@ -1418,13 +1431,21 @@ async fn handle_route_candidates_request(
         ranked_actor_ids.len(),
     );
 
+    let ws_address_map: Vec<actr_protocol::WsAddressEntry> = ranked_actor_ids
+        .iter()
+        .filter_map(|id| {
+            ws_address_by_id.get(id).map(|ws| actr_protocol::WsAddressEntry {
+                candidate_id: id.clone(),
+                ws_address: ws.clone(),
+            })
+        })
+        .collect();
+
     let response = actr_protocol::RouteCandidatesResponse {
         result: Some(actr_protocol::route_candidates_response::Result::Success(
             actr_protocol::route_candidates_response::RouteCandidatesOk {
                 candidates: ranked_actor_ids,
-                compatibility_info: vec![],
-                has_exact_match: None,
-                is_sub_healthy: None,
+                ws_address_map,
             },
         )),
     };
@@ -1485,6 +1506,71 @@ async fn handle_get_service_spec_request(
 
     let response_envelope = server.create_envelope(flow, Some(request_envelope_id));
     send_envelope_to_client(client_id, response_envelope, server).await?;
+
+    Ok(())
+}
+
+/// Handle GetSigningKey request — proxies key lookup via local KeyCache
+async fn handle_get_signing_key_request(
+    source: ActrId,
+    req: actr_protocol::GetSigningKeyRequest,
+    client_id: &str,
+    server: &SignalingServerHandle,
+    request_envelope_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let key_id = req.key_id;
+    platform::recording::debug!(
+        "Actor {} requested signing key: key_id={}",
+        source.serial_number,
+        key_id
+    );
+
+    let response = match AIdCredentialValidator::get_key_bytes(key_id).await {
+        Ok(Some(pubkey_bytes)) => actr_protocol::GetSigningKeyResponse {
+            key_id,
+            pubkey: pubkey_bytes.into(),
+        },
+        Ok(None) => {
+            platform::recording::warn!(
+                "GetSigningKeyRequest: key_id={} not found in cache",
+                key_id
+            );
+            send_error_response(
+                client_id,
+                &source,
+                404,
+                &format!("signing key not found: key_id={key_id}"),
+                server,
+                Some(request_envelope_id),
+            )
+            .await?;
+            return Ok(());
+        }
+        Err(e) => {
+            platform::recording::error!(
+                "GetSigningKeyRequest: key_id={} lookup error: {}",
+                key_id,
+                e
+            );
+            send_error_response(
+                client_id,
+                &source,
+                500,
+                "internal error looking up signing key",
+                server,
+                Some(request_envelope_id),
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    let flow = signaling_envelope::Flow::ServerToActr(SignalingToActr {
+        target: source,
+        payload: Some(signaling_to_actr::Payload::GetSigningKeyResponse(response)),
+    });
+    let envelope = server.create_envelope(flow, Some(request_envelope_id));
+    send_envelope_to_client(client_id, envelope, server).await?;
 
     Ok(())
 }
@@ -1622,6 +1708,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "test".to_string(),
                 name: "device".to_string(),
+                version: String::new(),
             },
         }
     }

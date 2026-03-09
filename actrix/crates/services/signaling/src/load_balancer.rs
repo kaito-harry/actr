@@ -244,7 +244,7 @@ impl LoadBalancer {
         match factor {
             NodeRankingFactor::MaximumPowerReserve => Self::cmp_power_reserve(a, b),
             NodeRankingFactor::MinimumMailboxBacklog => Self::cmp_mailbox_backlog(a, b),
-            NodeRankingFactor::BestCompatibility => Self::cmp_exact_match(a, b),
+            NodeRankingFactor::ExactMatchFirst => Self::cmp_exact_match(a, b),
             NodeRankingFactor::Nearest => Self::cmp_distance(a, b, client_location),
             NodeRankingFactor::ClientAffinity => Self::cmp_affinity(a, b, client_id),
         }
@@ -318,32 +318,21 @@ impl LoadBalancer {
         }
     }
 
-    // 单因子排序函数（委托给 cmp_* 函数，供测试直接调用）
+}
 
-    fn sort_by_power_reserve(candidates: &mut [ServiceInfo]) {
-        platform::recording::debug!("按 power_reserve 排序");
+#[cfg(test)]
+impl LoadBalancer {
+    pub fn sort_by_power_reserve(candidates: &mut [ServiceInfo]) {
         candidates.sort_by(Self::cmp_power_reserve);
     }
 
-    fn sort_by_mailbox_backlog(candidates: &mut [ServiceInfo]) {
-        platform::recording::debug!("按 mailbox_backlog 排序");
+    pub fn sort_by_mailbox_backlog(candidates: &mut [ServiceInfo]) {
         candidates.sort_by(Self::cmp_mailbox_backlog);
     }
 
-    fn sort_by_exact_match(candidates: &mut [ServiceInfo]) {
-        candidates.sort_by(Self::cmp_exact_match);
-    }
-
-    fn sort_by_distance(candidates: &mut [ServiceInfo], client_location: Option<(f64, f64)>) {
-        platform::recording::debug!("按地理距离排序");
-        candidates.sort_by(|a, b| Self::cmp_distance(a, b, client_location));
-    }
-
-    fn sort_by_affinity(candidates: &mut [ServiceInfo], client_id: Option<&str>) {
-        platform::recording::debug!("按客户端会话粘滞排序: client_id={:?}", client_id);
+    pub fn sort_by_affinity(candidates: &mut [ServiceInfo], client_id: Option<&str>) {
         candidates.sort_by(|a, b| Self::cmp_affinity(a, b, client_id));
     }
-
 }
 
 #[cfg(test)]
@@ -358,6 +347,7 @@ mod tests {
                 r#type: ActrType {
                     manufacturer: "test".to_string(),
                     name: name.to_string(),
+                    version: String::new(),
                 },
                 realm: Realm { realm_id: 0 },
             },
@@ -375,6 +365,7 @@ mod tests {
             geo_location: None,
             is_exact_match: false,
             sticky_client_ids: Vec::new(),
+            ws_address: None,
         }
     }
 

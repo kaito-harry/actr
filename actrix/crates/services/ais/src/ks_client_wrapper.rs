@@ -24,7 +24,7 @@ impl KsClientWrapper {
         }
     }
 
-    /// 生成密钥对
+    /// 从 KS 申请新的密钥 ID，返回 (key_id, ecies_pubkey, expires_at, tolerance_secs)
     pub async fn generate_key(&self) -> Result<(u32, PublicKey, u64, u64), ks::KsError> {
         let mut guard = self.inner.write().await;
         if guard.is_none() {
@@ -38,7 +38,7 @@ impl KsClientWrapper {
             .await
     }
 
-    /// 获取私钥
+    /// 获取私钥字节（32 bytes），返回 (SecretKey, expires_at, tolerance_secs)
     pub async fn fetch_secret_key(
         &self,
         key_id: u32,

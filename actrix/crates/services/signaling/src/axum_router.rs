@@ -73,34 +73,14 @@ pub async fn create_signaling_router_with_config_and_counters(
 ) -> Result<Router> {
     platform::recording::info!("Creating Signaling Axum router with config");
 
-    // 初始化 AIdCredentialValidator
-    if let Some(signaling_config) = &config.services.signaling {
-        if let Some(ks_client_config) = signaling_config.get_ks_client_config(config) {
-            platform::recording::info!("Initializing AIdCredentialValidator with KS config");
-            AIdCredentialValidator::init(
-                &ks_client_config,
-                config.get_actrix_shared_key(),
-                &config.sqlite_path,
-            )
-            .await
-            .map_err(|e| {
-                platform::recording::error!("Failed to initialize AIdCredentialValidator: {}", e);
-                anyhow::anyhow!("AIdCredentialValidator initialization failed: {e}")
-            })?;
-            platform::recording::info!("✅ AIdCredentialValidator initialized successfully");
-        } else {
-            platform::recording::warn!(
-                "⚠️  No KS config found for Signaling service, credential validation will fail"
-            );
-            platform::recording::warn!(
-                "    Please configure services.signaling.dependencies.ks in config.toml"
-            );
-        }
-    } else {
-        platform::recording::warn!(
-            "⚠️  Signaling config not found, credential validation will fail"
-        );
-    }
+    // 初始化 AIdCredentialValidator（Ed25519 模式，使用本地 key_cache DB）
+    AIdCredentialValidator::init(&config.sqlite_path)
+        .await
+        .map_err(|e| {
+            platform::recording::error!("Failed to initialize AIdCredentialValidator: {}", e);
+            anyhow::anyhow!("AIdCredentialValidator initialization failed: {e}")
+        })?;
+    platform::recording::info!("✅ AIdCredentialValidator (Ed25519) initialized");
 
     // 创建 SignalingServer
     let mut server = SignalingServer::new();
@@ -403,24 +383,31 @@ fn parse_url_identity(
     let actor_id =
         ActrIdExt::from_string_repr(actor_str).map_err(|e| format!("invalid actor_id: {e}"))?;
 
-    let token_b64 = params
-        .get("token")
-        .ok_or_else(|| "missing token".to_string())?;
-    let token_bytes = base64::engine::general_purpose::STANDARD
-        .decode(token_b64)
-        .map_err(|e| format!("invalid token base64: {e}"))?;
+    let key_id = params
+        .get("key_id")
+        .ok_or_else(|| "missing key_id".to_string())
+        .and_then(|s| u32::from_str(s).map_err(|e| format!("invalid key_id: {e}")))?;
 
-    let token_key_id = params
-        .get("token_key_id")
-        .map(|s| u32::from_str(s).map_err(|e| format!("invalid token_key_id: {e}")))
-        .transpose()?
-        .unwrap_or_default();
+    let claims_b64 = params
+        .get("claims")
+        .ok_or_else(|| "missing claims".to_string())?;
+    let claims = base64::engine::general_purpose::STANDARD
+        .decode(claims_b64)
+        .map_err(|e| format!("invalid claims base64: {e}"))?;
+
+    let signature_b64 = params
+        .get("signature")
+        .ok_or_else(|| "missing signature".to_string())?;
+    let signature = base64::engine::general_purpose::STANDARD
+        .decode(signature_b64)
+        .map_err(|e| format!("invalid signature base64: {e}"))?;
 
     Ok((
         actor_id,
         AIdCredential {
-            encrypted_token: token_bytes.into(),
-            token_key_id,
+            key_id,
+            claims: claims.into(),
+            signature: signature.into(),
         },
     ))
 }

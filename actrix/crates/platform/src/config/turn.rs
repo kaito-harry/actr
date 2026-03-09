@@ -16,6 +16,13 @@ pub struct TurnConfig {
     ///
     /// TURN 服务的认证域名，用于 TURN 协议的认证机制。
     pub realm: String,
+
+    /// TURN 共享密钥（HMAC 时效凭证）
+    ///
+    /// 用于生成和验证 TURN 时效凭证（coturn --use-auth-secret 兼容格式）。
+    /// AIS 生成 TurnCredential 时使用此密钥，TURN 服务器验证时使用相同密钥。
+    #[serde(default = "default_turn_secret")]
+    pub turn_secret: String,
 }
 
 impl Default for TurnConfig {
@@ -23,6 +30,11 @@ impl Default for TurnConfig {
         Self {
             relay_port_range: "49152-65535".to_string(),
             realm: "actrix.local".to_string(),
+            turn_secret: default_turn_secret(),
         }
     }
+}
+
+fn default_turn_secret() -> String {
+    "actrix-turn-secret-change-in-production".to_string()
 }

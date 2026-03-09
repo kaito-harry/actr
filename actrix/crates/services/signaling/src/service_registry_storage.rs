@@ -31,8 +31,6 @@ pub struct ServiceRegistryStorage {
     pool: SqlitePool,
     /// TTL（秒），默认 3600 秒（1 小时）
     default_ttl_secs: u64,
-    /// Proto specs TTL（秒），默认 604800 秒（7 天）
-    proto_ttl_secs: u64,
 }
 
 /// 默认服务 TTL（1 小时）
@@ -62,7 +60,6 @@ impl ServiceRegistryStorage {
         let storage = Self {
             pool,
             default_ttl_secs: ttl_secs.unwrap_or(DEFAULT_SERVICE_TTL_SECS),
-            proto_ttl_secs: 604800, // Proto specs 默认 7 天
         };
 
         storage.init_schema().await?;
@@ -112,6 +109,9 @@ impl ServiceRegistryStorage {
 
                 -- 粘滞客户端
                 sticky_client_ids TEXT,  -- JSON array
+
+                -- WebSocket 地址（可选，用于直连）
+                ws_address TEXT,
 
                 -- 时间戳（Unix timestamp）
                 registered_at INTEGER NOT NULL,
@@ -174,7 +174,7 @@ impl ServiceRegistryStorage {
                 service_availability_state, power_reserve, mailbox_backlog,
                 worst_dependency_health_state,
                 geo_region, geo_longitude, geo_latitude,
-                sticky_client_ids,
+                sticky_client_ids, ws_address,
                 registered_at, last_heartbeat_at, expires_at
             ) VALUES (
                 ?1, ?2, ?3, ?4,
@@ -183,8 +183,8 @@ impl ServiceRegistryStorage {
                 ?11, ?12, ?13,
                 ?14,
                 ?15, ?16, ?17,
-                ?18,
-                ?19, ?20, ?21
+                ?18, ?19,
+                ?20, ?21, ?22
             )
             ON CONFLICT(actor_serial_number, actor_realm_id, service_name)
             DO UPDATE SET
@@ -201,6 +201,7 @@ impl ServiceRegistryStorage {
                 geo_longitude = excluded.geo_longitude,
                 geo_latitude = excluded.geo_latitude,
                 sticky_client_ids = excluded.sticky_client_ids,
+                ws_address = excluded.ws_address,
                 last_heartbeat_at = excluded.last_heartbeat_at,
                 expires_at = excluded.expires_at
             "#,
@@ -223,6 +224,7 @@ impl ServiceRegistryStorage {
         .bind(service.geo_location.as_ref().and_then(|g| g.longitude))
         .bind(service.geo_location.as_ref().and_then(|g| g.latitude))
         .bind(&sticky_client_ids_json)
+        .bind(service.ws_address.as_deref())
         .bind(now as i64)
         .bind(service.last_heartbeat_time_secs as i64)
         .bind(expires_at as i64)
@@ -308,7 +310,7 @@ impl ServiceRegistryStorage {
                 service_availability_state, power_reserve, mailbox_backlog,
                 worst_dependency_health_state,
                 geo_region, geo_longitude, geo_latitude,
-                sticky_client_ids,
+                sticky_client_ids, ws_address,
                 last_heartbeat_at
             FROM service_registry
             WHERE expires_at > ?1
@@ -361,7 +363,7 @@ impl ServiceRegistryStorage {
                 service_availability_state, power_reserve, mailbox_backlog,
                 worst_dependency_health_state,
                 geo_region, geo_longitude, geo_latitude,
-                sticky_client_ids,
+                sticky_client_ids, ws_address,
                 last_heartbeat_at
             FROM service_registry
             WHERE actor_serial_number = ?1 
@@ -436,6 +438,7 @@ impl ServiceRegistryStorage {
             r#type: actr_protocol::ActrType {
                 manufacturer: row.get("actor_manufacturer"),
                 name: row.get("actor_device_name"),
+                version: String::new(),
             },
         };
 
@@ -500,6 +503,7 @@ impl ServiceRegistryStorage {
             geo_location,
             is_exact_match: false,
             sticky_client_ids,
+            ws_address: row.get::<Option<String>, _>("ws_address"),
         })
     }
 
@@ -575,6 +579,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "test-mfg".to_string(),
                 name: "test-device".to_string(),
+                version: String::new(),
             },
         }
     }
@@ -596,6 +601,7 @@ mod tests {
             geo_location: None,
             is_exact_match: false,
             sticky_client_ids: vec![],
+            ws_address: None,
         }
     }
 

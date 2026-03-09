@@ -1,18 +1,23 @@
-//! 密钥缓存系统
+//! AIS 签名公钥缓存
 //!
-//! 为验证器提供本地 SQLite 缓存，避免频繁从 KS 服务获取私钥
+//! 为验证器提供本地 SQLite 缓存，避免重复从 AIS 注册响应中重新获取 Ed25519 公钥。
+//! 缓存项以 key_id 为索引，存储对应的 Ed25519 verifying key（32 bytes）和过期时间。
 
 use crate::aid::credential::error::AidError;
 use base64::prelude::*;
-use ecies::SecretKey;
+use ed25519_dalek::VerifyingKey;
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::{debug, error, info};
 
-/// 密钥缓存管理器
+/// AIS 签名公钥缓存管理器
+///
+/// 缓存 AIS Ed25519 verifying key，以 key_id 为索引。
+/// 用于 signaling 等服务在验证 AIdCredential 时按 key_id 查找对应公钥。
 #[derive(Debug, Clone)]
 pub struct KeyCache {
     pool: SqlitePool,
@@ -20,12 +25,11 @@ pub struct KeyCache {
 }
 
 impl KeyCache {
-    /// 创建新的密钥缓存实例
+    /// 创建新的密钥缓存实例并初始化 SQLite 表
     pub async fn new<P: AsRef<Path>>(cache_db_file: P) -> Result<Self, AidError> {
-        // 创建 SQLite 连接池（使用 WAL 模式提升性能）
         let database_url = format!("sqlite:{}", cache_db_file.as_ref().display());
         let options = SqliteConnectOptions::from_str(&database_url)
-            .map_err(|e| AidError::DecryptionFailed(format!("Invalid database URL: {e}")))?
+            .map_err(|e| AidError::DecodeFailure(format!("invalid database URL: {e}")))?
             .create_if_missing(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
@@ -36,7 +40,7 @@ impl KeyCache {
             .connect_with(options)
             .await
             .map_err(|e| {
-                AidError::DecryptionFailed(format!("Failed to open cache database: {e}"))
+                AidError::DecodeFailure(format!("failed to open key cache database: {e}"))
             })?;
 
         let cache = Self {
@@ -44,11 +48,10 @@ impl KeyCache {
             last_cleanup_time: Arc::new(Mutex::new(0)),
         };
 
-        // 初始化数据库表
         cache.init_tables().await?;
 
-        crate::recording::info!(
-            "Key cache initialized with database: {}",
+        info!(
+            "AIS 公钥缓存初始化完成，数据库：{}",
             cache_db_file.as_ref().display()
         );
         Ok(cache)
@@ -56,82 +59,68 @@ impl KeyCache {
 
     /// 初始化缓存数据库表
     async fn init_tables(&self) -> Result<(), AidError> {
-        // 创建密钥缓存表
+        // key_cache 表：存储 Ed25519 verifying key（base64 编码，32 bytes）和过期时间
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS key_cache (
-                key_id INTEGER PRIMARY KEY,
-                secret_key TEXT NOT NULL,
-                cached_at INTEGER NOT NULL,
-                expires_at INTEGER NOT NULL,
-                tolerance_seconds INTEGER NOT NULL DEFAULT 0
+                key_id     INTEGER PRIMARY KEY,
+                pubkey     TEXT NOT NULL,
+                cached_at  INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL
             )
             "#,
         )
         .execute(&self.pool)
         .await
-        .map_err(|e| AidError::DecryptionFailed(format!("Failed to create cache table: {e}")))?;
+        .map_err(|e| AidError::DecodeFailure(format!("failed to create key_cache table: {e}")))?;
 
-        // 创建索引以提高查询性能
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_cache_expires_at ON key_cache(expires_at)")
             .execute(&self.pool)
             .await
             .map_err(|e| {
-                AidError::DecryptionFailed(format!("Failed to create cache index: {e}"))
+                AidError::DecodeFailure(format!("failed to create key_cache index: {e}"))
             })?;
 
-        crate::recording::debug!("Cache database tables initialized");
+        debug!("AIS 公钥缓存数据库表已就绪");
         Ok(())
     }
 
-    /// 从缓存中获取密钥及元数据
+    /// 从缓存中获取 Ed25519 verifying key
     ///
-    /// 返回 (SecretKey, expires_at, tolerance_seconds)
+    /// 返回 `(VerifyingKey, expires_at)`；若缓存不存在或已过期则返回 `None`。
     pub async fn get_cached_key(
         &self,
         key_id: u32,
-    ) -> Result<Option<(SecretKey, u64, u64)>, AidError> {
-        // 检查是否需要清理过期缓存
+    ) -> Result<Option<(VerifyingKey, u64)>, AidError> {
         self.maybe_cleanup().await;
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
-        let result = sqlx::query(
-            "SELECT secret_key, expires_at, tolerance_seconds FROM key_cache WHERE key_id = ?1",
-        )
-        .bind(key_id as i64)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| {
-            crate::recording::error!("Database error when querying cached key {}: {}", key_id, e);
-            AidError::DecryptionFailed(format!("Cache query error: {e}"))
-        })?;
+        let result =
+            sqlx::query("SELECT pubkey, expires_at FROM key_cache WHERE key_id = ?1")
+                .bind(key_id as i64)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| {
+                    error!(key_id, "查询 AIS 公钥缓存失败：{}", e);
+                    AidError::DecodeFailure(format!("key cache query error: {e}"))
+                })?;
 
         match result {
             Some(row) => {
-                let secret_key_b64: String = row.try_get("secret_key").map_err(|e| {
-                    AidError::DecryptionFailed(format!("Failed to get secret_key column: {e}"))
+                let pubkey_b64: String = row.try_get("pubkey").map_err(|e| {
+                    AidError::DecodeFailure(format!("failed to read pubkey column: {e}"))
                 })?;
                 let expires_at: i64 = row.try_get("expires_at").map_err(|e| {
-                    AidError::DecryptionFailed(format!("Failed to get expires_at column: {e}"))
-                })?;
-                let tolerance_seconds: i64 = row.try_get("tolerance_seconds").map_err(|e| {
-                    AidError::DecryptionFailed(format!(
-                        "Failed to get tolerance_seconds column: {e}"
-                    ))
+                    AidError::DecodeFailure(format!("failed to read expires_at column: {e}"))
                 })?;
 
-                // 检查密钥是否过期（使用 KS 服务返回的过期时间）
+                // 缓存条目已过期，删除并返回 None
                 if expires_at > 0 && (expires_at as u64) <= now {
-                    crate::recording::debug!(
-                        "Cached key {} expired (KS expires_at: {}), removing from cache",
-                        key_id,
-                        expires_at
-                    );
-                    // 删除过期的缓存项
+                    debug!(key_id, "AIS 公钥缓存已过期，删除");
                     let _ = sqlx::query("DELETE FROM key_cache WHERE key_id = ?1")
                         .bind(key_id as i64)
                         .execute(&self.pool)
@@ -139,245 +128,203 @@ impl KeyCache {
                     return Ok(None);
                 }
 
-                // 解码私钥
-                let secret_key_bytes = BASE64_STANDARD.decode(&secret_key_b64).map_err(|e| {
-                    AidError::DecryptionFailed(format!("Failed to decode cached key: {e}"))
-                })?;
+                // base64 解码 → 32 bytes → VerifyingKey
+                let pubkey_bytes = BASE64_STANDARD
+                    .decode(&pubkey_b64)
+                    .map_err(|e| {
+                        AidError::DecodeFailure(format!("failed to base64 decode pubkey: {e}"))
+                    })?;
 
-                // SecretKey::parse 需要 &[u8; 32] 类型
-                let secret_key_array: [u8; 32] = secret_key_bytes.try_into().map_err(|_| {
-                    AidError::DecryptionFailed(
-                        "Invalid secret key length, expected 32 bytes".to_string(),
+                let pubkey_array: [u8; 32] = pubkey_bytes.try_into().map_err(|_| {
+                    AidError::DecodeFailure(
+                        "pubkey 长度无效，期望 32 bytes（Ed25519 VerifyingKey）".to_string(),
                     )
                 })?;
 
-                let secret_key = SecretKey::parse(&secret_key_array).map_err(|e| {
-                    AidError::DecryptionFailed(format!("Failed to parse cached key: {e}"))
+                let verifying_key = VerifyingKey::from_bytes(&pubkey_array).map_err(|e| {
+                    AidError::DecodeFailure(format!("invalid Ed25519 verifying key: {e}"))
                 })?;
 
-                crate::recording::debug!("Found valid cached key for key_id: {}", key_id);
-                Ok(Some((
-                    secret_key,
-                    expires_at as u64,
-                    tolerance_seconds as u64,
-                )))
+                debug!(key_id, "命中 AIS 公钥缓存");
+                Ok(Some((verifying_key, expires_at as u64)))
             }
             None => {
-                crate::recording::debug!("No cached key found for key_id: {}", key_id);
+                debug!(key_id, "AIS 公钥缓存未命中");
                 Ok(None)
             }
         }
     }
 
-    /// 将密钥存入缓存（使用 KS 返回的过期时间和容忍期）
+    /// 将 Ed25519 verifying key 写入缓存
+    ///
+    /// `expires_at` 为 Unix 秒时间戳，传 0 表示永不过期。
     pub async fn cache_key(
         &self,
         key_id: u32,
-        secret_key: &SecretKey,
+        verifying_key: &VerifyingKey,
         expires_at: u64,
-        tolerance_seconds: u64,
     ) -> Result<(), AidError> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
-        // 编码私钥为 Base64
-        let secret_key_b64 = BASE64_STANDARD.encode(secret_key.serialize());
+        let pubkey_b64 = BASE64_STANDARD.encode(verifying_key.as_bytes());
 
-        // 使用 REPLACE 语句，如果存在则更新，不存在则插入
         sqlx::query(
-            "REPLACE INTO key_cache (key_id, secret_key, cached_at, expires_at, tolerance_seconds) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "REPLACE INTO key_cache (key_id, pubkey, cached_at, expires_at) VALUES (?1, ?2, ?3, ?4)",
         )
         .bind(key_id as i64)
-        .bind(&secret_key_b64)
+        .bind(&pubkey_b64)
         .bind(now as i64)
         .bind(expires_at as i64)
-        .bind(tolerance_seconds as i64)
         .execute(&self.pool)
         .await
-        .map_err(|e| AidError::DecryptionFailed(format!("Failed to cache key: {e}")))?;
+        .map_err(|e| AidError::DecodeFailure(format!("failed to write key cache: {e}")))?;
 
-        crate::recording::debug!(
-            "Cached key {} with KS expires_at: {}, tolerance: {}s",
-            key_id,
-            expires_at,
-            tolerance_seconds
-        );
+        debug!(key_id, expires_at, "AIS 公钥已写入缓存");
         Ok(())
     }
 
-    /// 清理过期的缓存密钥
+    /// 清理所有已过期的缓存条目
     pub async fn cleanup_expired_keys(&self) -> Result<u32, AidError> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
-        // 删除过期的密钥（expires_at > 0 且 < now）
-        let result = sqlx::query("DELETE FROM key_cache WHERE expires_at > 0 AND expires_at < ?1")
-            .bind(now as i64)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| {
-                AidError::DecryptionFailed(format!("Failed to cleanup expired keys: {e}"))
-            })?;
+        let result =
+            sqlx::query("DELETE FROM key_cache WHERE expires_at > 0 AND expires_at < ?1")
+                .bind(now as i64)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| {
+                    AidError::DecodeFailure(format!("failed to cleanup expired keys: {e}"))
+                })?;
 
-        let deleted_count = result.rows_affected() as u32;
-
-        if deleted_count > 0 {
-            crate::recording::info!("Cleaned up {} expired cached keys", deleted_count);
+        let deleted = result.rows_affected() as u32;
+        if deleted > 0 {
+            info!("AIS 公钥缓存：已清理 {} 条过期记录", deleted);
         }
-
-        Ok(deleted_count)
+        Ok(deleted)
     }
 
-    /// 检查并触发清理（类似 KS 的清理机制）
-    async fn maybe_cleanup(&self) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        // 检查是否需要清理（在持有锁之前）
-        let should_cleanup = {
-            let last_cleanup_time = self.last_cleanup_time.lock().unwrap();
-            now - *last_cleanup_time >= 3600
-        };
-
-        // 如果距离上次清理超过1小时（3600秒），则进行清理
-        if should_cleanup {
-            crate::recording::debug!("Triggering cache cleanup after 1 hour interval");
-
-            match self.cleanup_expired_keys().await {
-                Ok(count) => {
-                    if count > 0 {
-                        crate::recording::info!("Cache cleanup: removed {} expired keys", count);
-                    }
-                }
-                Err(e) => {
-                    crate::recording::error!("Failed to cleanup expired cache keys: {}", e);
-                }
-            }
-
-            // 更新最后清理时间
-            let mut last_cleanup_time = self.last_cleanup_time.lock().unwrap();
-            *last_cleanup_time = now;
-        }
-    }
-
-    /// 获取缓存中的密钥总数
+    /// 返回缓存中的条目总数（用于监控/调试）
     pub async fn get_cached_key_count(&self) -> Result<u32, AidError> {
         let row = sqlx::query("SELECT COUNT(*) as count FROM key_cache")
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| AidError::DecryptionFailed(format!("Failed to count cached keys: {e}")))?;
+            .map_err(|e| {
+                AidError::DecodeFailure(format!("failed to count cached keys: {e}"))
+            })?;
 
         let count: i64 = row
             .try_get("count")
-            .map_err(|e| AidError::DecryptionFailed(format!("Failed to get count column: {e}")))?;
+            .map_err(|e| AidError::DecodeFailure(format!("failed to read count: {e}")))?;
 
         Ok(count as u32)
+    }
+
+    /// 内部：每小时触发一次过期清理
+    async fn maybe_cleanup(&self) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let should_cleanup = {
+            let last = self.last_cleanup_time.lock().unwrap();
+            now.saturating_sub(*last) >= 3600
+        };
+
+        if should_cleanup {
+            debug!("触发 AIS 公钥缓存定时清理");
+            match self.cleanup_expired_keys().await {
+                Ok(n) if n > 0 => info!("AIS 公钥缓存清理完成，删除 {} 条", n),
+                Ok(_) => {}
+                Err(e) => error!("AIS 公钥缓存清理失败：{}", e),
+            }
+            let mut last = self.last_cleanup_time.lock().unwrap();
+            *last = now;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
     use tempfile::tempdir;
+
+    fn generate_test_key() -> VerifyingKey {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        signing_key.verifying_key()
+    }
 
     #[tokio::test]
     async fn test_cache_creation() {
         let temp_dir = tempdir().unwrap();
-        let cache_path = temp_dir.path().join("test_cache.db");
-
-        let cache = KeyCache::new(&cache_path).await;
+        let cache = KeyCache::new(temp_dir.path().join("test.db")).await;
         assert!(cache.is_ok());
     }
 
     #[tokio::test]
     async fn test_key_caching_and_retrieval() {
         let temp_dir = tempdir().unwrap();
-        let cache_path = temp_dir.path().join("test_cache.db");
-        let cache = KeyCache::new(&cache_path).await.unwrap();
+        let cache = KeyCache::new(temp_dir.path().join("test.db")).await.unwrap();
 
-        // 生成测试密钥
-        let (secret_key, _) = ecies::utils::generate_keypair();
-
-        // 缓存密钥（设置1小时后过期，容忍期600秒）
+        let verifying_key = generate_test_key();
         let expires_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs()
             + 3600;
-        let tolerance_seconds = 600;
-        cache
-            .cache_key(1, &secret_key, expires_at, tolerance_seconds)
-            .await
-            .unwrap();
+
+        cache.cache_key(1, &verifying_key, expires_at).await.unwrap();
         assert_eq!(cache.get_cached_key_count().await.unwrap(), 1);
 
-        // 检索密钥
-        let cached_result = cache.get_cached_key(1).await.unwrap();
-        assert!(cached_result.is_some());
-
-        // 验证密钥一致性
-        let (retrieved_key, retrieved_expires_at, retrieved_tolerance) = cached_result.unwrap();
-        assert_eq!(secret_key.serialize(), retrieved_key.serialize());
-        assert_eq!(expires_at, retrieved_expires_at);
-        assert_eq!(tolerance_seconds, retrieved_tolerance);
+        let cached = cache.get_cached_key(1).await.unwrap();
+        assert!(cached.is_some());
+        let (retrieved_key, retrieved_expires) = cached.unwrap();
+        assert_eq!(verifying_key.as_bytes(), retrieved_key.as_bytes());
+        assert_eq!(expires_at, retrieved_expires);
     }
 
     #[tokio::test]
     async fn test_cache_expiration() {
         let temp_dir = tempdir().unwrap();
-        let cache_path = temp_dir.path().join("test_cache.db");
-        let cache = KeyCache::new(&cache_path).await.unwrap();
+        let cache = KeyCache::new(temp_dir.path().join("test.db")).await.unwrap();
 
-        // 生成并缓存密钥（设置1秒后过期）
-        let (secret_key, _) = ecies::utils::generate_keypair();
+        let verifying_key = generate_test_key();
+        // 设置已过期的时间戳
         let expires_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs()
-            + 1;
-        cache
-            .cache_key(1, &secret_key, expires_at, 0)
-            .await
-            .unwrap();
+            .saturating_sub(1);
 
-        // 等待过期
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-        // 检索应该返回 None（过期了）
-        let cached_key = cache.get_cached_key(1).await.unwrap();
-        assert!(cached_key.is_none());
+        cache.cache_key(1, &verifying_key, expires_at).await.unwrap();
+        // 过期条目应返回 None
+        let cached = cache.get_cached_key(1).await.unwrap();
+        assert!(cached.is_none());
     }
 
     #[tokio::test]
     async fn test_cache_cleanup() {
         let temp_dir = tempdir().unwrap();
-        let cache_path = temp_dir.path().join("test_cache.db");
-        let cache = KeyCache::new(&cache_path).await.unwrap();
+        let cache = KeyCache::new(temp_dir.path().join("test.db")).await.unwrap();
 
-        // 缓存密钥（设置1秒后过期）
-        let (secret_key, _) = ecies::utils::generate_keypair();
-        let expires_at = SystemTime::now()
+        let verifying_key = generate_test_key();
+        let expired_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs()
-            + 1;
-        cache
-            .cache_key(1, &secret_key, expires_at, 0)
-            .await
-            .unwrap();
+            .saturating_sub(1);
+
+        cache.cache_key(1, &verifying_key, expired_at).await.unwrap();
         assert_eq!(cache.get_cached_key_count().await.unwrap(), 1);
 
-        // 等待过期
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-        // 手动清理
         let cleaned = cache.cleanup_expired_keys().await.unwrap();
         assert_eq!(cleaned, 1);
         assert_eq!(cache.get_cached_key_count().await.unwrap(), 0);

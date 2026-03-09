@@ -66,23 +66,23 @@ use crate::storage::{KeyRecord, KeyStorage};
 /// 后台任务每隔此时间检查一次密钥是否需要刷新
 const KEY_REFRESH_CHECK_INTERVAL_SECS: u64 = 600; // 10 分钟
 
-/// 默认 PSK 长度（字节）
-///
-/// 生成的预共享密钥长度，用于 Actor 与 Signaling Server 的连接认证
-const DEFAULT_PSK_LENGTH: usize = 32; // 256-bit
 use actr_protocol::{
-    AIdCredential, ActrId, ActrType, ErrorResponse, Realm, RegisterRequest, RegisterResponse,
-    register_response,
+    AIdCredential, ActrId, ActrIdExt, ActrType, ErrorResponse, IdentityClaims, Realm,
+    RegisterRequest, RegisterResponse, register_response,
 };
 use base64::prelude::*;
-use ecies::{PublicKey, encrypt};
-use platform::aid::{AidError, IdentityClaims};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
+use hmac::{Hmac, Mac};
+use platform::aid::AidError;
 use prost::bytes::Bytes;
+use prost::Message as ProstMessage;
 use prost_types::Timestamp;
-use rand::RngCore;
+use sha1::Sha1;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
+
+type HmacSha1 = Hmac<Sha1>;
 
 /// AId Token 签发器配置
 #[derive(Debug, Clone)]
@@ -102,6 +102,8 @@ pub struct IssuerConfig {
     /// 仅当 enable_periodic_rotation = true 时生效
     /// 到达此间隔后会主动生成新密钥，即使旧密钥未过期
     pub key_rotation_interval_secs: u64,
+    /// TURN 共享密钥（与 TURN 服务器共享，用于生成时效凭证）
+    pub turn_secret: String,
 }
 
 impl Default for IssuerConfig {
@@ -113,14 +115,16 @@ impl Default for IssuerConfig {
             key_storage_file: std::path::PathBuf::from("ais_keys.db"),
             enable_periodic_rotation: false,   // 默认禁用定期轮替
             key_rotation_interval_secs: 86400, // 24 小时
+            turn_secret: "actrix-turn-secret-change-in-production".to_string(),
         }
     }
 }
 
-/// 密钥缓存
+/// 密钥缓存（Ed25519 签名密钥）
 struct KeyCache {
     key_id: u32,
-    public_key: PublicKey,
+    signing_key: SigningKey,
+    verifying_key: VerifyingKey,
     #[allow(dead_code)]
     expires_at: u64,
     #[allow(dead_code)]
@@ -203,18 +207,23 @@ impl AIdIssuer {
         Ok(())
     }
 
-    /// 从 KeyRecord 加载密钥到缓存
+    /// 从 KeyRecord 加载 Ed25519 签名密钥到缓存
     fn load_key_from_record(&self, record: &KeyRecord) -> Result<(), AidError> {
-        let public_key_bytes = BASE64_STANDARD
+        let key_bytes = BASE64_STANDARD
             .decode(&record.public_key)
-            .map_err(|e| AidError::GenerationFailed(format!("Invalid base64 public key: {e}")))?;
+            .map_err(|e| AidError::GenerationFailed(format!("Invalid base64 key: {e}")))?;
 
-        let public_key = PublicKey::parse_slice(&public_key_bytes, None)
-            .map_err(|e| AidError::GenerationFailed(format!("Failed to parse public key: {e}")))?;
+        let key_array: [u8; 32] = key_bytes.try_into().map_err(|_| {
+            AidError::GenerationFailed("Signing key must be exactly 32 bytes".to_string())
+        })?;
+
+        let signing_key = SigningKey::from_bytes(&key_array);
+        let verifying_key = signing_key.verifying_key();
 
         let cache = KeyCache {
             key_id: record.key_id,
-            public_key,
+            signing_key,
+            verifying_key,
             expires_at: record.expires_at,
             tolerance_seconds: record.tolerance_seconds,
         };
@@ -387,16 +396,29 @@ impl AIdIssuer {
     }
 
     /// 内部密钥刷新方法（供后台任务使用）
+    ///
+    /// 从 KS 生成新密钥对，将 32 字节私钥材料作为 Ed25519 signing key 使用。
     async fn refresh_key_internal(
         ks_client: &KsClientWrapper,
         key_storage: &KeyStorage,
         key_cache: &RwLock<Option<KeyCache>>,
         _config: &IssuerConfig,
     ) -> Result<(), AidError> {
-        let (key_id, public_key, expires_at, tolerance_seconds) = ks_client
+        // 从 KS 申请新的密钥 ID（key 材料由 KS 保管）
+        let (key_id, _ecies_pubkey, expires_at, tolerance_seconds) = ks_client
             .generate_key()
             .await
             .map_err(|e| AidError::GenerationFailed(format!("KS unavailable: {e}")))?;
+
+        // 获取 32 字节私钥材料并作为 Ed25519 signing key 使用
+        let (secret_key, _, _) = ks_client
+            .fetch_secret_key(key_id)
+            .await
+            .map_err(|e| AidError::GenerationFailed(format!("KS fetch_secret_key failed: {e}")))?;
+
+        let key_bytes = secret_key.serialize();
+        let signing_key = SigningKey::from_bytes(&key_bytes);
+        let verifying_key = signing_key.verifying_key();
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -404,20 +426,22 @@ impl AIdIssuer {
             .as_secs();
 
         // 更新缓存
+        let signing_key_bytes = signing_key.to_bytes();
         let cache = KeyCache {
             key_id,
-            public_key,
+            signing_key,
+            verifying_key,
             expires_at,
             tolerance_seconds,
         };
 
         *key_cache.write().await = Some(cache);
 
-        // 保存到存储 - 需要 Base64 编码的公钥字符串
-        let public_key_str = BASE64_STANDARD.encode(public_key.serialize_compressed());
+        // 保存到存储（以 base64 编码的 signing key 字节存储）
+        let key_str = BASE64_STANDARD.encode(signing_key_bytes);
         let record = KeyRecord {
             key_id,
-            public_key: public_key_str,
+            public_key: key_str,
             fetched_at: now,
             expires_at,
             tolerance_seconds,
@@ -449,7 +473,7 @@ impl AIdIssuer {
         }
     }
 
-    /// 内部处理逻辑
+    /// 内部处理逻辑（Ed25519 签名模式）
     async fn issue_credential_inner(
         &self,
         request: &RegisterRequest,
@@ -463,28 +487,31 @@ impl AIdIssuer {
         // 生成过期时间
         let expr_time = self.calculate_expiry_time();
 
-        // 生成 PSK (pre-shared key)
-        let psk = self.generate_psk()?;
+        // 构建 IdentityClaims（proto 类型，明文）
+        let claims_proto = IdentityClaims {
+            realm_id: actr_id.realm.realm_id,
+            actor_id: actr_id.to_string_repr(),
+            expires_at: expr_time,
+        };
 
-        // 创建 Claims（包含 PSK）
-        let claims = IdentityClaims::from_actr_id(&actr_id, expr_time, psk.clone());
+        // Proto 编码 claims bytes
+        let claims_bytes = claims_proto.encode_to_vec();
 
-        // 从缓存获取密钥
-        let (key_id, public_key) = {
+        // 从缓存获取 Ed25519 signing key
+        let (key_id, signature_bytes, verifying_key) = {
             let cache = self.key_cache.read().await;
             let cache = cache
                 .as_ref()
                 .ok_or_else(|| AidError::GenerationFailed("No key available".to_string()))?;
-            (cache.key_id, cache.public_key)
+            let sig = cache.signing_key.sign(&claims_bytes);
+            (cache.key_id, sig.to_bytes().to_vec(), cache.verifying_key)
         };
 
-        // 生成加密的 credential
-        let encrypted_token = self.encrypt_claims(&claims, &public_key)?;
-
-        // 创建 AIdCredential
+        // 创建 AIdCredential（Ed25519 格式）
         let credential = AIdCredential {
-            encrypted_token: Bytes::from(encrypted_token),
-            token_key_id: key_id,
+            key_id,
+            claims: Bytes::from(claims_bytes),
+            signature: Bytes::from(signature_bytes),
         };
 
         // 创建过期时间的 Timestamp
@@ -493,12 +520,17 @@ impl AIdIssuer {
             nanos: 0,
         });
 
+        // 生成 TURN 时效凭证（coturn --use-auth-secret 兼容格式）
+        let turn_credential = self.generate_turn_credential(&actr_id.to_string_repr(), expr_time);
+
         Ok(register_response::RegisterOk {
             actr_id,
             credential,
-            psk: Some(Bytes::from(psk)),
+            turn_credential,
             credential_expires_at,
             signaling_heartbeat_interval_secs: self.config.signaling_heartbeat_interval_secs,
+            signing_pubkey: Bytes::from(verifying_key.as_bytes().to_vec()),
+            signing_key_id: key_id,
         })
     }
 
@@ -523,29 +555,27 @@ impl AIdIssuer {
             + self.config.token_ttl_secs
     }
 
-    /// 加密 Claims 为 credential
-    fn encrypt_claims(
+    /// 生成 TURN 时效凭证（coturn --use-auth-secret 兼容格式）
+    ///
+    /// `username = "<expires_at>:<actor_id>"`
+    /// `password = base64(HMAC-SHA1(turn_secret, username))`
+    fn generate_turn_credential(
         &self,
-        claims: &IdentityClaims,
-        public_key: &PublicKey,
-    ) -> Result<Vec<u8>, AidError> {
-        // 序列化 claims
-        let claims_bytes = serde_json::to_vec(claims)
-            .map_err(|e| AidError::GenerationFailed(format!("Serialization error: {e}")))?;
+        actor_id: &str,
+        expires_at: u64,
+    ) -> actr_protocol::TurnCredential {
+        let username = format!("{expires_at}:{actor_id}");
+        let mut mac = HmacSha1::new_from_slice(self.config.turn_secret.as_bytes())
+            .expect("HMAC-SHA1 accepts any key length");
+        mac.update(username.as_bytes());
+        let result = mac.finalize();
+        let password = BASE64_STANDARD.encode(result.into_bytes());
 
-        // 将 PublicKey 转换为字节
-        let public_key_bytes = public_key.serialize();
-
-        // 加密
-        encrypt(&public_key_bytes, &claims_bytes)
-            .map_err(|e| AidError::GenerationFailed(format!("Encryption error: {e}")))
-    }
-
-    /// 生成 PSK (pre-shared key)
-    fn generate_psk(&self) -> Result<Vec<u8>, AidError> {
-        let mut psk = vec![0u8; DEFAULT_PSK_LENGTH];
-        rand::thread_rng().fill_bytes(&mut psk);
-        Ok(psk)
+        actr_protocol::TurnCredential {
+            username,
+            password,
+            expires_at,
+        }
     }
 
     // ========== 健康检查方法 ==========

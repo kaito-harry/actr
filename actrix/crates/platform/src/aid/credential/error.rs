@@ -20,14 +20,11 @@ pub enum AidError {
     #[error("Base64 decode error: {0}")]
     Base64DecodeError(#[from] base64::DecodeError),
 
-    #[error("ECIES encryption error: {0}")]
-    EciesError(String),
+    #[error("Invalid signature: {0}")]
+    InvalidSignature(String),
 
-    #[error("JSON serialization error: {0}")]
-    JsonSerializationError(#[from] serde_json::Error),
-
-    #[error("Token decryption failed: {0}")]
-    DecryptionFailed(String),
+    #[error("Proto decode failure: {0}")]
+    DecodeFailure(String),
 
     #[error("Token generation failed: {0}")]
     GenerationFailed(String),

@@ -155,50 +155,51 @@ async fn register_actr(State(state): State<AISState>, headers: HeaderMap, body: 
                         let permission =
                             rule.permission == actr_protocol::acl_rule::Permission::Allow as i32;
 
-                        for principal in &rule.principals {
-                            let from_type = match &principal.actr_type {
-                                Some(t) => format!("{}:{}", t.manufacturer, t.name),
-                                None => continue,
-                            };
-                            let source_realm_id = principal.realm.as_ref().map(|r| r.realm_id);
+                        let from_type =
+                            format!("{}:{}", rule.from_type.manufacturer, rule.from_type.name);
 
-                            let mut actor_acl = if let Some(src) = source_realm_id {
-                                ActorAcl::new_with_source_realm(
-                                    realm_id,
-                                    Some(src),
-                                    from_type.clone(),
-                                    my_type.clone(),
-                                    permission,
-                                )
-                            } else {
-                                ActorAcl::new(
-                                    realm_id,
-                                    from_type.clone(),
-                                    my_type.clone(),
-                                    permission,
-                                )
-                            };
+                        let source_realm_id = match &rule.source_realm {
+                            Some(actr_protocol::acl_rule::SourceRealm::RealmId(id)) => Some(*id),
+                            _ => None, // AnyRealm or unset: no specific source realm
+                        };
 
-                            if let Err(e) = actor_acl.save().await {
-                                platform::recording::warn!(
-                                    "Failed to save ACL rule ({} -> {}): {}",
-                                    from_type,
-                                    my_type,
-                                    e
-                                );
-                            }
+                        let mut actor_acl = if let Some(src) = source_realm_id {
+                            ActorAcl::new_with_source_realm(
+                                realm_id,
+                                Some(src),
+                                from_type.clone(),
+                                my_type.clone(),
+                                permission,
+                            )
+                        } else {
+                            ActorAcl::new(
+                                realm_id,
+                                from_type.clone(),
+                                my_type.clone(),
+                                permission,
+                            )
+                        };
+
+                        if let Err(e) = actor_acl.save().await {
+                            platform::recording::warn!(
+                                "Failed to save ACL rule ({} -> {}): {}",
+                                from_type,
+                                my_type,
+                                e
+                            );
                         }
                     }
                 }
 
                 // Store pending registration (service_spec) for signaling to pick up
-                if request.service_spec.is_some() {
+                if request.service_spec.is_some() || request.ws_address.is_some() {
                     let serial = register_ok.actr_id.serial_number;
                     let realm = register_ok.actr_id.realm.realm_id;
                     let spec_blob = request
                         .service_spec
                         .as_ref()
                         .map(prost::Message::encode_to_vec);
+                    let ws_address = request.ws_address.clone();
                     let db = platform::storage::db::get_database();
                     let pool = db.get_pool();
                     let now = std::time::SystemTime::now()
@@ -207,12 +208,13 @@ async fn register_actr(State(state): State<AISState>, headers: HeaderMap, body: 
                         .as_secs() as i64;
                     let _ = sqlx::query(
                         "INSERT OR REPLACE INTO pending_registration \
-                         (serial_number, realm_id, service_spec_blob, created_at) \
-                         VALUES (?, ?, ?, ?)",
+                         (serial_number, realm_id, service_spec_blob, ws_address, created_at) \
+                         VALUES (?, ?, ?, ?, ?)",
                     )
                     .bind(serial as i64)
                     .bind(realm as i64)
                     .bind(spec_blob)
+                    .bind(ws_address)
                     .bind(now)
                     .execute(pool)
                     .await;
@@ -375,9 +377,8 @@ fn aid_error_to_error_response(err: AidError) -> ErrorResponse {
                 500
             }
         }
-        AidError::DecryptionFailed(_) => 500,
-        AidError::EciesError(_) => 500,
-        AidError::JsonSerializationError(_) => 500,
+        AidError::InvalidSignature(_) => 500,
+        AidError::DecodeFailure(_) => 500,
     };
 
     ErrorResponse {
@@ -466,10 +467,13 @@ mod tests {
                 },
             },
             credential: AIdCredential {
-                encrypted_token: ProstBytes::from(vec![1, 2, 3]),
-                token_key_id: 1,
+                key_id: 42,
+                claims: ProstBytes::from(vec![1, 2, 3]),
+                signature: ProstBytes::from(vec![0u8; 64]),
             },
-            psk: Some(ProstBytes::from(vec![4, 5, 6])),
+            turn_credential: actr_protocol::TurnCredential::default(),
+            signing_pubkey: ProstBytes::from(vec![0u8; 32]),
+            signing_key_id: 42,
             credential_expires_at: Some(Timestamp {
                 seconds: 1234567890,
                 nanos: 0,
@@ -490,8 +494,7 @@ mod tests {
         if let Some(register_response::Result::Success(resp)) = decoded_response.result {
             assert_eq!(resp.actr_id.realm.realm_id, 1);
             assert_eq!(resp.actr_id.serial_number, 123456);
-            assert_eq!(resp.credential.token_key_id, 1);
-            assert_eq!(resp.psk.unwrap(), vec![4, 5, 6]);
+            assert_eq!(resp.credential.key_id, 42);
             assert_eq!(resp.signaling_heartbeat_interval_secs, 30);
         } else {
             panic!("Expected success result");
