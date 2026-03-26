@@ -315,7 +315,7 @@ function HowItWorks() {
         <div className="px-4 pb-5 space-y-5">
           {/* Row 1: Registration & Identity */}
           <div>
-            <div className="text-xs font-medium text-gray-500 mb-2">Registration & Identity Verification</div>
+            <div className="text-xs font-medium text-gray-500 mb-2">Phase 1: MFR Registration & Identity</div>
             <svg viewBox="0 0 760 145" className="w-full" xmlns="http://www.w3.org/2000/svg">
               <defs>
                 <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#f8fafc"/><stop offset="100%" stopColor="#e2e8f0"/></linearGradient>
@@ -417,208 +417,304 @@ function HowItWorks() {
             </svg>
           </div>
 
-          {/* Row 2: Digital Signature — sign & verify */}
+          {/* Row 2: Phase 2 — Build + Sign */}
           <div>
-            <div className="text-xs font-medium text-gray-500 mb-2">Package Signing & Verification</div>
-            <svg viewBox="0 0 760 340" className="w-full" xmlns="http://www.w3.org/2000/svg" fontFamily="system-ui, sans-serif">
+            <div className="text-xs font-medium text-gray-500 mb-2">Phase 2: actr pkg build — SHA-256 + Ed25519 Sign</div>
+            <svg viewBox="0 0 760 210" className="w-full" xmlns="http://www.w3.org/2000/svg" fontFamily="system-ui, sans-serif">
               <defs>
-                <marker id="ar" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="7" markerHeight="5" orient="auto">
+                <marker id="ar2a" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="7" markerHeight="5" orient="auto">
                   <path d="M0,0 L10,3.5 L0,7Z" fill="#3b82f6"/>
+                </marker>
+                <marker id="ar2a-amber" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="7" markerHeight="5" orient="auto">
+                  <path d="M0,0 L10,3.5 L0,7Z" fill="#f59e0b"/>
                 </marker>
               </defs>
 
-              {/* ====== TOP HALF: Manufacturer (Signer) ====== */}
-              <text x="28" y="22" fontSize="13" fontWeight="700" fill="#3b82f6">Manufacturer</text>
-
-              {/* Person with laptop */}
-              <g transform="translate(20,34)">
+              {/* ── Developer ── */}
+              <g transform="translate(10,20)">
                 <circle cx="22" cy="12" r="10" fill="#bfdbfe"/>
                 <circle cx="22" cy="9" r="5" fill="#eff6ff"/>
                 <ellipse cx="22" cy="18" rx="7" ry="4" fill="#eff6ff"/>
-                {/* Laptop */}
                 <rect x="10" y="30" width="24" height="16" rx="2" fill="#93c5fd" stroke="#3b82f6" strokeWidth="0.8"/>
                 <rect x="13" y="33" width="18" height="10" rx="1" fill="#eff6ff"/>
                 <rect x="6" y="46" width="32" height="3" rx="1.5" fill="#60a5fa"/>
               </g>
+              <text x="32" y="92" textAnchor="middle" fontSize="9" fill="#1e40af" fontWeight="600">Dev</text>
 
-              {/* Manifest — software module box */}
-              <g transform="translate(100,36)">
-                {/* 3D box: top face */}
-                <polygon points="24,0 48,12 24,24 0,12" fill="#dbeafe" stroke="#3b82f6" strokeWidth="1" strokeLinejoin="round"/>
-                {/* Front face */}
-                <polygon points="0,12 24,24 24,52 0,40" fill="#93c5fd" stroke="#3b82f6" strokeWidth="1" strokeLinejoin="round"/>
-                {/* Right face */}
-                <polygon points="24,24 48,12 48,40 24,52" fill="#bfdbfe" stroke="#3b82f6" strokeWidth="1" strokeLinejoin="round"/>
-                {/* Label on front */}
-                <text x="12" y="32" fontSize="7" fill="#1e40af" fontWeight="600">actr</text>
-                <text x="12" y="40" fontSize="6" fill="#2563eb">.toml</text>
-              </g>
-              <text x="124" y="102" textAnchor="middle" fontSize="10" fill="#475569">Manifest</text>
+              {/* Arrow: dev → inputs */}
+              <line x1="54" y1="55" x2="88" y2="55" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar2a)"/>
+              <text x="71" y="48" textAnchor="middle" fontSize="7" fill="#1e40af">actr pkg build</text>
 
-              {/* Arrow: manifest → sign */}
-              <line x1="156" y1="67" x2="248" y2="67" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar)"/>
-              <text x="202" y="60" textAnchor="middle" fontSize="9" fill="#3b82f6">Sign</text>
-
-              {/* Private key icon below the arrow */}
-              <g transform="translate(178,76)">
-                <circle cx="12" cy="12" r="9" fill="none" stroke="#f59e0b" strokeWidth="2"/>
-                <circle cx="12" cy="12" r="3.5" fill="#fbbf24" opacity="0.4"/>
-                <line x1="21" y1="12" x2="38" y2="12" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round"/>
-                <line x1="30" y1="12" x2="30" y2="18" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round"/>
-                <line x1="36" y1="12" x2="36" y2="18" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round"/>
-              </g>
-              <text x="202" y="112" textAnchor="middle" fontSize="9" fill="#b45309">Private Key</text>
-
-              {/* Sign box */}
-              <g transform="translate(256,52)">
-                <rect width="100" height="30" rx="6" fill="#fef3c7" stroke="#f59e0b" strokeWidth="1.2"/>
-                <text x="50" y="19" textAnchor="middle" fontSize="9" fontWeight="600" fill="#92400e">Ed25519 Sign</text>
+              {/* ── Inputs: binary + proto + actr.toml ── */}
+              <g transform="translate(92,22)">
+                <rect width="92" height="66" rx="6" fill="#f0f9ff" stroke="#93c5fd" strokeWidth="1"/>
+                <text x="46" y="14" textAnchor="middle" fontSize="8" fontWeight="600" fill="#1e40af">Inputs</text>
+                <rect x="6" y="19" width="80" height="12" rx="2" fill="#dbeafe"/>
+                <text x="46" y="28" textAnchor="middle" fontSize="6.5" fill="#1e40af">binary(wasm/so)</text>
+                <rect x="6" y="34" width="80" height="12" rx="2" fill="#dbeafe"/>
+                <text x="46" y="43" textAnchor="middle" fontSize="7" fill="#1e40af">*.proto files</text>
+                <rect x="6" y="49" width="80" height="12" rx="2" fill="#e0e7ff"/>
+                <text x="46" y="58" textAnchor="middle" fontSize="7" fill="#3730a3">actr.toml</text>
               </g>
 
-              {/* Arrow: sign → signature */}
-              <line x1="364" y1="67" x2="416" y2="67" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar)"/>
-              <text x="390" y="60" textAnchor="middle" fontSize="9" fill="#3b82f6">base64</text>
+              {/* Arrow: inputs → SHA-256 */}
+              <line x1="184" y1="55" x2="218" y2="55" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar2a)"/>
 
-              {/* Signature — envelope with wax seal */}
-              <g transform="translate(418,42)">
-                {/* Envelope body */}
-                <rect width="48" height="34" rx="4" fill="#eff6ff" stroke="#3b82f6" strokeWidth="1.2"/>
-                {/* Envelope flap (triangle) */}
-                <polygon points="0,0 24,14 48,0" fill="#dbeafe" stroke="#3b82f6" strokeWidth="1" strokeLinejoin="round"/>
-                {/* Wax seal */}
-                <circle cx="24" cy="14" r="8" fill="#fef3c7" stroke="#f59e0b" strokeWidth="1.5"/>
-                <text x="24" y="18" textAnchor="middle" fontSize="9" fontWeight="700" fill="#b45309">S</text>
-                {/* String label */}
-                <text x="24" y="28" textAnchor="middle" fontSize="6" fill="#64748b">string</text>
+              {/* ── SHA-256 Hash ── */}
+              <g transform="translate(220,35)">
+                <rect width="100" height="40" rx="6" fill="#e0e7ff" stroke="#6366f1" strokeWidth="1.2"/>
+                <text x="50" y="18" textAnchor="middle" fontSize="9" fontWeight="600" fill="#3730a3">SHA-256</text>
+                <text x="50" y="30" textAnchor="middle" fontSize="7" fill="#4f46e5">binary + proto hash</text>
               </g>
-              <text x="442" y="92" textAnchor="middle" fontSize="10" fill="#475569">Signature</text>
+              <text x="270" y="90" textAnchor="middle" fontSize="7" fill="#6366f1">hash written to manifest</text>
 
-              {/* Keypair: private (amber) + public (teal) */}
-              <g transform="translate(540,40)">
-                {/* Private key — amber */}
-                <circle cx="12" cy="12" r="8" fill="none" stroke="#f59e0b" strokeWidth="1.8"/>
+              {/* Arrow: SHA-256 → Sign */}
+              <line x1="320" y1="55" x2="374" y2="55" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar2a)"/>
+              <text x="347" y="48" textAnchor="middle" fontSize="7" fill="#1e40af">manifest bytes</text>
+
+              {/* ── Ed25519 Sign ── */}
+              <g transform="translate(376,35)">
+                <rect width="110" height="40" rx="6" fill="#fef3c7" stroke="#f59e0b" strokeWidth="1.2"/>
+                <text x="55" y="18" textAnchor="middle" fontSize="9" fontWeight="600" fill="#92400e">Ed25519 Sign</text>
+                <text x="55" y="30" textAnchor="middle" fontSize="7" fill="#b45309">actr.toml bytes</text>
+              </g>
+
+              {/* Private Key → Sign */}
+              <g transform="translate(416,90)">
+                <circle cx="12" cy="12" r="8" fill="none" stroke="#f59e0b" strokeWidth="1.5"/>
                 <circle cx="12" cy="12" r="3" fill="#fbbf24" opacity="0.4"/>
-                <line x1="20" y1="12" x2="34" y2="12" stroke="#f59e0b" strokeWidth="1.8" strokeLinecap="round"/>
-                <line x1="27" y1="12" x2="27" y2="17" stroke="#f59e0b" strokeWidth="1.8" strokeLinecap="round"/>
-                <line x1="32" y1="12" x2="32" y2="17" stroke="#f59e0b" strokeWidth="1.8" strokeLinecap="round"/>
-                <text x="22" y="32" textAnchor="middle" fontSize="8" fontWeight="600" fill="#b45309">Private Key</text>
+                <line x1="20" y1="12" x2="32" y2="12" stroke="#f59e0b" strokeWidth="1.5" strokeLinecap="round"/>
+                <line x1="26" y1="12" x2="26" y2="17" stroke="#f59e0b" strokeWidth="1.5" strokeLinecap="round"/>
+                <line x1="30" y1="12" x2="30" y2="17" stroke="#f59e0b" strokeWidth="1.5" strokeLinecap="round"/>
+              </g>
+              <text x="432" y="124" textAnchor="middle" fontSize="8" fill="#b45309" fontWeight="600">MFR Keychain</text>
+              <text x="432" y="132" textAnchor="middle" fontSize="6.5" fill="#d97706">(Private Key)</text>
+              <line x1="432" y1="90" x2="432" y2="80" stroke="#f59e0b" strokeWidth="1.2" markerEnd="url(#ar2a-amber)"/>
 
-                {/* Public key — teal */}
-                <circle cx="12" cy="52" r="8" fill="none" stroke="#0d9488" strokeWidth="1.8"/>
-                <circle cx="12" cy="52" r="3" fill="#5eead4" opacity="0.4"/>
-                <line x1="20" y1="52" x2="34" y2="52" stroke="#0d9488" strokeWidth="1.8" strokeLinecap="round"/>
-                <line x1="27" y1="52" x2="27" y2="57" stroke="#0d9488" strokeWidth="1.8" strokeLinecap="round"/>
-                <line x1="32" y1="52" x2="32" y2="57" stroke="#0d9488" strokeWidth="1.8" strokeLinecap="round"/>
-                <text x="22" y="72" textAnchor="middle" fontSize="8" fontWeight="600" fill="#0f766e">Public Key</text>
+              {/* Arrow: Sign → .actr output */}
+              <line x1="486" y1="55" x2="538" y2="55" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar2a)"/>
+              <text x="512" y="48" textAnchor="middle" fontSize="7" fill="#1e40af">64 bytes sig</text>
 
-                {/* Brace connecting them */}
-                <text x="42" y="44" fontSize="9" fill="#6b7280">{'}'}</text>
-                <text x="54" y="44" fontSize="8" fill="#6b7280">Ed25519</text>
-                <text x="54" y="54" fontSize="8" fill="#6b7280">Keypair</text>
+              {/* ── .actr Package (ZIP) ── */}
+              <g transform="translate(540,16)">
+                <rect width="120" height="78" rx="8" fill="#f0fdf4" stroke="#16a34a" strokeWidth="1.5"/>
+                <text x="60" y="16" textAnchor="middle" fontSize="10" fontWeight="700" fill="#166534">.actr Package</text>
+                <rect x="8" y="22" width="104" height="13" rx="2" fill="#dcfce7"/>
+                <text x="60" y="32" textAnchor="middle" fontSize="7" fill="#166534">actr.toml - manifest</text>
+                <rect x="8" y="37" width="104" height="13" rx="2" fill="#fef9c3"/>
+                <text x="60" y="47" textAnchor="middle" fontSize="7" fill="#92400e">actr.sig - 64 bytes Ed25519</text>
+                <rect x="8" y="52" width="50" height="13" rx="2" fill="#dbeafe"/>
+                <text x="33" y="62" textAnchor="middle" fontSize="6.5" fill="#1e40af">bin/ (wasm/so)</text>
+                <rect x="62" y="52" width="50" height="13" rx="2" fill="#e0e7ff"/>
+                <text x="87" y="62" textAnchor="middle" fontSize="7" fill="#3730a3">proto/*.proto</text>
+                <text x="60" y="75" textAnchor="middle" fontSize="6" fill="#94a3b8">ZIP STORE format</text>
               </g>
 
-              {/* ====== MIDDLE: Network ====== */}
-              {/* Downward arrows: Manifest & Signature through Network */}
-              <line x1="124" y1="102" x2="80" y2="140" stroke="#94a3b8" strokeWidth="1.2" strokeDasharray="4 2"/>
-              <line x1="80" y1="170" x2="64" y2="196" stroke="#94a3b8" strokeWidth="1.2" strokeDasharray="4 2" markerEnd="url(#ar)"/>
-              <line x1="442" y1="92" x2="200" y2="140" stroke="#94a3b8" strokeWidth="1.2" strokeDasharray="4 2"/>
-              <line x1="200" y1="170" x2="64" y2="274" stroke="#94a3b8" strokeWidth="1.2" strokeDasharray="4 2" markerEnd="url(#ar)"/>
+              {/* Signing chain summary at bottom */}
+              <g transform="translate(92,144)">
+                <rect width="566" height="56" rx="6" fill="#fafafa" stroke="#e5e7eb" strokeWidth="1" strokeDasharray="4 2"/>
+                <text x="283" y="14" textAnchor="middle" fontSize="8" fontWeight="600" fill="#6b7280">Signing Chain</text>
+                <text x="283" y="28" textAnchor="middle" fontSize="7" fill="#9ca3af">binary bytes -{`>`} SHA-256 -{`>`} actr.toml binary.hash</text>
+                <text x="283" y="38" textAnchor="middle" fontSize="7" fill="#9ca3af">proto bytes  -{`>`} SHA-256 -{`>`} actr.toml proto_files.hash</text>
+                <text x="283" y="48" textAnchor="middle" fontSize="7" fill="#9ca3af">actr.toml bytes -{`>`} Ed25519 Sign -{`>`} actr.sig 64 bytes</text>
+              </g>
+            </svg>
+          </div>
 
-              <g transform="translate(0,140)">
-                <line x1="20" y1="20" x2="740" y2="20" stroke="none"/>
-                <rect x="20" y="6" width="720" height="28" rx="14" fill="none" stroke="#cbd5e1" strokeWidth="1.2" strokeDasharray="6 3"/>
-                {/* Cloud shape */}
-                <g transform="translate(330,4)">
-                  <ellipse cx="50" cy="18" rx="36" ry="14" fill="white" stroke="#cbd5e1" strokeWidth="1"/>
-                  <ellipse cx="35" cy="20" rx="20" ry="12" fill="white"/>
-                  <ellipse cx="65" cy="20" rx="20" ry="12" fill="white"/>
-                  <ellipse cx="50" cy="14" rx="22" ry="12" fill="white"/>
-                  {/* Cloud outline redrawn for clean look */}
-                  <ellipse cx="50" cy="18" rx="36" ry="14" fill="none" stroke="#cbd5e1" strokeWidth="0.8"/>
+          {/* Row 3: Phase 3 — Publish with Nonce Challenge-Response */}
+          <div>
+            <div className="text-xs font-medium text-gray-500 mb-2">Phase 3: actr pkg publish — Nonce Challenge-Response + Dual Verify</div>
+            <svg viewBox="0 0 760 270" className="w-full" xmlns="http://www.w3.org/2000/svg" fontFamily="system-ui, sans-serif">
+              <defs>
+                <marker id="ar2b" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="7" markerHeight="5" orient="auto">
+                  <path d="M0,0 L10,3.5 L0,7Z" fill="#3b82f6"/>
+                </marker>
+                <marker id="ar2b-green" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="7" markerHeight="5" orient="auto">
+                  <path d="M0,0 L10,3.5 L0,7Z" fill="#16a34a"/>
+                </marker>
+                <marker id="ar2b-gray" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="7" markerHeight="5" orient="auto">
+                  <path d="M0,0 L10,3.5 L0,7Z" fill="#94a3b8"/>
+                </marker>
+                <marker id="ar2b-amber" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="7" markerHeight="5" orient="auto">
+                  <path d="M0,0 L10,3.5 L0,7Z" fill="#f59e0b"/>
+                </marker>
+              </defs>
+
+              {/* ====== LEFT: CLI Side ====== */}
+              <text x="120" y="18" textAnchor="middle" fontSize="13" fontWeight="700" fill="#3b82f6">actr CLI</text>
+
+              {/* Step 1: Request Nonce */}
+              <g transform="translate(20,28)">
+                <rect width="200" height="32" rx="6" fill="#dbeafe" stroke="#2563eb" strokeWidth="1.2"/>
+                <text x="100" y="14" textAnchor="middle" fontSize="8" fontWeight="600" fill="#1d4ed8">1. POST /mfr/pkg/nonce</text>
+                <text x="100" y="26" textAnchor="middle" fontSize="7" fill="#3b82f6">manufacturer name</text>
+              </g>
+
+              {/* Arrow: CLI → MFR (nonce request) */}
+              <line x1="220" y1="44" x2="430" y2="44" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar2b)"/>
+
+              {/* Arrow: MFR → CLI (nonce response) */}
+              <line x1="430" y1="58" x2="220" y2="58" stroke="#94a3b8" strokeWidth="1.2" strokeDasharray="4 2" markerEnd="url(#ar2b-gray)"/>
+              <text x="325" y="54" textAnchor="middle" fontSize="7" fill="#94a3b8">nonce base64 32 bytes</text>
+
+              {/* Step 2: Build nonce_sig */}
+              <g transform="translate(20,76)">
+                <rect width="200" height="56" rx="6" fill="#fef3c7" stroke="#f59e0b" strokeWidth="1.2"/>
+                {/* MFR Keychain icon inside box */}
+                <g transform="translate(20,12)">
+                  <circle cx="12" cy="12" r="8" fill="none" stroke="#f59e0b" strokeWidth="1.5"/>
+                  <circle cx="12" cy="12" r="3" fill="#fbbf24" opacity="0.4"/>
+                  <line x1="20" y1="12" x2="32" y2="12" stroke="#f59e0b" strokeWidth="1.5" strokeLinecap="round"/>
+                  <line x1="26" y1="12" x2="26" y2="17" stroke="#f59e0b" strokeWidth="1.5" strokeLinecap="round"/>
+                  <line x1="30" y1="12" x2="30" y2="17" stroke="#f59e0b" strokeWidth="1.5" strokeLinecap="round"/>
+                  <text x="16" y="34" textAnchor="middle" fontSize="7" fill="#b45309" fontWeight="600">MFR Keychain</text>
                 </g>
-                <text x="380" y="24" textAnchor="middle" fontSize="10" fontWeight="500" fill="#94a3b8">Network</text>
+                <text x="130" y="14" textAnchor="middle" fontSize="8" fontWeight="600" fill="#92400e">2. Sign Nonce Payload</text>
+                <text x="130" y="26" textAnchor="middle" fontSize="7" fill="#b45309">ACTR-PUBLISH-V1</text>
+                <text x="130" y="36" textAnchor="middle" fontSize="7" fill="#b45309">mfr + method + path</text>
+                <text x="130" y="46" textAnchor="middle" fontSize="7" fill="#b45309">+ nonce_hex + body_sha256</text>
               </g>
 
-              {/* ====== BOTTOM HALF: MFR Service (Verifier) ====== */}
-
-              {/* MFR Service label + server icon (top-right of bottom half) */}
-              <text x="680" y="204" textAnchor="middle" fontSize="13" fontWeight="700" fill="#16a34a">MFR Service</text>
-              <g transform="translate(650,212)">
-                {/* Server rack */}
-                <rect x="10" y="0" width="40" height="14" rx="2" fill="#d1fae5" stroke="#22c55e" strokeWidth="1"/>
-                <circle cx="44" cy="7" r="2" fill="#22c55e"/>
-                <rect x="10" y="17" width="40" height="14" rx="2" fill="#d1fae5" stroke="#22c55e" strokeWidth="1"/>
-                <circle cx="44" cy="24" r="2" fill="#22c55e"/>
-                <rect x="10" y="34" width="40" height="14" rx="2" fill="#d1fae5" stroke="#22c55e" strokeWidth="1"/>
-                <circle cx="44" cy="41" r="2" fill="#22c55e"/>
+              {/* Step 3: POST publish */}
+              <g transform="translate(20,146)">
+                <rect width="200" height="48" rx="6" fill="#dbeafe" stroke="#2563eb" strokeWidth="1.2"/>
+                <text x="100" y="14" textAnchor="middle" fontSize="8" fontWeight="600" fill="#1d4ed8">3. POST /mfr/pkg/publish</text>
+                <text x="100" y="26" textAnchor="middle" fontSize="7" fill="#3b82f6">manifest + actr.sig + proto_files</text>
+                <text x="100" y="36" textAnchor="middle" fontSize="7" fill="#3b82f6">+ nonce + nonce_sig</text>
               </g>
 
-              {/* Manifest (bottom, received) — top-left */}
-              <g transform="translate(40,196)">
-                <polygon points="24,0 48,12 24,24 0,12" fill="#dbeafe" stroke="#3b82f6" strokeWidth="1" strokeLinejoin="round"/>
-                <polygon points="0,12 24,24 24,52 0,40" fill="#93c5fd" stroke="#3b82f6" strokeWidth="1" strokeLinejoin="round"/>
-                <polygon points="24,24 48,12 48,40 24,52" fill="#bfdbfe" stroke="#3b82f6" strokeWidth="1" strokeLinejoin="round"/>
-                <text x="12" y="32" fontSize="7" fill="#1e40af" fontWeight="600">actr</text>
-                <text x="12" y="40" fontSize="6" fill="#2563eb">.toml</text>
-              </g>
-              <text x="64" y="262" textAnchor="middle" fontSize="9" fill="#475569">Manifest</text>
+              {/* Arrow: CLI → MFR (publish) */}
+              <line x1="220" y1="170" x2="430" y2="170" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar2b)"/>
 
-              {/* Signature (bottom, received) — bottom-left, envelope with seal */}
-              <g transform="translate(40,274)">
-                <rect width="48" height="34" rx="4" fill="#eff6ff" stroke="#3b82f6" strokeWidth="1.2"/>
-                <polygon points="0,0 24,14 48,0" fill="#dbeafe" stroke="#3b82f6" strokeWidth="1" strokeLinejoin="round"/>
-                <circle cx="24" cy="14" r="8" fill="#fef3c7" stroke="#f59e0b" strokeWidth="1.5"/>
-                <text x="24" y="18" textAnchor="middle" fontSize="9" fontWeight="700" fill="#b45309">S</text>
-                <text x="24" y="28" textAnchor="middle" fontSize="6" fill="#64748b">string</text>
-              </g>
-              <text x="64" y="322" textAnchor="middle" fontSize="9" fill="#475569">Signature</text>
+              {/* ====== RIGHT: MFR Service Side ====== */}
+              <text x="560" y="18" textAnchor="middle" fontSize="13" fontWeight="700" fill="#16a34a">MFR Service</text>
 
-              {/* Arrow: Signature → base64 decode */}
-              <line x1="96" y1="290" x2="156" y2="290" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar)"/>
-              <text x="126" y="283" textAnchor="middle" fontSize="8" fill="#3b82f6">base64 decode</text>
-
-              {/* Ed25519 Sign box */}
-              <g transform="translate(166,273)">
-                <rect width="60" height="30" rx="4" fill="#f0fdfa" stroke="#14b8a6" strokeWidth="1.2"/>
-                <text x="30" y="19" textAnchor="middle" fontSize="8" fontWeight="600" fill="#0f766e">Ed25519 Sign</text>
+              {/* Nonce generation */}
+              <g transform="translate(440,28)">
+                <rect width="240" height="32" rx="6" fill="#f0fdf4" stroke="#16a34a" strokeWidth="1"/>
+                <text x="120" y="14" textAnchor="middle" fontSize="8" fontWeight="600" fill="#166534">Generate Nonce</text>
+                <text x="120" y="26" textAnchor="middle" fontSize="7" fill="#16a34a">Store pending nonce in DB (TTL 5m)</text>
               </g>
 
-              {/* Arrow: decode → Verify */}
-              <line x1="232" y1="288" x2="240" y2="260" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar)"/>
+              {/* MFR verification pipeline */}
+              <g transform="translate(440,76)">
+                <rect width="240" height="126" rx="8" fill="#fafafa" stroke="#d1d5db" strokeWidth="1"/>
+                <text x="120" y="18" textAnchor="middle" fontSize="9" fontWeight="700" fill="#374151">Verification Pipeline</text>
 
-              {/* Converging arrows: Manifest & Signature → Verify */}
-              <line x1="96" y1="224" x2="240" y2="244" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar)"/>
+                <g transform="translate(10,26)">
+                  <rect width="220" height="22" rx="4" fill="#fef9c3" stroke="#ca8a04" strokeWidth="0.8"/>
+                  <text x="110" y="15" textAnchor="middle" fontSize="7" fontWeight="600" fill="#854d0e">Validate Active MFR Identity &amp; Nonce State</text>
+                </g>
 
-              {/* Ed25519 Verify box */}
-              <g transform="translate(246,237)">
-                <rect width="120" height="30" rx="6" fill="#fef3c7" stroke="#f59e0b" strokeWidth="1.2"/>
-                <text x="60" y="19" textAnchor="middle" fontSize="9" fontWeight="600" fill="#92400e">Ed25519 Verify</text>
+                <g transform="translate(10,54)">
+                  <rect width="220" height="22" rx="4" fill="#fef3c7" stroke="#f59e0b" strokeWidth="0.8"/>
+                  <text x="110" y="15" textAnchor="middle" fontSize="7" fontWeight="600" fill="#92400e">Dual Verify: nonce_sig + manifest actr.sig</text>
+                </g>
+
+                <g transform="translate(10,82)">
+                  <rect width="220" height="30" rx="4" fill="#f0fdf4" stroke="#16a34a" strokeWidth="0.8"/>
+                  <text x="110" y="13" textAnchor="middle" fontSize="7" fontWeight="600" fill="#166534">Atomic Consume Nonce</text>
+                  <text x="110" y="24" textAnchor="middle" fontSize="6" fill="#16a34a">Cross-validate TOML vs request</text>
+                </g>
               </g>
 
-              {/* Public Key (from DB) — below Verify box */}
-              <g transform="translate(280,282)">
-                <circle cx="12" cy="12" r="9" fill="none" stroke="#0d9488" strokeWidth="2"/>
-                <circle cx="12" cy="12" r="3.5" fill="#5eead4" opacity="0.4"/>
-                <line x1="21" y1="12" x2="38" y2="12" stroke="#0d9488" strokeWidth="2" strokeLinecap="round"/>
-                <line x1="30" y1="12" x2="30" y2="18" stroke="#0d9488" strokeWidth="2" strokeLinecap="round"/>
-                <line x1="36" y1="12" x2="36" y2="18" stroke="#0d9488" strokeWidth="2" strokeLinecap="round"/>
-              </g>
-              {/* Arrow: Public Key → Verify box */}
-              <line x1="302" y1="282" x2="302" y2="272" stroke="#0d9488" strokeWidth="1.5" markerEnd="url(#ar)"/>
-              <text x="302" y="316" textAnchor="middle" fontSize="9" fill="#0f766e">Public Key</text>
-              <text x="302" y="327" textAnchor="middle" fontSize="8" fill="#0d9488">(from DB)</text>
+              {/* Step arrows within pipeline */}
+              <line x1="560" y1="124" x2="560" y2="130" stroke="#94a3b8" strokeWidth="0.8"/>
+              <line x1="560" y1="152" x2="560" y2="158" stroke="#94a3b8" strokeWidth="0.8"/>
 
-              {/* Arrow: Verify → result */}
-              <line x1="372" y1="252" x2="440" y2="252" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar)"/>
+              {/* ====== BOTTOM: Result ====== */}
 
-              {/* Verification result */}
-              <g transform="translate(448,238)">
-                <text x="0" y="12" fontSize="16">✅</text>
-                <text x="22" y="14" fontSize="10" fill="#16a34a" fontWeight="600">Valid</text>
-                <text x="0" y="32" fontSize="16">❌</text>
-                <text x="22" y="34" fontSize="10" fill="#dc2626" fontWeight="600">Invalid</text>
+              {/* DB insert */}
+              <g transform="translate(440,216)">
+                <rect width="240" height="36" rx="6" fill="#dbeafe" stroke="#2563eb" strokeWidth="1.2"/>
+                <text x="120" y="14" textAnchor="middle" fontSize="8" fontWeight="600" fill="#1d4ed8">Save Package Metadata</text>
+                <text x="120" y="28" textAnchor="middle" fontSize="7" fill="#3b82f6">type_str + manifest + sig + proto_files</text>
               </g>
 
+              {/* Arrow: pipeline → DB */}
+              <line x1="560" y1="202" x2="560" y2="216" stroke="#16a34a" strokeWidth="1.5" markerEnd="url(#ar2b-green)"/>
+
+              {/* Arrow: MFR → CLI (success response) */}
+              <line x1="440" y1="234" x2="220" y2="234" stroke="#16a34a" strokeWidth="1.5" markerEnd="url(#ar2b-green)"/>
+              <text x="330" y="230" textAnchor="middle" fontSize="8" fill="#16a34a" fontWeight="600">Published: mfr:name:version</text>
+
+              {/* CLI receives result */}
+              <g transform="translate(20,220)">
+                <rect width="200" height="28" rx="6" fill="#d1fae5" stroke="#16a34a" strokeWidth="1.2"/>
+                <text x="100" y="18" textAnchor="middle" fontSize="9" fontWeight="600" fill="#166534">Publish Success</text>
+              </g>
+
+            </svg>
+          </div>
+
+          {/* Row 4: MFR Key Rotation */}
+          <div className="mt-8 relative pt-4 before:absolute before:inset-x-8 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-gray-200 before:to-transparent">
+            <div className="text-xs font-medium text-gray-500 mb-2">Phase 4: MFR Key Rotation (Backward Compatible)</div>
+            <svg viewBox="0 0 760 170" className="w-full" xmlns="http://www.w3.org/2000/svg" fontFamily="system-ui, sans-serif">
+              <defs>
+                <marker id="ar4b" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="7" markerHeight="5" orient="auto">
+                  <path d="M0,0 L10,3.5 L0,7Z" fill="#4f46e5"/>
+                </marker>
+                <marker id="ar4b-green" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="7" markerHeight="5" orient="auto">
+                  <path d="M0,0 L10,3.5 L0,7Z" fill="#16a34a"/>
+                </marker>
+                <marker id="ar4b-gray" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="7" markerHeight="5" orient="auto">
+                  <path d="M0,0 L10,3.5 L0,7Z" fill="#94a3b8"/>
+                </marker>
+              </defs>
+
+               {/* Left: Admin */}
+               <text x="120" y="18" textAnchor="middle" fontSize="13" fontWeight="700" fill="#4f46e5">MFR Admin</text>
+
+               {/* Right: MFR */}
+               <text x="560" y="18" textAnchor="middle" fontSize="13" fontWeight="700" fill="#16a34a">MFR Service / DB</text>
+
+               {/* Step 1: POST renew */}
+               <g transform="translate(20,40)">
+                 <rect width="200" height="36" rx="6" fill="#e0e7ff" stroke="#4f46e5" strokeWidth="1.2"/>
+                 <text x="100" y="16" textAnchor="middle" fontSize="8" fontWeight="600" fill="#312e81">1. POST /mfr/admin/{`{id}`}/renew</text>
+                 <text x="100" y="28" textAnchor="middle" fontSize="7" fill="#4f46e5">(Optional: Provide new public key)</text>
+               </g>
+
+               {/* Arrow Request */}
+               <line x1="220" y1="58" x2="430" y2="58" stroke="#4f46e5" strokeWidth="1.5" markerEnd="url(#ar4b)"/>
+
+               {/* Archive Old Key */}
+               <g transform="translate(440,30)">
+                 <rect width="240" height="32" rx="6" fill="#fef3c7" stroke="#d97706" strokeWidth="1.2" strokeDasharray="4 2"/>
+                 <text x="120" y="14" textAnchor="middle" fontSize="8" fontWeight="600" fill="#92400e">2. Archive Current Key</text>
+                 <text x="120" y="26" textAnchor="middle" fontSize="7" fill="#b45309">Save to key history (status = retired)</text>
+               </g>
+
+               {/* Step Arrow */}
+               <line x1="560" y1="62" x2="560" y2="76" stroke="#94a3b8" strokeWidth="1" markerEnd="url(#ar4b-gray)"/>
+
+               {/* Set New Key */}
+               <g transform="translate(440,76)">
+                 <rect width="240" height="32" rx="6" fill="#dcfce7" stroke="#16a34a" strokeWidth="1.2"/>
+                 <text x="120" y="14" textAnchor="middle" fontSize="8" fontWeight="600" fill="#166534">3. Activate New Key</text>
+                 <text x="120" y="26" textAnchor="middle" fontSize="7" fill="#15803d">Update MFR public_key &amp; key_id</text>
+               </g>
+
+               {/* Step Arrow */}
+               <line x1="560" y1="108" x2="560" y2="122" stroke="#94a3b8" strokeWidth="1" markerEnd="url(#ar4b-gray)"/>
+
+               {/* Success Response handling */}
+               <g transform="translate(440,122)">
+                 <rect width="240" height="28" rx="6" fill="#f0fdf4" stroke="#16a34a" strokeWidth="1"/>
+                 <text x="120" y="18" textAnchor="middle" fontSize="8" fontWeight="600" fill="#166534">Return new mfr-keychain.json</text>
+               </g>
+
+               {/* Arrow Response */}
+               <line x1="440" y1="136" x2="220" y2="136" stroke="#16a34a" strokeWidth="1.5" markerEnd="url(#ar4b-green)"/>
+               <text x="330" y="132" textAnchor="middle" fontSize="8" fill="#16a34a" fontWeight="600">ActivateResponse</text>
+
+               {/* Admin Receives */}
+               <g transform="translate(20,118)">
+                 <rect width="200" height="36" rx="6" fill="#d1fae5" stroke="#10b981" strokeWidth="1.2"/>
+                 <text x="100" y="16" textAnchor="middle" fontSize="8" fontWeight="600" fill="#065f46">Saved: New MFR Keychain</text>
+                 <text x="100" y="28" textAnchor="middle" fontSize="7" fill="#047857">Old keys still valid for old packages</text>
+               </g>
             </svg>
           </div>
         </div>
