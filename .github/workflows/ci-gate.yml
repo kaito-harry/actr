@@ -29,8 +29,8 @@ jobs:
       reasons_json: ${{ steps.targets.outputs.reasons_json }}
       rust_core: ${{ steps.targets.outputs.rust_core }}
       ts_binding: ${{ steps.targets.outputs.ts_binding }}
-      python_binding: ${{ steps.targets.outputs.python_binding }}
       python_codegen: ${{ steps.targets.outputs.python_codegen }}
+      python_workload: ${{ steps.targets.outputs.python_workload }}
       swift_binding: ${{ steps.targets.outputs.swift_binding }}
       kotlin_binding: ${{ steps.targets.outputs.kotlin_binding }}
       web_binding: ${{ steps.targets.outputs.web_binding }}
@@ -151,44 +151,6 @@ jobs:
         working-directory: bindings/typescript
         run: cargo check --locked --manifest-path Cargo.toml
 
-  python_binding:
-    name: Python Binding
-    needs: determine
-    if: needs.determine.outputs.python_binding == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    defaults:
-      run:
-        working-directory: bindings/python
-    steps:
-      - uses: actions/checkout@v5
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-          cache: "pip"
-          cache-dependency-path: bindings/python/pyproject.toml
-      - name: Set up Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ github.token }}
-      - name: Create Python virtualenv
-        run: python -m venv .venv
-      - name: Install maturin and pytest
-        run: .venv/bin/python -m pip install -U maturin pytest
-      - name: Build Python binding
-        run: .venv/bin/maturin build --manifest-path Cargo.toml
-      - name: Install Python binding (editable)
-        run: .venv/bin/maturin develop --manifest-path Cargo.toml
-      - name: Run smoke tests
-        run: .venv/bin/python -m pytest tests/ -v
-
   python_codegen:
     name: Python Codegen
     needs: determine
@@ -213,6 +175,56 @@ jobs:
         run: |
           python -m pip install -U build
           python -m build
+
+  python_workload:
+    name: Python Workload
+    needs: determine
+    if: needs.determine.outputs.python_workload == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: bindings/python/actr-workload/pyproject.toml
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+      - name: Install wasm-tools
+        run: cargo install wasm-tools --version 1.247.0 --locked
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
+      - name: Verify single tracked WIT
+        run: test "$(git ls-files '*actr-workload.wit')" = "core/framework/wit/actr-workload.wit"
+      - name: Build actr-workload package
+        run: |
+          python -m pip install -U build
+          python -m build bindings/python/actr-workload
+      - name: Install actr-workload build extra
+        run: python -m pip install -e 'bindings/python/actr-workload[build]'
+      - name: Verify componentize-py pin
+        run: componentize-py --version | grep 'componentize-py 0.23.0'
+      - name: Generate workload bindings
+        run: |
+          rm -rf /tmp/actr-workload-bindings
+          actr-workload bindings /tmp/actr-workload-bindings
+          test -f /tmp/actr-workload-bindings/actr_workload_bindings/exports/workload.py
+          test -f /tmp/actr-workload-bindings/actr_workload_bindings/imports/host.py
+      - name: Compile Python sources
+        run: python -m compileall bindings/python/actr-workload/src examples/python/echo-workload/workload.py
+      - name: Build Python echo workload
+        working-directory: examples/python/echo-workload
+        run: ./build.sh package
 
   swift:
     name: Swift
@@ -383,8 +395,8 @@ jobs:
       - determine
       - rust
       - typescript
-      - python_binding
       - python_codegen
+      - python_workload
       - swift
       - kotlin
       - web
@@ -395,8 +407,8 @@ jobs:
       REASONS_JSON: ${{ needs.determine.outputs.reasons_json }}
       RUST_RESULT: ${{ needs.rust.result }}
       TYPESCRIPT_RESULT: ${{ needs.typescript.result }}
-      PYTHON_BINDING_RESULT: ${{ needs.python_binding.result }}
       PYTHON_CODEGEN_RESULT: ${{ needs.python_codegen.result }}
+      PYTHON_WORKLOAD_RESULT: ${{ needs.python_workload.result }}
       SWIFT_RESULT: ${{ needs.swift.result }}
       KOTLIN_RESULT: ${{ needs.kotlin.result }}
       WEB_RESULT: ${{ needs.web.result }}
@@ -412,8 +424,8 @@ jobs:
           results = {
               "rust": os.environ["RUST_RESULT"],
               "typescript": os.environ["TYPESCRIPT_RESULT"],
-              "python_binding": os.environ["PYTHON_BINDING_RESULT"],
               "python_codegen": os.environ["PYTHON_CODEGEN_RESULT"],
+              "python_workload": os.environ["PYTHON_WORKLOAD_RESULT"],
               "swift": os.environ["SWIFT_RESULT"],
               "kotlin": os.environ["KOTLIN_RESULT"],
               "web": os.environ["WEB_RESULT"],

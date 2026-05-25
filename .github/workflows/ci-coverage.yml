@@ -162,56 +162,6 @@ jobs:
           path: bindings/typescript/coverage/
           retention-days: 7
 
-  coverage-python:
-    name: Python Coverage
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    defaults:
-      run:
-        working-directory: bindings/python
-    steps:
-      - uses: actions/checkout@v5
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-          cache: "pip"
-          cache-dependency-path: bindings/python/pyproject.toml
-      - name: Set up Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ github.token }}
-      - name: Create Python virtualenv
-        run: python -m venv .venv
-      - name: Install maturin and pytest
-        run: .venv/bin/python -m pip install -U maturin "pytest>=7.0" pytest-cov
-      - name: Build and install Python binding
-        run: .venv/bin/maturin develop --manifest-path Cargo.toml
-      - name: Run coverage
-        run: |
-          .venv/bin/python -m pytest tests/ -v \
-            --cov=actr \
-            --cov-report=lcov:coverage.lcov \
-            --cov-report=html:coverage-html
-      - name: Upload lcov
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-python-lcov
-          path: bindings/python/coverage.lcov
-          retention-days: 7
-      - name: Upload HTML
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-python-html
-          path: bindings/python/coverage-html/
-          retention-days: 7
-
   coverage-kotlin:
     name: Kotlin Coverage
     runs-on: ubuntu-latest
@@ -250,7 +200,6 @@ jobs:
       - coverage-rust
       - coverage-web-rust
       - coverage-typescript
-      - coverage-python
       - coverage-kotlin
     permissions:
       contents: read
@@ -271,11 +220,6 @@ jobs:
         with:
           name: coverage-typescript-lcov
           path: coverage-artifacts/typescript
-      - name: Download Python lcov
-        uses: actions/download-artifact@v4
-        with:
-          name: coverage-python-lcov
-          path: coverage-artifacts/python
       - name: Download Kotlin XML
         uses: actions/download-artifact@v4
         with:
@@ -287,7 +231,6 @@ jobs:
             --rust-lcov coverage-artifacts/rust/lcov.info \
             --web-rust-lcov coverage-artifacts/web-rust/web-rust-lcov.info \
             --typescript-lcov coverage-artifacts/typescript/lcov.info \
-            --python-lcov coverage-artifacts/python/coverage.lcov \
             --kotlin-xml coverage-artifacts/kotlin/report.xml \
             --output-dir coverage-summary
           cat coverage-summary/coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
@@ -305,7 +248,6 @@ jobs:
       - coverage-rust
       - coverage-web-rust
       - coverage-typescript
-      - coverage-python
       - coverage-kotlin
       - coverage-summary
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
@@ -336,12 +278,10 @@ jobs:
             pages-site/coverage/rust \
             pages-site/coverage/web-rust \
             pages-site/coverage/typescript \
-            pages-site/coverage/python \
             pages-site/coverage/kotlin
           cp -R pages-artifacts/coverage-rust-html/. pages-site/coverage/rust/
           cp -R pages-artifacts/coverage-web-rust-html/. pages-site/coverage/web-rust/
           cp -R pages-artifacts/coverage-typescript-html/. pages-site/coverage/typescript/
-          cp -R pages-artifacts/coverage-python-html/. pages-site/coverage/python/
           cp -R pages-artifacts/coverage-kotlin-html/html/. pages-site/coverage/kotlin/
           python3 - <<'PY'
           import json
@@ -388,7 +328,6 @@ jobs:
               <li><a href="rust/">Rust</a></li>
               <li><a href="web-rust/">Web Rust (host)</a></li>
               <li><a href="typescript/">TypeScript</a></li>
-              <li><a href="python/">Python</a></li>
               <li><a href="kotlin/">Kotlin</a></li>
             </ul>
             <p>Web Rust (host) covers the host-compatible bindings/web crates;
@@ -411,7 +350,6 @@ jobs:
           test -s pages-site/coverage/rust/index.html
           test -s pages-site/coverage/web-rust/index.html
           test -s pages-site/coverage/typescript/index.html
-          test -s pages-site/coverage/python/index.html
           test -s pages-site/coverage/kotlin/index.html
       - name: Configure Pages
         uses: actions/configure-pages@v6

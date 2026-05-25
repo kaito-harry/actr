@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Build-time dependency pin for the Python echo workload example.
+# Build-time dependency for the Python echo workload example.
 #
-# componentize-py is alpha (Bytecode Alliance). The 0.17.x line tracks
-# WIT 0.57.x and is the version known to accept the `result<_, actr-error>`
-# shape used by this example's WIT contract. Upgrade carefully — minor
-# versions have historically changed the generated import paths.
-#
-# Runtime dependencies of the workload itself (at guest runtime inside
-# the Component) must be either pure-Python or vendored — componentize-py
-# bundles whatever is importable at build time into the Component.
-componentize-py==0.17.2
+# The actr-workload build extra pins componentize-py==0.23.0 and provides the
+# `actr-workload` CLI used by build.sh.
+-e ../../../bindings/python/actr-workload[build]

@@ -11,12 +11,9 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Python Binding Build Check
+  workload:
+    name: Python Workload Authoring Check
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: bindings/python
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -26,7 +23,7 @@ jobs:
         with:
           python-version: "3.13"
           cache: "pip"
-          cache-dependency-path: bindings/python/pyproject.toml
+          cache-dependency-path: bindings/python/actr-workload/pyproject.toml
 
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -40,17 +37,36 @@ jobs:
         with:
           repo-token: ${{ github.token }}
 
-      - name: Create Python virtualenv
-        run: python -m venv .venv
+      - name: Install wasm-tools
+        run: cargo install wasm-tools --version 1.247.0 --locked
 
-      - name: Install maturin and pytest
-        run: .venv/bin/python -m pip install -U maturin pytest
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
 
-      - name: Build Python binding
-        run: .venv/bin/maturin build --manifest-path Cargo.toml
+      - name: Verify single tracked WIT
+        run: test "$(git ls-files '*actr-workload.wit')" = "core/framework/wit/actr-workload.wit"
 
-      - name: Install Python binding (editable)
-        run: .venv/bin/maturin develop --manifest-path Cargo.toml
+      - name: Build actr-workload package
+        run: |
+          python -m pip install -U build
+          python -m build bindings/python/actr-workload
 
-      - name: Run smoke tests
-        run: .venv/bin/python -m pytest tests/ -v
+      - name: Install actr-workload build extra
+        run: python -m pip install -e 'bindings/python/actr-workload[build]'
+
+      - name: Verify componentize-py pin
+        run: componentize-py --version | grep 'componentize-py 0.23.0'
+
+      - name: Generate workload bindings
+        run: |
+          rm -rf /tmp/actr-workload-bindings
+          actr-workload bindings /tmp/actr-workload-bindings
+          test -f /tmp/actr-workload-bindings/actr_workload_bindings/exports/workload.py
+          test -f /tmp/actr-workload-bindings/actr_workload_bindings/imports/host.py
+
+      - name: Compile Python sources
+        run: python -m compileall bindings/python/actr-workload/src examples/python/echo-workload/workload.py
+
+      - name: Build Python echo workload
+        working-directory: examples/python/echo-workload
+        run: ./build.sh package

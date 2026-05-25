@@ -4,7 +4,7 @@ on:
   push:
     tags:
       - "v*"
-      - "py-v*"
+      - "workload-py-v*"
       - "codegen-py-v*"
   workflow_dispatch:
 
@@ -84,38 +84,20 @@ jobs:
             publish_one "$package"
           done
 
-  preflight-python:
-    name: Preflight Python Binding CI
+  preflight-workload-python:
+    name: Preflight Python Workload CI
     if: |
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/py-v'))
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/workload-py-v'))
     uses: ./.github/workflows/ci-python.yml
 
-  build-python:
-    name: Build Python on ${{ matrix.os }} (${{ matrix.target }})
-    needs: preflight-python
+  build-workload-python:
+    name: Build actr-workload
+    needs: preflight-workload-python
     if: |
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/py-v'))
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-          - os: macos-latest
-            target: x86_64-apple-darwin
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: bindings/python
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/workload-py-v'))
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -125,92 +107,31 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Set up Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: stable
-          target: ${{ matrix.target }}
-
-      - name: Install protobuf (macOS)
-        if: matrix.os == 'macos-latest'
-        working-directory: .
+      - name: Build package
         run: |
-          brew install protobuf openssl
+          python -m pip install -U build
+          python -m build bindings/python/actr-workload
 
-      - name: Install protobuf (Linux ARM64)
-        if: matrix.os == 'ubuntu-24.04-arm'
-        working-directory: .
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler libprotobuf-dev
-
-      - name: Install protobuf (Windows)
-        if: matrix.os == 'windows-latest'
-        working-directory: .
-        run: |
-          choco install protoc openssl
-
-      - name: Install maturin
-        run: |
-          python -m pip install -U maturin
-
-      - name: Build package (Linux x86_64)
-        if: matrix.os == 'ubuntu-latest'
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          args: --release --compatibility manylinux2014 --manifest-path bindings/python/Cargo.toml
-          manylinux: auto
-          before-script-linux: |
-            PROTOC_VERSION="29.3"
-            ARCH=$(uname -m)
-            if [ "$ARCH" = "x86_64" ]; then
-              PROTOC_ARCH="x86_64"
-            else
-              PROTOC_ARCH="aarch_64"
-            fi
-            curl -LO "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip"
-            unzip -o "protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip" -d /usr/local
-            chmod +x /usr/local/bin/protoc
-            export PROTOC=/usr/local/bin/protoc
-
-            if command -v yum &> /dev/null; then
-              yum install -y perl-core make || yum install -y perl make
-            elif command -v apt-get &> /dev/null; then
-              apt-get update && apt-get install -y perl make
-            fi
-
-      - name: Build package (Linux ARM64)
-        if: matrix.os == 'ubuntu-24.04-arm'
-        run: |
-          maturin build --release --target ${{ matrix.target }}
-
-      - name: Build package (macOS/Windows)
-        if: matrix.os == 'macos-latest' || matrix.os == 'windows-latest'
-        run: |
-          maturin build --release --target ${{ matrix.target }}
-
-      - name: Upload wheels
+      - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}-${{ matrix.target }}
-          path: bindings/python/target/wheels/*.whl
+          name: actr-workload-dist
+          path: bindings/python/actr-workload/dist/*
           if-no-files-found: error
 
-  publish-python:
-    name: Publish to PyPI
-    needs: build-python
+  publish-workload-python:
+    name: Publish actr-workload to PyPI
+    needs: build-workload-python
     runs-on: ubuntu-latest
     if: |
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/py-v'))
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/workload-py-v'))
     steps:
-      - name: Download all wheels
+      - name: Download distributions
         uses: actions/download-artifact@v4
         with:
-          pattern: wheels-*
+          name: actr-workload-dist
           path: dist
-          merge-multiple: true
 
       - name: Publish to TestPyPI
         if: contains(github.ref_name, 'beta')
@@ -227,6 +148,7 @@ jobs:
         with:
           user: __token__
           password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: dist
 
   preflight-codegen-python:
     name: Preflight Python Codegen CI
