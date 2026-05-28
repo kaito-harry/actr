@@ -180,7 +180,7 @@ jobs:
           npm ci
           npm run build
           node dist/cli.js bindings /tmp/actr-workload-ts-bindings --wit ../../../core/framework/wit/actr-workload.wit
-      - name: Build TypeScript echo workload
+      - name: Build TypeScript EchoService workload
         working-directory: examples/typescript/echo-workload
         run: |
           npm ci
@@ -467,6 +467,11 @@ jobs:
           PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
           SUITES: BasicFunction
         run: bash start-mock.sh
+      - name: Run generated TypeScript workload browser e2e
+        env:
+          ACTR_E2E_ACTR_BIN: ${{ github.workspace }}/target/release/actr
+          PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
+        run: cargo test -p actr-cli --test e2e_typescript_generated_echo_web -- --ignored --test-threads=1
 
   python_web_e2e:
     name: Python Web E2E

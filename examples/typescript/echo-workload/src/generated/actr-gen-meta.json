@@ -1,0 +1,24 @@
+{
+  "plugin_version": "actr-cli",
+  "language": "typescript",
+  "local_services": [
+    {
+      "name": "EchoService",
+      "package": "echo",
+      "proto_file": "local/echo.proto",
+      "handler_interface": "EchoServiceHandler",
+      "workload_type": "EchoServiceWorkload",
+      "dispatcher_type": "EchoServiceDispatcher",
+      "methods": [
+        {
+          "name": "Echo",
+          "snake_name": "echo",
+          "input_type": "EchoRequest",
+          "output_type": "EchoResponse",
+          "route_key": "echo.EchoService.Echo"
+        }
+      ]
+    }
+  ],
+  "remote_services": []
+}

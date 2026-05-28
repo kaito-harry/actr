@@ -1,8 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# actr build manifest for the TypeScript EchoService workload.
+
+edition = 1
+exports = ["protos/local/echo.proto"]
+
 [package]
+name = "EchoService"
 manufacturer = "acme"
-name = "EchoWorkloadTypeScript"
 version = "0.1.0"
+description = "Generated EchoService workload authored in TypeScript"
+authors = ["Actr Dev Team"]
+license = "Apache-2.0"
+tags = ["dev", "example", "typescript-guest", "component-model", "generated"]
 
 [binary]
 path = "dist/echo-typescript-0.1.0-wasm32-wasip2.wasm"
 target = "wasm32-wasip2"
+
+[dependencies]

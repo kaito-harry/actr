@@ -7,7 +7,7 @@ use crate::utils::command_exists;
 use actr_config::LockFile;
 use actr_protocol::ActrType;
 use async_trait::async_trait;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use tracing::{debug, info, warn};
@@ -33,18 +33,23 @@ struct ProtoModuleInfo {
     is_local: bool,
     generated_client_path: PathBuf,
     generated_client_import: String,
+    generated_proto_import: String,
     services: Vec<ProtoServiceInfo>,
 }
 
 #[derive(Debug, Clone)]
 struct ProtoServiceInfo {
     name: String,
+    handler_interface: String,
+    dispatcher_type: String,
+    generated_workload_import: String,
     methods: Vec<ProtoMethodInfo>,
 }
 
 #[derive(Debug, Clone)]
 struct ProtoMethodInfo {
     name: String,
+    handler_method_name: String,
     input_type: String,
     output_type: String,
     input_type_short: String,
@@ -59,8 +64,13 @@ struct GeneratedClientApi {
 #[derive(Debug, Clone)]
 struct BoundMethodInfo {
     generated_client_import: String,
+    generated_proto_import: String,
+    generated_workload_import: String,
     service_name: String,
+    handler_interface: String,
+    dispatcher_type: String,
     method_name: String,
+    handler_method_name: String,
     input_type: String,
     output_type: String,
     input_type_short: String,
@@ -68,6 +78,33 @@ struct BoundMethodInfo {
     request_companion: Option<String>,
     is_local: bool,
 }
+
+#[derive(Debug, Clone)]
+struct LocalWorkloadModule {
+    name: String,
+    services: Vec<LocalWorkloadService>,
+}
+
+#[derive(Debug, Clone)]
+struct LocalWorkloadService {
+    name: String,
+    proto_stem: String,
+    handler_interface: String,
+    dispatcher_type: String,
+    methods: Vec<LocalWorkloadMethod>,
+}
+
+#[derive(Debug, Clone)]
+struct LocalWorkloadMethod {
+    name: String,
+    handler_method_name: String,
+    input_type_short: String,
+    output_type_short: String,
+    route_key: String,
+}
+
+type ServiceImportKey<'a> = (&'a str, &'a str);
+type ServiceImportGroups = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
 
 pub struct TypeScriptGenerator;
 
@@ -78,7 +115,6 @@ impl LanguageGenerator for TypeScriptGenerator {
         self.ensure_required_tools()?;
 
         let es_plugin_path = self.ensure_protoc_gen_es(context)?;
-        let plugin_path = self.ensure_typescript_plugin(context)?;
 
         std::fs::create_dir_all(&context.output).map_err(|e| {
             ActrCliError::config_error(format!("Failed to create output directory: {e}"))
@@ -157,6 +193,7 @@ impl LanguageGenerator for TypeScriptGenerator {
         let option_str = options.join(",");
 
         if !remote_files.is_empty() {
+            let plugin_path = self.ensure_typescript_plugin(context)?;
             let mut cmd = StdCommand::new(PROTOC);
             cmd.arg(format!("--proto_path={}", proto_root.display()))
                 .arg(format!(
@@ -198,6 +235,7 @@ impl LanguageGenerator for TypeScriptGenerator {
         );
 
         flatten_local_and_lift_remote(&context.output)?;
+        self.generate_local_workload_files(context)?;
 
         let generated_files = collect_ts_files(&context.output);
         info!("✅ Generated {} TypeScript files", generated_files.len());
@@ -336,12 +374,31 @@ impl TypeScriptGenerator {
                     &proto_stem,
                     is_local,
                 );
+            let generated_proto_import = if is_local {
+                format!("./generated/{proto_stem}_pb.js")
+            } else {
+                let mut import_parts = relative_parts.clone();
+                if import_parts
+                    .first()
+                    .is_some_and(|part| matches!(part.as_str(), "local" | "remote"))
+                {
+                    import_parts.remove(0);
+                }
+                if import_parts.is_empty() {
+                    import_parts.push(format!("{proto_stem}.proto"));
+                }
+                if let Some(last) = import_parts.last_mut() {
+                    *last = format!("{proto_stem}_pb.js");
+                }
+                format!("./generated/{}", import_parts.join("/"))
+            };
 
             modules.push(ProtoModuleInfo {
                 proto_stem,
                 is_local,
                 generated_client_path,
                 generated_client_import,
+                generated_proto_import,
                 services: services_by_file.remove(&relative_norm).unwrap_or_default(),
             });
         }
@@ -350,12 +407,26 @@ impl TypeScriptGenerator {
     }
 
     fn to_proto_service_info(&self, service: ScaffoldService) -> ProtoServiceInfo {
+        let generated_workload_import = format!(
+            "./generated/{}.js",
+            workload_module_name(&service.package, &service.name)
+        );
         ProtoServiceInfo {
+            handler_interface: service
+                .handler_interface
+                .clone()
+                .unwrap_or_else(|| format!("{}Handler", service.name)),
+            dispatcher_type: service
+                .dispatcher_type
+                .clone()
+                .unwrap_or_else(|| format!("{}Dispatcher", service.name)),
+            generated_workload_import,
             name: service.name,
             methods: service
                 .methods
                 .into_iter()
                 .map(|method| ProtoMethodInfo {
+                    handler_method_name: snake_to_camel_case(&method.snake_name),
                     name: method.name,
                     input_type_short: short_proto_type(&method.input_type),
                     output_type_short: short_proto_type(&method.output_type),
@@ -399,6 +470,7 @@ impl TypeScriptGenerator {
             is_local,
             generated_client_path,
             generated_client_import,
+            generated_proto_import: String::new(),
             services,
         })
     }
@@ -434,6 +506,9 @@ impl TypeScriptGenerator {
                 if !name.is_empty() {
                     current_service = Some(ProtoServiceInfo {
                         name,
+                        handler_interface: String::new(),
+                        dispatcher_type: String::new(),
+                        generated_workload_import: String::new(),
                         methods: Vec::new(),
                     });
                 }
@@ -474,6 +549,7 @@ impl TypeScriptGenerator {
                 );
 
                 service.methods.push(ProtoMethodInfo {
+                    handler_method_name: snake_to_camel_case(&to_snake_case(&method_name)),
                     name: method_name,
                     input_type_short: short_proto_type(&input_type),
                     output_type_short: short_proto_type(&output_type),
@@ -494,6 +570,78 @@ impl TypeScriptGenerator {
         }
 
         (current_package, services)
+    }
+
+    fn generate_local_workload_files(&self, context: &GenContext) -> Result<Vec<PathBuf>> {
+        let mut modules: BTreeMap<String, LocalWorkloadModule> = BTreeMap::new();
+
+        for file in &context.proto_model.files {
+            if !file.services.iter().any(|service| {
+                context
+                    .proto_model
+                    .local_services
+                    .iter()
+                    .any(|local| local.relative_path == service.relative_path)
+            }) {
+                continue;
+            }
+
+            let proto_stem = file
+                .proto_file
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("proto")
+                .to_string();
+
+            for service in &file.services {
+                if !context.proto_model.local_services.iter().any(|local| {
+                    local.name == service.name && local.relative_path == service.relative_path
+                }) {
+                    continue;
+                }
+
+                let module_name = workload_module_name(&service.package, &service.name);
+                let module =
+                    modules
+                        .entry(module_name.clone())
+                        .or_insert_with(|| LocalWorkloadModule {
+                            name: module_name,
+                            services: Vec::new(),
+                        });
+                module.services.push(LocalWorkloadService {
+                    name: service.name.clone(),
+                    proto_stem: proto_stem.clone(),
+                    handler_interface: format!("{}Handler", service.name),
+                    dispatcher_type: format!("{}Dispatcher", service.name),
+                    methods: service
+                        .methods
+                        .iter()
+                        .map(|method| LocalWorkloadMethod {
+                            name: method.name.clone(),
+                            handler_method_name: snake_to_camel_case(&method.snake_name),
+                            input_type_short: short_proto_type(&method.input_type),
+                            output_type_short: short_proto_type(&method.output_type),
+                            route_key: method.route_key.clone(),
+                        })
+                        .collect(),
+                });
+            }
+        }
+
+        let mut generated = Vec::new();
+        for module in modules.values() {
+            let path = context.output.join(format!("{}.ts", module.name));
+            let content = generate_local_workload_content(module);
+            std::fs::write(&path, content).map_err(|e| {
+                ActrCliError::config_error(format!(
+                    "Failed to write TypeScript workload dispatcher {}: {e}",
+                    path.display()
+                ))
+            })?;
+            generated.push(path);
+        }
+
+        Ok(generated)
     }
 
     fn derive_generated_client_location(
@@ -581,8 +729,13 @@ impl TypeScriptGenerator {
 
                     bound_methods.push(BoundMethodInfo {
                         generated_client_import: module.generated_client_import.clone(),
+                        generated_proto_import: module.generated_proto_import.clone(),
+                        generated_workload_import: service.generated_workload_import.clone(),
                         service_name: service.name.clone(),
+                        handler_interface: service.handler_interface.clone(),
+                        dispatcher_type: service.dispatcher_type.clone(),
                         method_name: method.name.clone(),
+                        handler_method_name: method.handler_method_name.clone(),
                         input_type: method.input_type.clone(),
                         output_type: method.output_type.clone(),
                         input_type_short: method.input_type_short.clone(),
@@ -609,54 +762,191 @@ impl TypeScriptGenerator {
             .iter()
             .filter(|method| !method.is_local)
             .collect::<Vec<_>>();
+        let local_service_count = local_methods
+            .iter()
+            .map(|method| method.service_name.as_str())
+            .collect::<BTreeSet<_>>()
+            .len();
 
         let mut output = String::new();
         output.push_str(UNIMPLEMENTED_MARKER);
         output.push('\n');
         output.push_str(SCAFFOLD_HINT);
-        output.push_str("\n\nimport { defineWorkload } from '@actrium/actr-workload';\n");
+        output.push_str("\n\n");
+        if !local_methods.is_empty() {
+            output.push_str("import { create } from '@bufbuild/protobuf';\n");
+        }
+        output.push_str("import { defineWorkload } from '@actrium/actr-workload';\n");
+
+        if !local_methods.is_empty() {
+            let mut service_imports: BTreeMap<ServiceImportKey<'_>, ServiceImportGroups> =
+                BTreeMap::new();
+            let mut proto_type_imports: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+            let mut proto_schema_imports: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+
+            for method in &local_methods {
+                let entry = service_imports
+                    .entry((
+                        method.generated_workload_import.as_str(),
+                        method.service_name.as_str(),
+                    ))
+                    .or_default();
+                entry.0.insert(method.handler_interface.clone());
+                entry.1.insert(method.dispatcher_type.clone());
+                if local_service_count > 1 {
+                    entry.2.insert(route_constant_name(
+                        &method.service_name,
+                        &method.method_name,
+                    ));
+                }
+
+                let proto_import = method.generated_proto_import.as_str();
+                proto_type_imports
+                    .entry(proto_import)
+                    .or_default()
+                    .insert(method.input_type_short.as_str());
+                proto_type_imports
+                    .entry(proto_import)
+                    .or_default()
+                    .insert(method.output_type_short.as_str());
+                proto_schema_imports
+                    .entry(proto_import)
+                    .or_default()
+                    .insert(format!("{}Schema", method.output_type_short));
+            }
+
+            for ((module_import, _service_name), (handler_types, dispatchers, route_constants)) in
+                service_imports
+            {
+                output.push_str("import type { ");
+                output.push_str(&handler_types.into_iter().collect::<Vec<_>>().join(", "));
+                output.push_str(" } from '");
+                output.push_str(module_import);
+                output.push_str("';\n");
+
+                let values = dispatchers
+                    .into_iter()
+                    .chain(route_constants)
+                    .collect::<Vec<_>>();
+                output.push_str("import { ");
+                output.push_str(&values.join(", "));
+                output.push_str(" } from '");
+                output.push_str(module_import);
+                output.push_str("';\n");
+            }
+
+            for (proto_import, types) in proto_type_imports {
+                output.push_str("import type { ");
+                output.push_str(&types.into_iter().collect::<Vec<_>>().join(", "));
+                output.push_str(" } from '");
+                output.push_str(proto_import);
+                output.push_str("';\n");
+            }
+
+            for (proto_import, schemas) in proto_schema_imports {
+                output.push_str("import { ");
+                output.push_str(&schemas.into_iter().collect::<Vec<_>>().join(", "));
+                output.push_str(" } from '");
+                output.push_str(proto_import);
+                output.push_str("';\n");
+            }
+        }
+
+        if !local_methods.is_empty() {
+            let mut services: BTreeMap<&str, Vec<&&BoundMethodInfo>> = BTreeMap::new();
+            for method in &local_methods {
+                services
+                    .entry(method.service_name.as_str())
+                    .or_default()
+                    .push(method);
+            }
+
+            for (service_name, methods) in &services {
+                let first = methods[0];
+                output.push_str("\nclass ");
+                output.push_str(service_name);
+                output.push_str("HandlerImpl implements ");
+                output.push_str(&first.handler_interface);
+                output.push_str(" {\n");
+                for method in methods {
+                    output.push_str("  ");
+                    output.push_str(&method.handler_method_name);
+                    output.push_str("(_req: ");
+                    output.push_str(&method.input_type_short);
+                    output.push_str("): ");
+                    output.push_str(&method.output_type_short);
+                    output.push_str(" {\n");
+                    output.push_str("    return create(");
+                    output.push_str(&method.output_type_short);
+                    output.push_str("Schema, {});\n");
+                    output.push_str("  }\n\n");
+                }
+                output.push_str("}\n");
+                output.push_str("\nconst ");
+                output.push_str(&scaffold_dispatcher_variable_name(
+                    service_name,
+                    local_service_count,
+                ));
+                output.push_str(" = new ");
+                output.push_str(&first.dispatcher_type);
+                output.push_str("(new ");
+                output.push_str(service_name);
+                output.push_str("HandlerImpl());\n");
+            }
+        }
 
         output.push_str("\nexport default defineWorkload({\n  async onStart(): Promise<void> {\n    console.log('ACTR TypeScript workload started');\n");
-        if !local_methods.is_empty() {
-            output.push_str("    console.log('Local RPC methods:', ");
-            output.push_str(&local_methods.len().to_string());
-            output.push_str(");\n");
-        }
         output.push_str("    console.log('Remote RPC methods:', ");
         output.push_str(&remote_methods.len().to_string());
         output.push_str(");\n");
         if !remote_methods.is_empty() {
             output.push_str(
-                "  console.log('Remote call examples are listed below. Uncomment and adapt them when you are ready.');\n",
+                "    console.log('Remote call examples are listed below. Uncomment and adapt them when you are ready.');\n",
             );
         }
         output.push_str("  },\n\n  async onStop(): Promise<void> {\n    console.log('ACTR TypeScript workload stopped');\n  },\n\n  async dispatch(envelope): Promise<Uint8Array> {\n");
-        if !local_methods.is_empty() {
-            output.push_str("    console.log('Received workload RPC:', envelope.method);\n");
-            output.push_str(
-                "    throw new Error('Implement this workload with @actrium/actr-workload and build it with actr-workload-ts.');\n",
-            );
+        let local_services = local_methods
+            .iter()
+            .map(|method| method.service_name.as_str())
+            .collect::<BTreeSet<_>>();
+        if local_services.len() == 1 {
+            let service_name = local_services.iter().next().expect("service exists");
+            output.push_str("    return ");
+            output.push_str(&scaffold_dispatcher_variable_name(
+                service_name,
+                local_services.len(),
+            ));
+            output.push_str(".dispatch(envelope);\n");
+        } else if !local_services.is_empty() {
+            output.push_str("    switch (envelope.method) {\n");
+            for service_name in &local_services {
+                for method in local_methods
+                    .iter()
+                    .filter(|method| method.service_name == **service_name)
+                {
+                    output.push_str("      case ");
+                    output.push_str(&route_constant_name(
+                        &method.service_name,
+                        &method.method_name,
+                    ));
+                    output.push_str(":\n");
+                }
+                output.push_str("        return ");
+                output.push_str(&scaffold_dispatcher_variable_name(
+                    service_name,
+                    local_services.len(),
+                ));
+                output.push_str(".dispatch(envelope);\n");
+            }
+            output.push_str("      default:\n");
+            output.push_str("        throw new Error(`Unknown route: ${envelope.method}`);\n");
+            output.push_str("    }\n");
         } else {
             output.push_str(
                 "    throw new Error('No local RPC methods were inferred for this workload.');\n",
             );
         }
         output.push_str("  },\n});\n");
-
-        if !local_methods.is_empty() {
-            output.push_str("\n// Local RPC methods to implement in dispatch:\n");
-            for method in &local_methods {
-                output.push_str("// - ");
-                output.push_str(&method.service_name);
-                output.push('.');
-                output.push_str(&method.method_name);
-                output.push_str(" (");
-                output.push_str(&method.input_type);
-                output.push_str(" -> ");
-                output.push_str(&method.output_type);
-                output.push_str(")\n");
-            }
-        }
 
         if !remote_methods.is_empty() {
             output.push_str("\n// Remote RPC quick-start examples:\n");
@@ -1191,6 +1481,109 @@ fn normalize_actr_type_for_typescript_plugin(raw: &str) -> Result<String> {
     Ok(parsed.to_string_repr())
 }
 
+fn generate_local_workload_content(module: &LocalWorkloadModule) -> String {
+    let mut type_imports: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    let mut schema_imports: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+
+    for service in &module.services {
+        for method in &service.methods {
+            type_imports
+                .entry(&service.proto_stem)
+                .or_default()
+                .insert(&method.input_type_short);
+            type_imports
+                .entry(&service.proto_stem)
+                .or_default()
+                .insert(&method.output_type_short);
+            schema_imports
+                .entry(&service.proto_stem)
+                .or_default()
+                .insert(format!("{}Schema", method.input_type_short));
+            schema_imports
+                .entry(&service.proto_stem)
+                .or_default()
+                .insert(format!("{}Schema", method.output_type_short));
+        }
+    }
+
+    let mut output = String::new();
+    output.push_str("// DO NOT EDIT.\n");
+    output.push_str("// Generated by actr gen -l typescript.\n\n");
+    output.push_str("import type { RpcEnvelope } from '@actrium/actr-workload';\n");
+    output.push_str("import { fromBinary, toBinary } from '@bufbuild/protobuf';\n");
+
+    for (proto_stem, types) in type_imports {
+        output.push_str("import type { ");
+        output.push_str(&types.into_iter().collect::<Vec<_>>().join(", "));
+        output.push_str(" } from './");
+        output.push_str(proto_stem);
+        output.push_str("_pb.js';\n");
+    }
+
+    for (proto_stem, schemas) in schema_imports {
+        output.push_str("import { ");
+        output.push_str(&schemas.into_iter().collect::<Vec<_>>().join(", "));
+        output.push_str(" } from './");
+        output.push_str(proto_stem);
+        output.push_str("_pb.js';\n");
+    }
+
+    for service in &module.services {
+        output.push('\n');
+        for method in &service.methods {
+            output.push_str("export const ");
+            output.push_str(&route_constant_name(&service.name, &method.name));
+            output.push_str(" = ");
+            output.push_str(&typescript_string_literal(&method.route_key));
+            output.push_str(";\n");
+        }
+
+        output.push_str("\nexport interface ");
+        output.push_str(&service.handler_interface);
+        output.push_str(" {\n");
+        for method in &service.methods {
+            output.push_str("  ");
+            output.push_str(&method.handler_method_name);
+            output.push_str("(req: ");
+            output.push_str(&method.input_type_short);
+            output.push_str("): ");
+            output.push_str(&method.output_type_short);
+            output.push_str(" | Promise<");
+            output.push_str(&method.output_type_short);
+            output.push_str(">;\n");
+        }
+        output.push_str("}\n");
+
+        output.push_str("\nexport class ");
+        output.push_str(&service.dispatcher_type);
+        output.push_str(" {\n");
+        output.push_str("  constructor(private readonly handler: ");
+        output.push_str(&service.handler_interface);
+        output.push_str(") {}\n\n");
+        output.push_str("  async dispatch(envelope: RpcEnvelope): Promise<Uint8Array> {\n");
+        for method in &service.methods {
+            output.push_str("    if (envelope.method === ");
+            output.push_str(&route_constant_name(&service.name, &method.name));
+            output.push_str(") {\n");
+            output.push_str("      const request = fromBinary(");
+            output.push_str(&method.input_type_short);
+            output.push_str("Schema, envelope.payload ?? new Uint8Array());\n");
+            output.push_str("      const response = await this.handler.");
+            output.push_str(&method.handler_method_name);
+            output.push_str("(request);\n");
+            output.push_str("      return toBinary(");
+            output.push_str(&method.output_type_short);
+            output.push_str("Schema, response);\n");
+            output.push_str("    }\n\n");
+        }
+        output.push_str("    throw new Error(`Unknown route: ${envelope.method}`);\n");
+        output.push_str("  }\n");
+        output.push_str("}\n");
+    }
+
+    output
+}
+
 /// Post-process generated directory:
 /// 1. Flatten `local/` files into the output root
 /// 2. Lift `remote/xxx/` to `xxx/` (remove the `remote` layer)
@@ -1313,6 +1706,104 @@ fn short_proto_type(raw: &str) -> String {
         .next()
         .unwrap_or_default()
         .to_string()
+}
+
+fn workload_module_name(package: &str, service_name: &str) -> String {
+    let base = if package.is_empty() {
+        to_snake_case(service_name)
+    } else {
+        package.replace(['.', '-'], "_").to_ascii_lowercase()
+    };
+    format!("{base}_workload")
+}
+
+fn route_constant_name(service_name: &str, method_name: &str) -> String {
+    format!(
+        "{}_{}_ROUTE",
+        to_screaming_snake(service_name),
+        to_screaming_snake(method_name)
+    )
+}
+
+fn dispatcher_variable_name(service_name: &str) -> String {
+    format!("{}Dispatcher", lower_camel_case(service_name))
+}
+
+fn scaffold_dispatcher_variable_name(service_name: &str, local_service_count: usize) -> String {
+    if local_service_count == 1 {
+        "dispatcher".to_string()
+    } else {
+        dispatcher_variable_name(service_name)
+    }
+}
+
+fn snake_to_camel_case(raw: &str) -> String {
+    let mut parts = raw.split('_').filter(|part| !part.is_empty());
+    let Some(first) = parts.next() else {
+        return String::new();
+    };
+    let mut output = first.to_ascii_lowercase();
+    for part in parts {
+        output.push_str(&upper_camel_case(part));
+    }
+    output
+}
+
+fn lower_camel_case(raw: &str) -> String {
+    let upper = upper_camel_case(raw);
+    let mut chars = upper.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    format!(
+        "{}{}",
+        first.to_ascii_lowercase(),
+        chars.collect::<String>()
+    )
+}
+
+fn upper_camel_case(raw: &str) -> String {
+    raw.split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            let Some(first) = chars.next() else {
+                return String::new();
+            };
+            format!("{}{}", first.to_ascii_uppercase(), chars.as_str())
+        })
+        .collect::<String>()
+}
+
+fn to_snake_case(raw: &str) -> String {
+    let mut output = String::new();
+    let mut previous_was_separator = false;
+    let mut previous_was_lower_or_digit = false;
+
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if ch.is_ascii_uppercase() && previous_was_lower_or_digit && !output.ends_with('_') {
+                output.push('_');
+            }
+            output.push(ch.to_ascii_lowercase());
+            previous_was_separator = false;
+            previous_was_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        } else if !previous_was_separator && !output.is_empty() {
+            output.push('_');
+            previous_was_separator = true;
+            previous_was_lower_or_digit = false;
+        }
+    }
+
+    output.trim_matches('_').to_string()
+}
+
+fn to_screaming_snake(raw: &str) -> String {
+    to_snake_case(raw).to_ascii_uppercase()
+}
+
+fn typescript_string_literal(raw: &str) -> String {
+    format!("{raw:?}")
 }
 
 fn extract_exported_name(line: &str, prefix: &str) -> Option<String> {
@@ -1462,8 +1953,13 @@ mod tests {
         let scaffold = generator.generate_scaffold_content(&[
             BoundMethodInfo {
                 generated_client_import: "./generated/echo_client".to_string(),
+                generated_proto_import: "./generated/echo_pb.js".to_string(),
+                generated_workload_import: "./generated/echo_workload.js".to_string(),
                 service_name: "EchoService".to_string(),
+                handler_interface: "EchoServiceHandler".to_string(),
+                dispatcher_type: "EchoServiceDispatcher".to_string(),
                 method_name: "Echo".to_string(),
+                handler_method_name: "echo".to_string(),
                 input_type: "EchoRequest".to_string(),
                 output_type: "EchoResponse".to_string(),
                 input_type_short: "EchoRequest".to_string(),
@@ -1473,8 +1969,13 @@ mod tests {
             },
             BoundMethodInfo {
                 generated_client_import: "./generated/demo/remote_client".to_string(),
+                generated_proto_import: "./generated/demo/remote_pb.js".to_string(),
+                generated_workload_import: String::new(),
                 service_name: "RemoteService".to_string(),
+                handler_interface: String::new(),
+                dispatcher_type: String::new(),
                 method_name: "Ping".to_string(),
+                handler_method_name: "ping".to_string(),
                 input_type: "PingRequest".to_string(),
                 output_type: "PingResponse".to_string(),
                 input_type_short: "PingRequest".to_string(),
@@ -1486,8 +1987,14 @@ mod tests {
 
         assert!(scaffold.contains("import { defineWorkload } from '@actrium/actr-workload';"));
         assert!(scaffold.contains("export default defineWorkload({"));
-        assert!(scaffold.contains("Implement this workload with @actrium/actr-workload"));
-        assert!(scaffold.contains("// - EchoService.Echo (EchoRequest -> EchoResponse)"));
+        assert!(
+            scaffold
+                .contains("import { EchoServiceDispatcher } from './generated/echo_workload.js';")
+        );
+        assert!(scaffold.contains("class EchoServiceHandlerImpl implements EchoServiceHandler"));
+        assert!(scaffold.contains("return dispatcher.dispatch(envelope);"));
+        assert!(!scaffold.contains("Implement this workload with @actrium/actr-workload"));
+        assert!(!scaffold.contains("// - EchoService.Echo (EchoRequest -> EchoResponse)"));
         assert!(scaffold.contains("Remote RPC quick-start examples"));
         assert!(scaffold.contains("PingRequest.encode"));
         assert!(scaffold.contains("PingRequest.routeKey"));

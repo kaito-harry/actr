@@ -4,14 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "codegen": "cargo run -p actr-cli -- gen -l typescript --input protos --output src/generated",
     "build": "tsc -p tsconfig.json",
-    "componentize": "actr-workload-ts componentize dist/workload.js -o dist/echo-typescript-0.1.0-wasm32-wasip2.wasm --wit ../../../core/framework/wit/actr-workload.wit",
-    "package": "actr build --manifest manifest.toml --no-compile"
+    "componentize": "actr-workload-ts componentize dist/actr_service.js -o dist/echo-typescript-0.1.0-wasm32-wasip2.wasm --wit ../../../core/framework/wit/actr-workload.wit",
+    "package": "actr build --manifest-path manifest.toml --no-compile"
   },
   "dependencies": {
-    "@actrium/actr-workload": "file:../../../bindings/typescript/actr-workload"
+    "@actrium/actr-workload": "file:../../../bindings/typescript/actr-workload",
+    "@bufbuild/protobuf": "2.11.0"
   },
   "devDependencies": {
-    "typescript": "^5.0.0"
+    "@bufbuild/protoc-gen-es": "2.11.0",
+    "typescript": "^5.6.3"
   }
 }

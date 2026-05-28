@@ -306,10 +306,10 @@ impl WebRtcCoordinator {
 
         for (peer_id, state) in peers.iter() {
             match state.current_state {
-                RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
-                    if !state.ice_restart_inflight {
-                        targets.push(peer_id.clone());
-                    }
+                RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected
+                    if !state.ice_restart_inflight =>
+                {
+                    targets.push(peer_id.clone());
                 }
                 _ => {
                     // Only restart non-failed/disconnected connections in test mode

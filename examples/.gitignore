@@ -20,6 +20,8 @@ Thumbs.db
 
 # Generated code directories
 **/generated/
+!typescript/echo-workload/src/generated/
+!typescript/echo-workload/src/generated/**
 
 # Actrix integration files
 # actrix-*.toml

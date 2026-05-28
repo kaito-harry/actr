@@ -370,6 +370,7 @@ fn test_local_service_only() {
 
     let gen_dir = root.join("src/generated");
     assert!(gen_dir.join("greeter_pb.ts").exists());
+    assert!(gen_dir.join("greeter_workload.ts").exists());
     assert!(!gen_dir.join("greeter_client.ts").exists());
     assert!(
         !gen_dir.join("local_actor.ts").exists(),
@@ -385,15 +386,56 @@ fn test_local_service_only() {
         "remote/ directory should not exist"
     );
 
+    let workload_content = fs::read_to_string(gen_dir.join("greeter_workload.ts")).unwrap();
+    assert!(
+        workload_content.contains("import type { RpcEnvelope } from '@actrium/actr-workload';")
+    );
+    assert!(
+        workload_content.contains("import { fromBinary, toBinary } from '@bufbuild/protobuf';")
+    );
+    assert!(
+        workload_content
+            .contains("export const GREETER_SAY_HELLO_ROUTE = \"greeter.Greeter.SayHello\";")
+    );
+    assert!(workload_content.contains("export interface GreeterHandler"));
+    assert!(
+        workload_content
+            .contains("sayHello(req: HelloRequest): HelloResponse | Promise<HelloResponse>;")
+    );
+    assert!(workload_content.contains("export class GreeterDispatcher"));
+    assert!(workload_content.contains("if (envelope.method === GREETER_SAY_HELLO_ROUTE)"));
+    assert!(
+        workload_content
+            .contains("fromBinary(HelloRequestSchema, envelope.payload ?? new Uint8Array())")
+    );
+    assert!(workload_content.contains("return toBinary(HelloResponseSchema, response);"));
+    assert!(workload_content.contains("throw new Error(`Unknown route: ${envelope.method}`);"));
+
     let actr_service_content = fs::read_to_string(root.join("src/actr_service.ts")).unwrap();
     assert!(
         actr_service_content.contains("import { defineWorkload } from '@actrium/actr-workload';")
     );
+    assert!(
+        actr_service_content
+            .contains("import type { GreeterHandler } from './generated/greeter_workload.js';")
+    );
+    assert!(
+        actr_service_content
+            .contains("import { GreeterDispatcher } from './generated/greeter_workload.js';")
+    );
+    assert!(actr_service_content.contains("class GreeterHandlerImpl implements GreeterHandler"));
+    assert!(
+        actr_service_content
+            .contains("const dispatcher = new GreeterDispatcher(new GreeterHandlerImpl());")
+    );
     assert!(actr_service_content.contains("export default defineWorkload({"));
-    assert!(actr_service_content.contains("Local RPC methods:', 1"));
+    assert!(actr_service_content.contains("return dispatcher.dispatch(envelope);"));
+    assert!(!actr_service_content.contains("Local RPC methods:', 1"));
     assert!(actr_service_content.contains("Remote RPC methods:', 0"));
-    assert!(actr_service_content.contains("Received workload RPC:', envelope.method"));
-    assert!(actr_service_content.contains("// - Greeter.SayHello (HelloRequest -> HelloResponse)"));
+    assert!(!actr_service_content.contains("Received workload RPC:', envelope.method"));
+    assert!(
+        !actr_service_content.contains("// - Greeter.SayHello (HelloRequest -> HelloResponse)")
+    );
     assert!(!actr_service_content.contains("from './generated/local_actor'"));
     assert!(!actr_service_content.contains("dispatchLocalActor"));
 }
@@ -415,6 +457,7 @@ fn test_remote_service_only() {
     // Remote files are lifted: remote/echo-service/echo.proto -> src/generated/echo-service/echo_pb.ts
     assert!(gen_dir.join("echo-service/echo_pb.ts").exists());
     assert!(gen_dir.join("echo-service/echo_client.ts").exists());
+    assert!(!gen_dir.join("echo_workload.ts").exists());
     assert!(
         !gen_dir.join("local_actor.ts").exists(),
         "TypeScript remote-only generation should emit client stubs only"
@@ -461,6 +504,7 @@ fn test_local_and_remote_services() {
 
     // Local files
     assert!(gen_dir.join("greeter_pb.ts").exists());
+    assert!(gen_dir.join("greeter_workload.ts").exists());
     assert!(!gen_dir.join("greeter_client.ts").exists());
 
     // Remote files
@@ -478,8 +522,15 @@ fn test_local_and_remote_services() {
 
     let actr_service_content = fs::read_to_string(root.join("src/actr_service.ts")).unwrap();
     assert!(actr_service_content.contains("export default defineWorkload({"));
-    assert!(actr_service_content.contains("Local RPC methods:', 1"));
-    assert!(actr_service_content.contains("// - Greeter.SayHello (HelloRequest -> HelloResponse)"));
+    assert!(
+        actr_service_content
+            .contains("import { GreeterDispatcher } from './generated/greeter_workload.js';")
+    );
+    assert!(actr_service_content.contains("return dispatcher.dispatch(envelope);"));
+    assert!(!actr_service_content.contains("Local RPC methods:', 1"));
+    assert!(
+        !actr_service_content.contains("// - Greeter.SayHello (HelloRequest -> HelloResponse)")
+    );
     assert!(actr_service_content.contains("from './generated/echo-service/echo_client';"));
     assert!(actr_service_content.contains("EchoRequest.routeKey"));
     assert!(!actr_service_content.contains("from './generated/local_actor'"));
@@ -501,6 +552,7 @@ fn test_remote_clients_are_generated_without_local_dispatcher() {
     assert_success(&out, "actr gen -l typescript (local + two remotes)");
 
     let gen_dir = root.join("src/generated");
+    assert!(gen_dir.join("greeter_workload.ts").exists());
     assert!(
         !gen_dir.join("local_actor.ts").exists(),
         "TypeScript remote client generation should not emit local_actor.ts"

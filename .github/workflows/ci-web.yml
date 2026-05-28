@@ -128,3 +128,9 @@ jobs:
           # are stable in headless CI.
           SUITES: BasicFunction
         run: bash start-mock.sh
+
+      - name: Run generated TypeScript workload browser e2e
+        env:
+          ACTR_E2E_ACTR_BIN: ${{ github.workspace }}/target/release/actr
+          PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
+        run: cargo test -p actr-cli --test e2e_typescript_generated_echo_web -- --ignored --test-threads=1

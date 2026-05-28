@@ -72,6 +72,13 @@ def detect_targets(changed_files: list[str], full_run: bool) -> tuple[dict[str, 
             reasons.append(f"full_trigger:{path}")
             continue
 
+        if path == "cli/tests/e2e_typescript_generated_echo_web.rs":
+            targets["rust_core"] = True
+            targets["ts_workload"] = True
+            targets["web_binding"] = True
+            reasons.append(f"typescript_workload_web_e2e:{path}")
+            continue
+
         if path.startswith("core/"):
             targets["rust_core"] = True
             targets["ts_binding"] = True
@@ -88,6 +95,12 @@ def detect_targets(changed_files: list[str], full_run: bool) -> tuple[dict[str, 
             targets["rust_core"] = True
             targets["python_web_e2e"] = True
             reasons.append(f"python_web_e2e:{path}")
+            continue
+
+        if path.startswith("cli/assets/web-runtime/"):
+            targets["rust_core"] = True
+            targets["web_binding"] = True
+            reasons.append(f"web_runtime_asset:{path}")
             continue
 
         if path.startswith(("src/", "cli/", "bindings/ffi/")):
@@ -137,7 +150,8 @@ def detect_targets(changed_files: list[str], full_run: bool) -> tuple[dict[str, 
 
         if path.startswith("examples/typescript/echo-workload/"):
             targets["ts_workload"] = True
-            reasons.append(f"typescript_workload:{path}")
+            targets["web_binding"] = True
+            reasons.append(f"typescript_workload_web_e2e:{path}")
             continue
 
         if path.startswith(("bindings/swift/", "tools/protoc-gen/swift/")):
