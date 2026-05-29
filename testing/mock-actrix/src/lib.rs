@@ -215,6 +215,24 @@ impl MockActrixServer {
         self.pause_forwarding.store(false, Ordering::Release);
     }
 
+    /// Stop reading/writing frames for WebSocket connections that already
+    /// exist, while allowing later reconnects to establish a fresh socket.
+    pub fn blackhole_websocket_io(&self) {
+        tracing::warn!("🕳️  Blackholing existing WebSocket IO");
+        let current_generation = self.state.websocket_generation.load(Ordering::Acquire);
+        self.state
+            .blackhole_websocket_generation
+            .store(current_generation, Ordering::Release);
+    }
+
+    /// Resume reading/writing frames for blackholed WebSocket connections.
+    pub fn restore_websocket_io(&self) {
+        tracing::info!("🟢 Restoring WebSocket IO");
+        self.state
+            .blackhole_websocket_generation
+            .store(0, Ordering::Release);
+    }
+
     /// Drop the next N ICE candidate relay messages.
     ///
     /// This is a test-only hook for reproducing a post-cleanup negotiation

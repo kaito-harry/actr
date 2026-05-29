@@ -620,6 +620,15 @@ impl WebRtcCoordinator {
         }
     }
 
+    #[cfg(feature = "test-utils")]
+    pub async fn peer_session_id_for_test(&self, peer_id: &ActrId) -> Option<u64> {
+        self.peers
+            .read()
+            .await
+            .get(peer_id)
+            .map(|state| state.webrtc_conn.session_id())
+    }
+
     async fn mark_peer_recovering(&self, peer_id: &ActrId, session_id: u64, reason: &str) {
         let mut should_notify = false;
         {

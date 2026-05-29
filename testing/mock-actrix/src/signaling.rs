@@ -60,6 +60,7 @@ async fn handle_connection(
     actor_id_param: Option<String>,
 ) {
     state.connection_count.fetch_add(1, Ordering::SeqCst);
+    let connection_generation = state.websocket_generation.fetch_add(1, Ordering::SeqCst) + 1;
 
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (client_tx, mut client_rx) = mpsc::unbounded_channel::<Message>();
@@ -110,11 +111,7 @@ async fn handle_connection(
                 });
             }
             drop(registry);
-            state
-                .client_to_actr_id
-                .write()
-                .await
-                .insert(client_id.clone(), actr_id);
+            bind_client_to_actor(&state, &client_id, actr_id).await;
             if let Some(old_ws) = rebound_from.as_deref() {
                 tracing::warn!(
                     actor_id = %actor_id_str,
@@ -137,6 +134,18 @@ async fn handle_connection(
     }
 
     loop {
+        let blackhole_generation = state.blackhole_websocket_generation.load(Ordering::Acquire);
+        if blackhole_generation > 0 && connection_generation <= blackhole_generation {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    let _ = ws_tx.send(Message::Close(None)).await;
+                    break;
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+            }
+            continue;
+        }
+
         tokio::select! {
             // Server-wide shutdown: close the socket so the peer notices.
             _ = cancel.cancelled() => {
@@ -235,11 +244,7 @@ async fn handle_peer_to_server(
                     service_spec: req.service_spec.clone(),
                 };
                 state.registry.write().await.push(entry);
-                state
-                    .client_to_actr_id
-                    .write()
-                    .await
-                    .insert(sender_id.to_string(), register_ok.actr_id.clone());
+                bind_client_to_actor(state, sender_id, register_ok.actr_id.clone()).await;
             }
 
             let response = RegisterResponse {
@@ -705,6 +710,14 @@ async fn send_to_client(client_id: &str, envelope: &SignalingEnvelope, state: &A
     if let Some(tx) = clients.get(client_id) {
         let _ = tx.send(Message::Binary(Bytes::from(encoded)));
     }
+}
+
+async fn bind_client_to_actor(state: &Arc<MockState>, client_id: &str, actr_id: ActrId) {
+    let mut client_map = state.client_to_actr_id.write().await;
+    client_map.retain(|existing_client_id, existing_actor_id| {
+        existing_client_id == client_id || existing_actor_id != &actr_id
+    });
+    client_map.insert(client_id.to_string(), actr_id);
 }
 
 fn resolve_role_negotiation_targets(

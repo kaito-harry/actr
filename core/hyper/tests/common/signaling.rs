@@ -49,6 +49,14 @@ impl TestSignalingServer {
         self.inner.resume_forwarding();
     }
 
+    pub fn blackhole_websocket_io(&self) {
+        self.inner.blackhole_websocket_io();
+    }
+
+    pub fn restore_websocket_io(&self) {
+        self.inner.restore_websocket_io();
+    }
+
     pub fn drop_next_ice_candidates(&self, count: u32) {
         self.inner.drop_next_ice_candidates(count);
     }
