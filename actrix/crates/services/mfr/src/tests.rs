@@ -123,6 +123,11 @@ async fn setup_test_pool() -> SqlitePool {
     pool
 }
 
+fn valid_public_key() -> String {
+    let (_, public_key) = crypto::generate_keypair();
+    public_key
+}
+
 /// Generate a valid nonce + nonce_sig for publish requests in tests.
 ///
 /// Creates a real nonce in the DB, then signs the challenge payload with the given key.
@@ -405,19 +410,20 @@ async fn test_manufacturer_duplicate_name() {
 async fn test_manufacturer_activate() {
     let pool = setup_test_pool().await;
     let mut mfr = Manufacturer::create(&pool, "activeco", None).await.unwrap();
+    let public_key = valid_public_key();
 
-    mfr.activate(&pool, "pubkey_base64".to_string())
+    mfr.activate(&pool, public_key.clone())
         .await
         .expect("activate from pending should succeed");
 
     assert_eq!(mfr.status, MfrStatus::Active);
-    assert_eq!(mfr.public_key, "pubkey_base64");
+    assert_eq!(mfr.public_key, public_key);
     assert!(mfr.verified_at.is_some());
     assert!(mfr.updated_at.is_some());
 
     let from_db = Manufacturer::get(&pool, mfr.id).await.unwrap().unwrap();
     assert_eq!(from_db.status, MfrStatus::Active);
-    assert_eq!(from_db.public_key, "pubkey_base64");
+    assert_eq!(from_db.public_key, public_key);
 }
 
 #[tokio::test]
@@ -427,7 +433,7 @@ async fn test_manufacturer_lifecycle_full() {
         .await
         .unwrap();
 
-    mfr.activate(&pool, "pubkey123".to_string()).await.unwrap();
+    mfr.activate(&pool, valid_public_key()).await.unwrap();
     assert_eq!(mfr.status, MfrStatus::Active);
 
     mfr.suspend(&pool).await.unwrap();
@@ -483,7 +489,7 @@ async fn test_manufacturer_list_by_status() {
     let mut mfr2 = Manufacturer::create(&pool, "statuslist2", None)
         .await
         .unwrap();
-    mfr2.activate(&pool, "pk".to_string()).await.unwrap();
+    mfr2.activate(&pool, valid_public_key()).await.unwrap();
 
     let active = Manufacturer::list(&pool, Some(MfrStatus::Active))
         .await
@@ -643,7 +649,7 @@ async fn test_package_get_by_type_not_found() {
 async fn test_package_duplicate_rejected() {
     let pool = setup_test_pool().await;
     let mut mfr = Manufacturer::create(&pool, "dupkg", None).await.unwrap();
-    mfr.activate(&pool, "pk".to_string()).await.unwrap();
+    mfr.activate(&pool, valid_public_key()).await.unwrap();
 
     ActrPackage::publish(
         &pool,
@@ -680,7 +686,7 @@ async fn test_package_duplicate_rejected() {
 async fn test_package_revoke() {
     let pool = setup_test_pool().await;
     let mut mfr = Manufacturer::create(&pool, "revpkg", None).await.unwrap();
-    mfr.activate(&pool, "pk".to_string()).await.unwrap();
+    mfr.activate(&pool, valid_public_key()).await.unwrap();
 
     let mut pkg = ActrPackage::publish(
         &pool,
@@ -713,7 +719,7 @@ async fn test_package_revoke() {
 async fn test_package_list_by_mfr() {
     let pool = setup_test_pool().await;
     let mut mfr = Manufacturer::create(&pool, "listpkg", None).await.unwrap();
-    mfr.activate(&pool, "pk".to_string()).await.unwrap();
+    mfr.activate(&pool, valid_public_key()).await.unwrap();
 
     ActrPackage::publish(
         &pool,
@@ -750,7 +756,7 @@ async fn test_package_list_by_mfr() {
 async fn test_package_get_by_id() {
     let pool = setup_test_pool().await;
     let mut mfr = Manufacturer::create(&pool, "idpkg", None).await.unwrap();
-    mfr.activate(&pool, "pk".to_string()).await.unwrap();
+    mfr.activate(&pool, valid_public_key()).await.unwrap();
 
     let pkg = ActrPackage::publish(
         &pool,
@@ -808,7 +814,7 @@ async fn test_lookup_package_not_registered() {
 async fn test_lookup_package_active() {
     let pool = setup_test_pool().await;
     let mut mfr = Manufacturer::create(&pool, "lookco", None).await.unwrap();
-    mfr.activate(&pool, "pk".to_string()).await.unwrap();
+    mfr.activate(&pool, valid_public_key()).await.unwrap();
     ActrPackage::publish(
         &pool,
         mfr.id,
@@ -841,7 +847,7 @@ async fn test_lookup_package_revoked() {
     let mut mfr = Manufacturer::create(&pool, "revokedlook", None)
         .await
         .unwrap();
-    mfr.activate(&pool, "pk".to_string()).await.unwrap();
+    mfr.activate(&pool, valid_public_key()).await.unwrap();
     let mut pkg = ActrPackage::publish(
         &pool,
         mfr.id,

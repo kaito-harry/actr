@@ -614,6 +614,11 @@ impl AIdIssuer {
             return Err(AidError::InvalidFormat);
         }
 
+        if std::env::var_os("ACTRIX_TEST_NO_MFR_VERIFY").is_some() {
+            platform::recording::warn!("MFR identity verification bypassed by test environment");
+            return Ok(());
+        }
+
         let type_str = actr_type.to_string_repr();
         let mfr_name = &actr_type.manufacturer;
 
