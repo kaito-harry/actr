@@ -8,7 +8,7 @@
 //! - **SQLite 缓存**：可选，用于重启恢复
 //! - **后台写入**：不阻塞主逻辑，异步写入数据库
 
-use actr_protocol::{ActrId, ActrIdExt, ActrType};
+use actr_protocol::{ActrId, ActrType};
 use platform::RealmError;
 use platform::realm::acl::ActorAcl;
 use serde::{Deserialize, Serialize};

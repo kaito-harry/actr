@@ -31,10 +31,10 @@
 //!    - 用于细粒度的服务间访问控制
 
 use actr_protocol::{
-    AIdCredential, ActrId, ActrIdExt, ActrRelay, ActrToSignaling, ActrType, ErrorResponse,
-    PeerToSignaling, Ping, Pong, Realm, RegisterResponse, RoleAssignment, RoleNegotiation,
-    SignalingEnvelope, SignalingToActr, actr_relay, actr_to_signaling, peer_to_signaling,
-    register_response, signaling_envelope, signaling_to_actr,
+    AIdCredential, ActrId, ActrRelay, ActrToSignaling, ActrType, ErrorResponse, PeerToSignaling,
+    Ping, Pong, Realm, RegisterResponse, RoleAssignment, RoleNegotiation, SignalingEnvelope,
+    SignalingToActr, actr_relay, actr_to_signaling, peer_to_signaling, register_response,
+    signaling_envelope, signaling_to_actr,
 };
 use futures_util::{SinkExt, StreamExt};
 use platform::aid::credential::validator::AIdCredentialValidator;

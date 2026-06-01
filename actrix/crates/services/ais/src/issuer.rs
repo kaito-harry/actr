@@ -72,8 +72,8 @@ use crate::storage::{KeyRecord, KeyStorage};
 const KEY_REFRESH_CHECK_INTERVAL_SECS: u64 = 600; // 10 分钟
 
 use actr_protocol::{
-    AIdCredential, ActrId, ActrIdExt, ActrType, ActrTypeExt, ErrorResponse, IdentityClaims, Realm,
-    RegisterRequest, RegisterResponse, register_response,
+    AIdCredential, ActrId, ActrType, ErrorResponse, IdentityClaims, Realm, RegisterRequest,
+    RegisterResponse, register_response,
 };
 use base64::prelude::*;
 use ed25519_dalek::VerifyingKey;

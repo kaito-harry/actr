@@ -1,9 +1,7 @@
 //! AIS (Actor Identity Service) HTTP Handler
 
 use crate::{issuer::AIdIssuer, ratelimit::ip_rate_limiter};
-use actr_protocol::{
-    ActrTypeExt, ErrorResponse, RegisterRequest, RegisterResponse, register_response,
-};
+use actr_protocol::{ErrorResponse, RegisterRequest, RegisterResponse, register_response};
 use axum::{Router, body::Bytes, extract::State, http::HeaderMap, response::Json, routing::post};
 use platform::aid::AidError;
 use platform::monitoring::ServiceCounters;

@@ -15,7 +15,7 @@
 //! - 清理：定期清理过期数据
 
 use crate::service_registry::{ServiceCapabilities, ServiceInfo, ServiceLocation, ServiceStatus};
-use actr_protocol::{Acl, ActrId, ActrIdExt, ServiceSpec};
+use actr_protocol::{Acl, ActrId, ServiceSpec};
 use anyhow::{Context, Result};
 use prost::Message as ProstMessage;
 use serde_json;

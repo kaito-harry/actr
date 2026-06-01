@@ -29,7 +29,7 @@
 //! // 向 subscribers 推送 ActrUpEvent
 //! ```
 
-use actr_protocol::{ActrId, ActrIdExt, ActrType};
+use actr_protocol::{ActrId, ActrType};
 use platform::RealmError;
 use platform::realm::acl::ActorAcl;
 use std::collections::HashMap;

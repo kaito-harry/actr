@@ -38,7 +38,6 @@ impl IdentityClaims {
 
     /// 从 actr_protocol::ActrId 创建 IdentityClaims
     pub fn from_actr_id(actr_id: &actr_protocol::ActrId, expr_time: u64, psk: Vec<u8>) -> Self {
-        use actr_protocol::ActrIdExt;
         Self {
             realm_id: actr_id.realm.realm_id,
             actor_id: actr_id.to_string_repr(),

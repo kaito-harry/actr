@@ -3,7 +3,7 @@
 //! 提供 SignalingServer 的 Axum Router 适配器
 
 use crate::server::{SignalingServer, SignalingServerHandle};
-use actr_protocol::{AIdCredential, ActrId, ActrIdExt};
+use actr_protocol::{AIdCredential, ActrId};
 use anyhow::{Context as _, Result};
 use axum::{
     Router,
@@ -380,7 +380,7 @@ fn parse_url_identity(
         .get("actor_id")
         .ok_or_else(|| "missing actor_id".to_string())?;
     let actor_id =
-        ActrIdExt::from_string_repr(actor_str).map_err(|e| format!("invalid actor_id: {e}"))?;
+        ActrId::from_string_repr(actor_str).map_err(|e| format!("invalid actor_id: {e}"))?;
 
     let key_id = params
         .get("key_id")
