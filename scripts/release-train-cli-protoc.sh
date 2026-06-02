@@ -12,6 +12,7 @@ readonly FOUNDATION_CRATES=(
   "actr-protocol"
   "actr-service-compat"
   "actr-config"
+  "actr-web-abi"
   "actr-framework"
   "actr-runtime-mailbox"
   "actr-runtime"
@@ -371,6 +372,7 @@ skip_python = sys.argv[3] == "true"
 
 package_files = [
     repo / "Cargo.toml",
+    repo / "bindings/web/Cargo.toml",
     repo / "core/protocol/Cargo.toml",
     repo / "core/service-compat/Cargo.toml",
     repo / "core/config/Cargo.toml",
@@ -390,6 +392,10 @@ cli_dependency_names = {
     "actr-service-compat",
     "actr-framework-protoc-codegen",
     "actr-web-protoc-codegen",
+}
+
+dependency_version_names = {
+    "actr-web-abi",
 }
 
 workspace_dependency_names = {
@@ -445,6 +451,12 @@ for path in package_files:
             if name in cli_dependency_names and "version = " in line:
                 lines[index] = re.sub(r'version = "[^"]+"', f'version = "{version}"', line)
 
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        name = stripped.split("=", 1)[0].strip()
+        if name in dependency_version_names and "version = " in line:
+            lines[index] = re.sub(r'version = "[^"]+"', f'version = "{version}"', line)
+
     path.write_text("\n".join(lines) + "\n")
 
 if not skip_python:
@@ -474,6 +486,17 @@ all_publishable_crates() {
     "${CLI_CRATES[@]}"
 }
 
+package_workspace_dir() {
+  case "$1" in
+    actr-web-abi)
+      printf '%s/bindings/web' "$WORK_REPO_ROOT"
+      ;;
+    *)
+      printf '%s' "$WORK_REPO_ROOT"
+      ;;
+  esac
+}
+
 run_validation_suite() {
   log_info "Running formatter and compile checks"
   log_info "Generating CLI web runtime assets"
@@ -486,7 +509,10 @@ run_validation_suite() {
   while IFS= read -r package; do
     [[ -n "$package" ]] || continue
     log_info "Checking package contents for ${package}"
-    cargo package -p "$package" --locked --allow-dirty --list >/dev/null
+    (
+      cd "$(package_workspace_dir "$package")"
+      cargo package -p "$package" --locked --allow-dirty --list >/dev/null
+    )
   done < <(all_publishable_crates)
 
   if [[ "$SKIP_PYTHON" == false ]]; then
@@ -723,7 +749,10 @@ publish_rust_package() {
 
   local publish_log
   publish_log=$(mktemp)
-  if ! cargo publish -p "$package" --locked 2>&1 | tee "$publish_log"; then
+  if ! (
+    cd "$(package_workspace_dir "$package")"
+    cargo publish -p "$package" --locked
+  ) 2>&1 | tee "$publish_log"; then
     if grep -qi "already exists" "$publish_log"; then
       append_state "$package" "$stage" "crate" "success" "already_published" "$registry_url" "$RELEASE_SHA"
       rm -f "$publish_log"

@@ -65,10 +65,10 @@ serde-wasm-bindgen = { version = "0.6", optional = true }
 # `actr-web-abi` is the WIT-lowered browser ABI crate that lives in the
 # separately-gated `bindings/web` workspace. `WebContext` routes every
 # outbound call through its `guest::*_with_request_id` wrappers (Option U
-# γ-unified §3.3/§3.4). Kept optional + path-only so native builds never
+# γ-unified §3.3/§3.4). Kept optional + path+version so native builds never
 # pull it (or its wasm-bindgen tail) and so the cross-workspace path is
 # explicit.
-actr-web-abi = { path = "../../bindings/web/crates/actr-web-abi", optional = true }
+actr-web-abi = { path = "../../bindings/web/crates/actr-web-abi", version = "0.2.1", optional = true }
 
 [dev-dependencies]
 tokio.workspace = true
