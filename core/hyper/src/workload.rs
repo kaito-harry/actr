@@ -393,10 +393,13 @@ impl Workload {
         Box::pin(async move {
             let _ = &invocation;
             match self {
-                Workload::Linked(_) => Err(ActrError::NotImplemented(
-                    "linked workload stream callbacks are registered directly on RuntimeContext"
-                        .to_string(),
-                )),
+                Workload::Linked(_) => {
+                    let _ = (&chunk, &sender, host_abi);
+                    Err(ActrError::NotImplemented(
+                        "linked workload stream callbacks are registered directly on RuntimeContext"
+                            .to_string(),
+                    ))
+                }
                 #[cfg(feature = "wasm-engine")]
                 Workload::Wasm(workload) => workload
                     .handle_data_stream(chunk, sender, invocation, host_abi)

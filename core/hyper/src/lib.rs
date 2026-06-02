@@ -680,6 +680,21 @@ impl Node<Init> {
             .as_ref()
             .expect("Node<Init> without pending runtime config")
     }
+
+    /// Override the runtime actor type before attaching or linking a workload.
+    ///
+    /// `Node::from_config_file` can synthesize a placeholder actor type when
+    /// the runtime config has no package manifest. Linked/static hosts use this
+    /// method to provide the concrete actor identity used for AIS registration.
+    pub fn with_actor_type(mut self, actor_type: actr_protocol::ActrType) -> Self {
+        let runtime_config = self
+            .pending_runtime_config
+            .as_mut()
+            .expect("Node<Init> without pending runtime config");
+        runtime_config.package.name = actor_type.name.clone();
+        runtime_config.package.actr_type = actor_type;
+        self
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

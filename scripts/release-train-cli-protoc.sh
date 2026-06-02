@@ -744,6 +744,12 @@ publish_python_package() {
     return
   fi
 
+  if [[ -z "${PYPI_API_TOKEN:-}" ]]; then
+    log_warn "Skipping ${PYTHON_PACKAGE_NAME}; PYPI_API_TOKEN not set"
+    append_state "$PYTHON_PACKAGE_NAME" "protoc-gen" "python" "skipped" "pypi_token_missing" "$registry_url" "$RELEASE_SHA"
+    return
+  fi
+
   local upload_log
   upload_log=$(mktemp)
   (
@@ -805,9 +811,8 @@ main() {
     fail "CARGO_REGISTRY_TOKEN must be set for publishing"
   fi
 
-  if [[ -z "${PYPI_API_TOKEN:-}" ]] && [[ "$DRY_RUN" == false ]]; then
-    fail "PYPI_API_TOKEN must be set for publishing"
-  fi
+  # PYPI_API_TOKEN is optional: when unset, the Python package publish is
+  # skipped (see publish_python_package) and the train continues.
 
   if [[ -z "${PACKAGE_SYNC_GITHUB_TOKEN:-}" ]] && [[ "$DRY_RUN" == false ]]; then
     fail "PACKAGE_SYNC_GITHUB_TOKEN must be set for package-sync publishing"

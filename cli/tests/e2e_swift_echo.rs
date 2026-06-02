@@ -3,14 +3,17 @@
 //! These tests run against a local Actrix instance and local Swift projects only.
 //! Run with: `cargo test --test e2e_swift_echo -- --ignored --test-threads=1`
 
+use std::fs;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use actr_cli::test_support::{
-    LocalActrix, LoggedProcess, align_project_with_local_actrix, assert_success,
+    LocalRustEchoService, MockSignaling, align_project_with_local_actrix, assert_success,
     ensure_local_swift_xcframework, pin_echo_service_dependency_version, run_actr,
 };
 use tempfile::TempDir;
+use toml::Value;
 
 fn append_cli_target(project_dir: &std::path::Path, project_name: &str, target_name: &str) {
     let project_yml = project_dir.join("project.yml");
@@ -56,12 +59,19 @@ public final class EchoServiceHandlerImpl: EchoServiceHandler {
     }
 }
 
-extension EchoServiceWorkload: Workload where T == EchoServiceHandlerImpl {
-    public func onStart(ctx _: Context) async throws {}
-    public func onStop(ctx _: Context) async throws {}
+private final class EchoServiceLifecycleAdapter: Workload, @unchecked Sendable {
+    private let workload = EchoServiceWorkload(handler: EchoServiceHandlerImpl())
 
-    public func dispatch(ctx: Context, envelope: RpcEnvelope) async throws -> Data {
-        return try await __dispatch(ctx: ctx, envelope: envelope)
+    func onStart(ctx _: ContextBridge) async throws {}
+
+    func onReady(ctx _: ContextBridge) async throws {}
+
+    func onStop(ctx _: ContextBridge) async throws {}
+
+    func onError(ctx _: ContextBridge, event _: ErrorEventBridge) async throws {}
+
+    func dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge) async throws -> Data {
+        return try await workload.__dispatch(ctx: ctx, envelope: envelope)
     }
 }
 
@@ -69,17 +79,26 @@ extension EchoServiceWorkload: Workload where T == EchoServiceHandlerImpl {
 struct EchoServiceCLI {
     static func main() async throws {
         let cwd = FileManager.default.currentDirectoryPath
-        let configPath = (cwd as NSString).appendingPathComponent("manifest.toml")
-        let distPath = (cwd as NSString).appendingPathComponent("dist")
-        let packageName = try FileManager.default
-            .contentsOfDirectory(atPath: distPath)
-            .first(where: { $0.hasSuffix(".actr") })
-        guard let packageName else {
-            throw ActrError.Internal(msg: "No .actr package found in dist/")
-        }
-        let packagePath = (distPath as NSString).appendingPathComponent(packageName)
+        let configPath = (cwd as NSString).appendingPathComponent("actr.e2e.toml")
+        let actorType = ActrType(
+            manufacturer: "acme",
+            name: "EchoService",
+            version: "1.0.0"
+        )
+        let workload = DynamicWorkload(
+            lifecycle: EchoServiceLifecycleAdapter(),
+            signaling: nil,
+            websocket: nil,
+            webrtc: nil,
+            credential: nil,
+            mailbox: nil
+        )
 
-        let system = try await ActrNode.from(packageConfig: configPath, packagePath: packagePath)
+        let system = try await ActrNode.linked(
+            config: configPath,
+            type: actorType,
+            workload: workload
+        )
         let _ = try await system.start()
         print("EchoService registered")
 
@@ -101,12 +120,21 @@ fn write_app_cli(project_dir: &std::path::Path) {
 import Foundation
 import SwiftProtobuf
 
-extension EchoAppWorkload: Workload {
-    public func onStart(ctx _: Context) async throws {}
-    public func onStop(ctx _: Context) async throws {}
+private final class EchoAppLifecycleAdapter: Workload, @unchecked Sendable {
+    private let workload = EchoAppWorkload()
 
-    public func dispatch(ctx: Context, envelope: RpcEnvelope) async throws -> Data {
-        return try await __dispatch(ctx: ctx, envelope: envelope)
+    func onStart(ctx _: ContextBridge) async throws {}
+
+    func onReady(ctx _: ContextBridge) async throws {}
+
+    func onStop(ctx _: ContextBridge) async throws {}
+
+    func onError(ctx _: ContextBridge, event: ErrorEventBridge) async throws {
+        print("EchoAppLifecycleAdapter error: \(event)")
+    }
+
+    func dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge) async throws -> Data {
+        return try await workload.__dispatch(ctx: ctx, envelope: envelope)
     }
 }
 
@@ -114,17 +142,21 @@ extension EchoAppWorkload: Workload {
 struct EchoAppCLI {
     static func main() async throws {
         let cwd = FileManager.default.currentDirectoryPath
-        let configPath = (cwd as NSString).appendingPathComponent("manifest.toml")
-        let distPath = (cwd as NSString).appendingPathComponent("dist")
-        let packageName = try FileManager.default
-            .contentsOfDirectory(atPath: distPath)
-            .first(where: { $0.hasSuffix(".actr") })
-        guard let packageName else {
-            throw ActrError.Internal(msg: "No .actr package found in dist/")
-        }
-        let packagePath = (distPath as NSString).appendingPathComponent(packageName)
-
-        let system = try await ActrNode.from(packageConfig: configPath, packagePath: packagePath)
+        let configPath = (cwd as NSString).appendingPathComponent("actr.e2e.toml")
+        let actorType = ActrType(
+            manufacturer: "acme",
+            name: "EchoApp",
+            version: "1.0.0"
+        )
+        let workload = DynamicWorkload(
+            lifecycle: EchoAppLifecycleAdapter(),
+            signaling: nil,
+            websocket: nil,
+            webrtc: nil,
+            credential: nil,
+            mailbox: nil
+        )
+        let system = try await ActrNode.linked(config: configPath, type: actorType, workload: workload)
         let actr = try await system.start()
 
         var request = Echo_EchoRequest()
@@ -141,6 +173,69 @@ struct EchoAppCLI {
         .expect("write EchoAppCLI.swift");
 }
 
+fn write_linked_runtime_config(project_dir: &Path) {
+    let manifest_path = project_dir.join("manifest.toml");
+    let manifest = fs::read_to_string(&manifest_path).expect("read manifest.toml");
+    let parsed: Value = toml::from_str(&manifest).expect("parse manifest.toml");
+
+    let signaling_url = parsed["system"]["signaling"]["url"]
+        .as_str()
+        .expect("manifest system.signaling.url")
+        .to_string();
+    let ais_url = parsed["system"]["ais_endpoint"]["url"]
+        .as_str()
+        .expect("manifest system.ais_endpoint.url")
+        .to_string();
+    let realm_id = parsed["system"]["deployment"]["realm_id"]
+        .as_integer()
+        .expect("manifest system.deployment.realm_id");
+    let runtime_root = project_dir.join(".actr-e2e-runtime");
+    let data_dir = runtime_root.join("hyper");
+    fs::create_dir_all(&data_dir).expect("create linked runtime data dir");
+
+    let config = format!(
+        "edition = 1\n\n[signaling]\nurl = \"{signaling_url}\"\n\n[ais_endpoint]\nurl = \"{ais_url}\"\n\n[deployment]\nrealm_id = {realm_id}\n\n[hyper]\ndata_dir = \"{}\"\n\n[hyper.trust]\nkind = \"dev_only\"\n",
+        data_dir.display(),
+    );
+
+    fs::write(project_dir.join("actr.e2e.toml"), config).expect("write actr.e2e.toml");
+}
+
+fn rewrite_package_name(project_dir: &Path, package_name: &str) {
+    let manifest_path = project_dir.join("manifest.toml");
+    let manifest = fs::read_to_string(&manifest_path).expect("read manifest.toml");
+    let rewritten = manifest.replacen(
+        "name = \"echo-client-app\"",
+        &format!("name = \"{package_name}\""),
+        1,
+    );
+    fs::write(&manifest_path, rewritten).expect("write manifest.toml");
+}
+
+fn pin_echo_service_dependency_to_registry_version(project_dir: &Path) {
+    let manifest_path = project_dir.join("manifest.toml");
+    let manifest = fs::read_to_string(&manifest_path).expect("read manifest.toml");
+    let rewritten = manifest.replace(
+        r#"EchoService = { actr_type = "acme:EchoService:1.0.0" }"#,
+        r#"EchoService = { actr_type = "acme:EchoService:0.1.0" }"#,
+    );
+    fs::write(&manifest_path, rewritten).expect("write manifest.toml");
+}
+
+fn signaling_base_url(signaling_ws_url: &str) -> String {
+    signaling_ws_url
+        .trim_end_matches("/signaling/ws")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn copy_remote_echo_proto(service_dir: &Path, app_dir: &Path) {
+    let service_proto = service_dir.join("protos/local/echo.proto");
+    let app_remote_dir = app_dir.join("protos/remote/echo-service");
+    fs::create_dir_all(&app_remote_dir).expect("create app remote proto dir");
+    fs::copy(&service_proto, app_remote_dir.join("echo.proto")).expect("copy remote echo proto");
+}
+
 fn generate_xcode_project(project_dir: &std::path::Path) {
     let out = Command::new("xcodegen")
         .args(["generate"])
@@ -154,10 +249,11 @@ fn build_cli_binary(
     project_dir: &std::path::Path,
     project_name: &str,
     scheme: &str,
-    local_xcframework: &std::path::Path,
+    swift_assets: &actr_cli::test_support::LocalSwiftPackageAssets,
 ) -> std::path::PathBuf {
     let out = Command::new("xcodebuild")
-        .env("ACTR_BINARY_PATH", local_xcframework)
+        .env("ACTR_BINARY_PATH", &swift_assets.xcframework_path)
+        .env("ACTR_BINDINGS_PATH", &swift_assets.bindings_path)
         .args([
             "build",
             "-project",
@@ -188,9 +284,10 @@ fn build_cli_binary(
 #[test]
 #[ignore] // Requires macOS, Xcode, xcodegen, and local Swift bindings
 fn swift_echo_e2e_service_and_app() {
-    let local_xcframework =
+    let swift_assets =
         ensure_local_swift_xcframework().expect("failed to prepare local swift xcframework");
-    let actrix = LocalActrix::start().expect("failed to start local actrix");
+    let signaling = MockSignaling::start().expect("failed to start mock actrix");
+    let signaling_base = signaling_base_url(&signaling.signaling_ws_url);
     let tmp = TempDir::new().unwrap();
 
     let init_out = run_actr(
@@ -203,7 +300,7 @@ fn swift_echo_e2e_service_and_app() {
             "--role",
             "both",
             "--signaling",
-            &actrix.signaling_ws_url,
+            &signaling_base,
             "--manufacturer",
             "swift-e2e",
             "e2e-swift",
@@ -218,13 +315,13 @@ fn swift_echo_e2e_service_and_app() {
     assert!(app_dir.exists(), "echo-app dir should exist");
     align_project_with_local_actrix(&svc_dir).expect("failed to set local realm for service");
     align_project_with_local_actrix(&app_dir).expect("failed to set local realm for app");
-    pin_echo_service_dependency_version(&app_dir, "swift-e2e")
+    pin_echo_service_dependency_version(&app_dir, "acme")
         .expect("failed to pin app echo dependency version");
+    pin_echo_service_dependency_to_registry_version(&app_dir);
+    rewrite_package_name(&app_dir, "EchoApp");
+    write_linked_runtime_config(&svc_dir);
+    write_linked_runtime_config(&app_dir);
 
-    assert_success(
-        &run_actr(&["deps", "install"], &svc_dir),
-        "actr deps install (svc)",
-    );
     assert_success(
         &run_actr(&["gen", "-l", "swift"], &svc_dir),
         "actr gen -l swift (svc)",
@@ -232,30 +329,11 @@ fn swift_echo_e2e_service_and_app() {
     append_cli_target(&svc_dir, "EchoService", "EchoServiceCLI");
     write_service_cli(&svc_dir);
     generate_xcode_project(&svc_dir);
-    let svc_binary = build_cli_binary(
-        &svc_dir,
-        "EchoService",
-        "EchoServiceCLI",
-        &local_xcframework,
-    );
+    let _svc_binary = build_cli_binary(&svc_dir, "EchoService", "EchoServiceCLI", &swift_assets);
+    let rust_service = LocalRustEchoService::start(&signaling.signaling_ws_url)
+        .expect("failed to start rust echo service");
 
-    let mut svc_cmd = Command::new(&svc_binary);
-    svc_cmd
-        .current_dir(&svc_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut svc =
-        LoggedProcess::spawn(svc_cmd, "swift-e2e-service").expect("failed to start service");
-    assert!(
-        svc.wait_for_log("EchoService registered", Duration::from_secs(180)),
-        "service not ready within timeout:\n{}",
-        svc.logs()
-    );
-
-    assert_success(
-        &run_actr(&["deps", "install"], &app_dir),
-        "actr deps install (app)",
-    );
+    copy_remote_echo_proto(&svc_dir, &app_dir);
     assert_success(
         &run_actr(&["gen", "-l", "swift"], &app_dir),
         "actr gen -l swift (app)",
@@ -263,7 +341,7 @@ fn swift_echo_e2e_service_and_app() {
     append_cli_target(&app_dir, "EchoApp", "EchoAppCLI");
     write_app_cli(&app_dir);
     generate_xcode_project(&app_dir);
-    let app_binary = build_cli_binary(&app_dir, "EchoApp", "EchoAppCLI", &local_xcframework);
+    let app_binary = build_cli_binary(&app_dir, "EchoApp", "EchoAppCLI", &swift_assets);
 
     let mut app = Command::new(&app_binary)
         .current_dir(&app_dir)
@@ -283,7 +361,7 @@ fn swift_echo_e2e_service_and_app() {
                     "app did not exit within 120s:\nstdout: {}\nstderr: {}\nservice:\n{}",
                     String::from_utf8_lossy(&app_out.stdout),
                     String::from_utf8_lossy(&app_out.stderr),
-                    svc.logs()
+                    rust_service.logs()
                 );
             }
             None => std::thread::sleep(Duration::from_millis(500)),
@@ -295,17 +373,16 @@ fn swift_echo_e2e_service_and_app() {
     let app_stderr = String::from_utf8_lossy(&app_out.stderr);
     assert!(
         app_out.status.success(),
-        "app failed:\nstdout: {app_stdout}\nstderr: {app_stderr}\nservice logs:\n{}\nactrix logs:\n{}",
-        svc.logs(),
-        actrix.logs()
+        "app failed:\nstdout: {app_stdout}\nstderr: {app_stderr}\nservice logs:\n{}",
+        rust_service.logs(),
     );
     assert!(
-        app_stdout.contains("Echo reply: hello"),
+        app_stdout.contains("Echo reply: Echo: hello"),
         "missing echo reply in app output:\nstdout: {app_stdout}\nstderr: {app_stderr}"
     );
     assert!(
-        svc.logs().contains("Received echo request: hello"),
+        rust_service.logs().contains("✅ ActrNode started"),
         "service missing request log:\n{}",
-        svc.logs()
+        rust_service.logs()
     );
 }

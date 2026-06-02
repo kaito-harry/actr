@@ -2,6 +2,7 @@
 
 use crate::error::{ActrError, ActrResult};
 use crate::types::{ActrId, ActrType, NetworkEventResult, PayloadType};
+use crate::workload::DynamicWorkload;
 use actr_framework::{Bytes, Dest};
 use actr_hyper::{ActrRef, NetworkEventHandle, Node, Registered, WorkloadPackage};
 use parking_lot::Mutex;
@@ -53,6 +54,49 @@ impl ActrNode {
             error!("Failed to attach package-backed node: {}", e);
             ActrError::Internal {
                 msg: format!("Failed to attach package-backed node: {e}"),
+            }
+        })?;
+        let ais_endpoint = attached.ais_endpoint().to_string();
+        let registered = attached.register(&ais_endpoint).await.map_err(|e| {
+            error!("AIS registration failed: {}", e);
+            ActrError::Internal {
+                msg: format!("AIS registration failed: {e}"),
+            }
+        })?;
+
+        Ok(Arc::new(Self {
+            inner: Mutex::new(Some(registered)),
+            network_event_handle: Mutex::new(None),
+        }))
+    }
+
+    /// Create a linked/static runtime from a foreign-language workload.
+    #[uniffi::constructor(async_runtime = "tokio")]
+    pub async fn new_from_linked_workload(
+        config_path: String,
+        actor_type: ActrType,
+        workload: Arc<DynamicWorkload>,
+    ) -> ActrResult<Arc<Self>> {
+        let actor_type: actr_protocol::ActrType = actor_type.into();
+        let init = Node::from_config_file(&config_path).await.map_err(|e| {
+            error!("Failed to load runtime config: {}", e);
+            ActrError::Config {
+                msg: format!("Failed to load runtime config `{}`: {}", config_path, e),
+            }
+        })?;
+        let init = init.with_actor_type(actor_type.clone());
+        crate::logger::init_observability(init.runtime_config().observability.clone());
+
+        info!(
+            config_path = %config_path,
+            actor_type = %actor_type.to_string_repr(),
+            "Creating linked foreign workload runtime wrapper",
+        );
+
+        let attached = init.link(workload.as_ref().clone()).await.map_err(|e| {
+            error!("Failed to link foreign workload: {}", e);
+            ActrError::Internal {
+                msg: format!("Failed to link foreign workload: {e}"),
             }
         })?;
         let ais_endpoint = attached.ais_endpoint().to_string();
@@ -261,5 +305,12 @@ impl ActrRefWrapper {
         .await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl ActrRefWrapper {
+    pub(crate) async fn app_context_for_test(&self) -> actr_hyper::context::RuntimeContext {
+        self.inner.app_context().await
     }
 }

@@ -262,6 +262,19 @@ pub struct DynamicWorkload {
     mailbox: Option<Arc<dyn MailboxObserverBridge>>,
 }
 
+impl Clone for DynamicWorkload {
+    fn clone(&self) -> Self {
+        Self {
+            lifecycle: self.lifecycle.clone(),
+            signaling: self.signaling.clone(),
+            websocket: self.websocket.clone(),
+            webrtc: self.webrtc.clone(),
+            credential: self.credential.clone(),
+            mailbox: self.mailbox.clone(),
+        }
+    }
+}
+
 #[uniffi::export]
 impl DynamicWorkload {
     /// Construct a `DynamicWorkload` from a mandatory lifecycle bridge and
@@ -478,5 +491,322 @@ impl MessageDispatcher for DynamicDispatcher {
             .await
             .map_err(actr_protocol::ActrError::from)?;
         Ok(Bytes::from(response))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actr_framework::{ErrorCategory, ErrorEvent, Workload};
+    use actr_mock_actrix::MockActrixServer;
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::tempdir;
+    use tokio::sync::Notify;
+    use tokio::time::{Duration, timeout};
+
+    #[derive(Clone)]
+    struct LifecycleRecorder {
+        on_start: Arc<AtomicUsize>,
+        on_ready: Arc<AtomicUsize>,
+        on_stop: Arc<AtomicUsize>,
+        on_error: Arc<AtomicUsize>,
+        dispatches: Arc<Mutex<Vec<RpcEnvelopeBridge>>>,
+        dispatch_response: Arc<Mutex<Result<Vec<u8>, String>>>,
+        notify: Arc<Notify>,
+    }
+
+    impl Default for LifecycleRecorder {
+        fn default() -> Self {
+            Self {
+                on_start: Arc::new(AtomicUsize::new(0)),
+                on_ready: Arc::new(AtomicUsize::new(0)),
+                on_stop: Arc::new(AtomicUsize::new(0)),
+                on_error: Arc::new(AtomicUsize::new(0)),
+                dispatches: Arc::new(Mutex::new(Vec::new())),
+                dispatch_response: Arc::new(Mutex::new(Ok(Vec::new()))),
+                notify: Arc::new(Notify::new()),
+            }
+        }
+    }
+
+    impl LifecycleRecorder {
+        fn with_response(response: impl Into<Vec<u8>>) -> Self {
+            Self {
+                dispatch_response: Arc::new(Mutex::new(Ok(response.into()))),
+                ..Self::default()
+            }
+        }
+
+        fn with_unknown_route(route: impl Into<String>) -> Self {
+            Self {
+                dispatch_response: Arc::new(Mutex::new(Err(route.into()))),
+                ..Self::default()
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkloadLifecycleBridge for LifecycleRecorder {
+        async fn on_start(&self, _ctx: Arc<ContextBridge>) -> ActrResult<()> {
+            self.on_start.fetch_add(1, Ordering::Relaxed);
+            self.notify.notify_waiters();
+            Ok(())
+        }
+
+        async fn on_ready(&self, _ctx: Arc<ContextBridge>) -> ActrResult<()> {
+            self.on_ready.fetch_add(1, Ordering::Relaxed);
+            self.notify.notify_waiters();
+            Ok(())
+        }
+
+        async fn on_stop(&self, _ctx: Arc<ContextBridge>) -> ActrResult<()> {
+            self.on_stop.fetch_add(1, Ordering::Relaxed);
+            self.notify.notify_waiters();
+            Ok(())
+        }
+
+        async fn on_error(
+            &self,
+            _ctx: Arc<ContextBridge>,
+            _event: ErrorEventBridge,
+        ) -> ActrResult<()> {
+            self.on_error.fetch_add(1, Ordering::Relaxed);
+            self.notify.notify_waiters();
+            Ok(())
+        }
+
+        async fn dispatch(
+            &self,
+            _ctx: Arc<ContextBridge>,
+            envelope: RpcEnvelopeBridge,
+        ) -> ActrResult<Vec<u8>> {
+            self.dispatches.lock().push(envelope);
+            self.notify.notify_waiters();
+            self.dispatch_response
+                .lock()
+                .clone()
+                .map_err(|msg| crate::ActrError::UnknownRoute { msg })
+        }
+    }
+
+    #[tokio::test]
+    async fn linked_workload_forwards_lifecycle_callbacks() {
+        let mut server = MockActrixServer::start()
+            .await
+            .expect("mock actrix server should start");
+        let temp = tempdir().expect("temp dir");
+        let config_path = temp.path().join("actr.toml");
+        let data_dir = temp.path().display().to_string().replace('\\', "/");
+        std::fs::write(
+            &config_path,
+            format!(
+                "edition = 1\n\
+                 [signaling]\n\
+                 url = \"{}\"\n\
+                 [ais_endpoint]\n\
+                 url = \"{}/ais\"\n\
+                 [deployment]\n\
+                 realm_id = 1\n\
+                 [hyper]\n\
+                 data_dir = \"{}\"\n\
+                 [hyper.trust]\n\
+                 kind = \"dev_only\"\n",
+                server.ws_url(),
+                server.http_url(),
+                data_dir,
+            ),
+        )
+        .expect("write actr.toml");
+
+        let lifecycle = LifecycleRecorder::default();
+        let workload =
+            DynamicWorkload::new(Box::new(lifecycle.clone()), None, None, None, None, None);
+        let node = crate::runtime::ActrNode::new_from_linked_workload(
+            config_path.display().to_string(),
+            crate::types::ActrType {
+                manufacturer: "acme".to_string(),
+                name: "LifecycleProbe".to_string(),
+                version: "0.1.0".to_string(),
+            },
+            workload.clone(),
+        )
+        .await
+        .expect("linked workload node should be created");
+
+        let actr_ref = node
+            .start()
+            .await
+            .expect("linked workload node should start");
+
+        wait_for_count(&lifecycle.notify, &lifecycle.on_start, 1, "on_start").await;
+
+        let ctx = actr_ref.app_context_for_test().await;
+        <DynamicWorkload as Workload>::on_ready(workload.as_ref(), &ctx)
+            .await
+            .expect("on_ready forwarding should succeed");
+        wait_for_count(&lifecycle.notify, &lifecycle.on_ready, 1, "on_ready").await;
+
+        let error = ErrorEvent::now(
+            actr_protocol::ActrError::Internal("boom".to_string()),
+            ErrorCategory::HandlerError,
+            "test error",
+        );
+        <DynamicWorkload as Workload>::on_error(workload.as_ref(), &ctx, &error)
+            .await
+            .expect("on_error forwarding should succeed");
+        wait_for_count(&lifecycle.notify, &lifecycle.on_error, 1, "on_error").await;
+
+        actr_ref.shutdown();
+        actr_ref.wait_for_shutdown().await;
+        wait_for_count(&lifecycle.notify, &lifecycle.on_stop, 1, "on_stop").await;
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn linked_workload_dispatches_local_call_to_foreign_lifecycle_bridge() {
+        let mut server = MockActrixServer::start()
+            .await
+            .expect("mock actrix server should start");
+        let temp = tempdir().expect("temp dir");
+        let config_path = write_test_config(temp.path(), &server);
+
+        let lifecycle = LifecycleRecorder::with_response(b"swift-local:hello".to_vec());
+        let node = linked_workload_node(&config_path, lifecycle.clone())
+            .await
+            .expect("linked workload node should be created");
+        let actr_ref = node
+            .start()
+            .await
+            .expect("linked workload node should start");
+        wait_for_count(&lifecycle.notify, &lifecycle.on_start, 1, "on_start").await;
+
+        let response = actr_ref
+            .call(
+                "echoapp.LocalEchoService.Send".to_string(),
+                crate::types::PayloadType::RpcReliable,
+                b"hello".to_vec(),
+                30_000,
+            )
+            .await
+            .expect("local call should dispatch through the foreign bridge");
+
+        assert_eq!(response, b"swift-local:hello");
+        {
+            let dispatches = lifecycle.dispatches.lock();
+            assert_eq!(dispatches.len(), 1);
+            assert_eq!(dispatches[0].route_key, "echoapp.LocalEchoService.Send");
+            assert_eq!(dispatches[0].payload, b"hello");
+            assert!(!dispatches[0].request_id.is_empty());
+        }
+
+        actr_ref.shutdown();
+        actr_ref.wait_for_shutdown().await;
+        wait_for_count(&lifecycle.notify, &lifecycle.on_stop, 1, "on_stop").await;
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn linked_workload_propagates_foreign_dispatch_errors() {
+        let mut server = MockActrixServer::start()
+            .await
+            .expect("mock actrix server should start");
+        let temp = tempdir().expect("temp dir");
+        let config_path = write_test_config(temp.path(), &server);
+
+        let lifecycle = LifecycleRecorder::with_unknown_route("echoapp.UnknownService.Send");
+        let node = linked_workload_node(&config_path, lifecycle.clone())
+            .await
+            .expect("linked workload node should be created");
+        let actr_ref = node
+            .start()
+            .await
+            .expect("linked workload node should start");
+        wait_for_count(&lifecycle.notify, &lifecycle.on_start, 1, "on_start").await;
+
+        let err = actr_ref
+            .call(
+                "echoapp.UnknownService.Send".to_string(),
+                crate::types::PayloadType::RpcReliable,
+                b"hello".to_vec(),
+                30_000,
+            )
+            .await
+            .expect_err("foreign dispatch errors should cross the FFI runtime boundary");
+
+        assert!(
+            matches!(err, crate::ActrError::Unavailable { ref msg } if msg.contains("UnknownRoute(\"echoapp.UnknownService.Send\")")),
+            "unexpected dispatch error: {err:?}"
+        );
+        {
+            let dispatches = lifecycle.dispatches.lock();
+            assert_eq!(dispatches.len(), 1);
+            assert_eq!(dispatches[0].route_key, "echoapp.UnknownService.Send");
+        }
+
+        actr_ref.shutdown();
+        actr_ref.wait_for_shutdown().await;
+        wait_for_count(&lifecycle.notify, &lifecycle.on_stop, 1, "on_stop").await;
+
+        server.shutdown().await;
+    }
+
+    async fn wait_for_count(notify: &Notify, counter: &AtomicUsize, expected: usize, label: &str) {
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if counter.load(Ordering::Relaxed) >= expected {
+                    break;
+                }
+                notify.notified().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{label} callback was not observed"));
+    }
+
+    fn write_test_config(dir: &std::path::Path, server: &MockActrixServer) -> std::path::PathBuf {
+        let config_path = dir.join("actr.toml");
+        let data_dir = dir.display().to_string().replace('\\', "/");
+        std::fs::write(
+            &config_path,
+            format!(
+                "edition = 1\n\
+                 [signaling]\n\
+                 url = \"{}\"\n\
+                 [ais_endpoint]\n\
+                 url = \"{}/ais\"\n\
+                 [deployment]\n\
+                 realm_id = 1\n\
+                 [hyper]\n\
+                 data_dir = \"{}\"\n\
+                 [hyper.trust]\n\
+                 kind = \"dev_only\"\n",
+                server.ws_url(),
+                server.http_url(),
+                data_dir,
+            ),
+        )
+        .expect("write actr.toml");
+        config_path
+    }
+
+    async fn linked_workload_node(
+        config_path: &std::path::Path,
+        lifecycle: LifecycleRecorder,
+    ) -> ActrResult<Arc<crate::runtime::ActrNode>> {
+        let workload = DynamicWorkload::new(Box::new(lifecycle), None, None, None, None, None);
+        crate::runtime::ActrNode::new_from_linked_workload(
+            config_path.display().to_string(),
+            crate::types::ActrType {
+                manufacturer: "acme".to_string(),
+                name: "LifecycleProbe".to_string(),
+                version: "0.1.0".to_string(),
+            },
+            workload,
+        )
+        .await
     }
 }

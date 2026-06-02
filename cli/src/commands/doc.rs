@@ -276,7 +276,9 @@ impl DocCommand {
                 tree.push_str("├── project.yml        # XcodeGen configuration\n");
                 tree.push_str(&format!("├── {}/          # Source code\n", project_name));
                 tree.push_str("│   ├── App.swift      # Entrypoint\n");
-                tree.push_str("│   └── Generated/     # Generated code\n");
+                tree.push_str("│   ├── ActrService.swift # User business scaffold\n");
+                tree.push_str("│   ├── ContentView.swift # UI template from actr init\n");
+                tree.push_str("│   └── Generated/     # Immutable generated code\n");
             }
             DetectedProjectLanguage::Kotlin => {
                 tree.push_str("├── build.gradle.kts   # Gradle configuration\n");

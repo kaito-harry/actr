@@ -101,6 +101,17 @@ fn swift_echo_init_creates_expected_files() {
         app_dir.join("Info.plist").exists(),
         "Info.plist should exist"
     );
+    assert!(
+        !app_dir.join("Generated").exists(),
+        "Generated/ should not exist before `actr gen -l swift`"
+    );
+
+    let actr_service =
+        std::fs::read_to_string(app_dir.join("ActrService.swift")).expect("read ActrService.swift");
+    assert!(
+        actr_service.contains("ACTR: mutable scaffold"),
+        "ActrService.swift should contain the mutable scaffold marker"
+    );
 }
 
 #[test]
@@ -206,5 +217,26 @@ fn swift_echo_full_workflow_init_install_gen() {
     assert!(
         gen_dir.join("echo.client.swift").exists(),
         "actr gen should produce echo.client.swift"
+    );
+    assert!(
+        !project_dir
+            .join(project_name)
+            .join("echo.pb.swift")
+            .exists(),
+        "generated protobuf files should not remain in the app root"
+    );
+    assert!(
+        !project_dir
+            .join(project_name)
+            .join("echo.client.swift")
+            .exists(),
+        "generated client files should not remain in the app root"
+    );
+    assert!(
+        project_dir
+            .join(project_name)
+            .join("ActrService.swift")
+            .exists(),
+        "ActrService.swift should remain in the app root"
     );
 }

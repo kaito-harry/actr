@@ -14,6 +14,7 @@ public final class ActrNode: Sendable {
     private let inner: ActrBindings.ActrNode
     private let networkEventMonitor: NetworkEventMonitor
     private let appLifecycleMonitor: AppLifecycleMonitor
+    private let retainedWorkload: DynamicWorkload?
 
     /// Creates a package-backed node from config and package file paths.
     public static func from(packageConfig configPath: String, packagePath: String) async throws -> ActrNode {
@@ -24,7 +25,12 @@ public final class ActrNode: Sendable {
         let handle = try wrapper.createNetworkEventHandle()
         let monitor = NetworkEventMonitor(handle: handle)
         let lifecycleMonitor = AppLifecycleMonitor(handle: handle)
-        return ActrNode(inner: wrapper, networkEventMonitor: monitor, appLifecycleMonitor: lifecycleMonitor)
+        return ActrNode(
+            inner: wrapper,
+            networkEventMonitor: monitor,
+            appLifecycleMonitor: lifecycleMonitor,
+            retainedWorkload: nil
+        )
     }
 
     /// Creates a package-backed node from config and package file URLs.
@@ -38,16 +44,48 @@ public final class ActrNode: Sendable {
         return try await from(packageConfig: configURL.path, packagePath: packageURL.path)
     }
 
+    /// Creates a linked/static node from config, explicit actor identity, and a Swift-provided workload.
+    public static func linked(config configPath: String, type actorType: ActrType, workload: DynamicWorkload) async throws -> ActrNode {
+        let wrapper = try await ActrBindings.ActrNode.newFromLinkedWorkload(
+            configPath: configPath,
+            actorType: actorType,
+            workload: workload
+        )
+        let handle = try wrapper.createNetworkEventHandle()
+        let monitor = NetworkEventMonitor(handle: handle)
+        let lifecycleMonitor = AppLifecycleMonitor(handle: handle)
+        return ActrNode(
+            inner: wrapper,
+            networkEventMonitor: monitor,
+            appLifecycleMonitor: lifecycleMonitor,
+            retainedWorkload: workload
+        )
+    }
+
+    /// Creates a linked/static node from a config file URL, explicit actor identity, and a Swift-provided workload.
+    public static func linked(config configURL: URL, type actorType: ActrType, workload: DynamicWorkload) async throws -> ActrNode {
+        guard configURL.isFileURL else {
+            throw ActrError.Config(msg: "config URL must be a file URL")
+        }
+        return try await linked(config: configURL.path, type: actorType, workload: workload)
+    }
+
     /// Starts the package-backed actor and returns a running reference.
     public func start() async throws -> ActrRef {
         let refWrapper = try await inner.start()
-        return ActrRef(inner: refWrapper)
+        return ActrRef(inner: refWrapper, retainedWorkload: retainedWorkload)
     }
 
-    fileprivate init(inner: ActrBindings.ActrNode, networkEventMonitor: NetworkEventMonitor, appLifecycleMonitor: AppLifecycleMonitor) {
+    fileprivate init(
+        inner: ActrBindings.ActrNode,
+        networkEventMonitor: NetworkEventMonitor,
+        appLifecycleMonitor: AppLifecycleMonitor,
+        retainedWorkload: DynamicWorkload?
+    ) {
         self.inner = inner
         self.networkEventMonitor = networkEventMonitor
         self.appLifecycleMonitor = appLifecycleMonitor
+        self.retainedWorkload = retainedWorkload
     }
 }
 

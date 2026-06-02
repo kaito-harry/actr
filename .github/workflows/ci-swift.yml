@@ -46,6 +46,12 @@ jobs:
           ACTR_BINDINGS_PATH=dist/ActrBindings \
           ACTR_BINARY_PATH=dist/ActrFFI.xcframework \
           swift build
+      - name: Test Swift bindings package
+        working-directory: bindings/swift
+        run: |
+          ACTR_BINDINGS_PATH=dist/ActrBindings \
+          ACTR_BINARY_PATH=dist/ActrFFI.xcframework \
+          swift test
       - name: Build Swift codegen package
         working-directory: tools/protoc-gen/swift
         run: swift build

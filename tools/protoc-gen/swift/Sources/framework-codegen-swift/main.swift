@@ -81,11 +81,13 @@ struct ActrFrameworkGenerator {
     let remoteFilesParam = Set(
       (parameters["RemoteFiles"] ?? "").split(separator: ":").map(String.init))
 
-    // Parse RemoteFileActrTypes parameter: file1:actr_type1,file2:actr_type2
+    // Parse RemoteFileActrTypes parameter: file1=actr_type1;file2=actr_type2
+    // The top-level protoc parameter string is comma-separated, so mappings
+    // inside one parameter use semicolons.
     var remoteFileToActrType: [String: String] = [:]
     if let remoteFileActrTypesParam = parameters["RemoteFileActrTypes"] {
-      for mapping in remoteFileActrTypesParam.split(separator: ",") {
-        let parts = mapping.split(separator: ":", maxSplits: 1)
+      for mapping in remoteFileActrTypesParam.split(separator: ";") {
+        let parts = mapping.split(separator: "=", maxSplits: 1)
         if parts.count == 2 {
           let file = String(parts[0])
           let actrType = String(parts[1])
@@ -129,7 +131,7 @@ struct ActrFrameworkGenerator {
 
           let actrType =
             remoteFileToActrType[fileDescriptor.name]
-            ?? "\(manufacturer)+\(serviceName)"
+            ?? "\(manufacturer):\(serviceName):1.0.0"
           remoteServiceMetadata.append(
             RemoteServiceMetadata(
               name: serviceName,
@@ -217,7 +219,7 @@ struct ActrFrameworkGenerator {
         for remoteService in remoteServices {
           let actrType =
             remoteFileToActrType[remoteService.fileName]
-            ?? "\(manufacturer)+\(remoteService.serviceName)"
+            ?? "\(manufacturer):\(remoteService.serviceName):1.0.0"
           if servicesByActrType[actrType] == nil {
             servicesByActrType[actrType] = []
           }
@@ -357,7 +359,7 @@ struct ActrFrameworkGenerator {
             for remoteService in remoteServices {
               let actrType =
                 remoteFileToActrType[remoteService.fileName]
-                ?? "\(manufacturer)+\(remoteService.serviceName)"
+                ?? "\(manufacturer):\(remoteService.serviceName):1.0.0"
               if servicesByActrType[actrType] == nil {
                 servicesByActrType[actrType] = []
               }

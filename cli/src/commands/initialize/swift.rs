@@ -70,16 +70,20 @@ impl ProjectInitializer for SwiftInitializer {
         if context.echo_role == Some(EchoRole::Service) {
             info!("  actr deps install  # Create manifest.lock.toml for the local service project");
             info!(
-                "  actr gen -l swift  # Generate Actor framework code into {}/Generated",
+                "  actr gen -l swift  # Generate and reconcile immutable code into {}/Generated",
                 template_context.project_name_pascal
             );
         } else {
             info!("  actr deps install  # Install project dependencies from manifest.toml");
             info!(
-                "  actr gen -l swift  # Generate Actor framework code into {}/Generated",
+                "  actr gen -l swift  # Generate and reconcile immutable code into {}/Generated",
                 template_context.project_name_pascal
             );
         }
+        info!(
+            "  # Implement business logic in {}/ActrService.swift",
+            template_context.project_name_pascal
+        );
         info!("  xcodegen generate");
         info!("  open {}.xcodeproj", template_context.project_name_pascal);
         info!("  # If you update project.yml, rerun: xcodegen generate");

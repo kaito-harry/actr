@@ -346,6 +346,32 @@ jobs:
           ACTR_BINDINGS_PATH=dist/ActrBindings \
           ACTR_BINARY_PATH=dist/ActrFFI.xcframework \
           swift build
+      - name: Test Swift bindings package
+        working-directory: bindings/swift
+        env:
+          ACTR_SWIFT_E2E: "1"
+        run: |
+          cargo run -p actr-mock-actrix --bin mock-actrix -- --port 8081 > "$RUNNER_TEMP/mock-actrix.log" 2>&1 &
+          mock_pid="$!"
+          trap 'kill "$mock_pid" || true' EXIT
+          for _ in {1..60}; do
+            if grep -q "mock-actrix listening" "$RUNNER_TEMP/mock-actrix.log"; then
+              cat "$RUNNER_TEMP/mock-actrix.log"
+              break
+            fi
+            if ! kill -0 "$mock_pid" 2>/dev/null; then
+              cat "$RUNNER_TEMP/mock-actrix.log"
+              exit 1
+            fi
+            sleep 1
+          done
+          if ! grep -q "mock-actrix listening" "$RUNNER_TEMP/mock-actrix.log"; then
+            cat "$RUNNER_TEMP/mock-actrix.log"
+            exit 1
+          fi
+          ACTR_BINDINGS_PATH=dist/ActrBindings \
+          ACTR_BINARY_PATH=dist/ActrFFI.xcframework \
+          swift test
       - name: Build Swift codegen package
         working-directory: tools/protoc-gen/swift
         run: swift build

@@ -15,9 +15,9 @@ English | [简体中文](README.zh.md)
 ├── project.yml            # XcodeGen project configuration
 ├── {{PROJECT_NAME_PASCAL}}/               # iOS application source code
 │   ├── {{PROJECT_NAME_PASCAL}}.swift      # App entry point
-│   ├── ActrService.swift  # Actr service implementation
-│   ├── ContentView.swift  # Main UI view
-│   └── Generated/         # Auto-generated code
+│   ├── ActrService.swift  # User-owned business scaffold
+│   ├── ContentView.swift  # Main UI view (managed by `actr init`)
+│   └── Generated/         # Immutable generated code from `actr gen`
 ├── protos/                # Protocol buffer definitions
 │   ├── local/             # Local service definitions
 │   └── remote/            # Remote service definitions
@@ -59,7 +59,7 @@ To create a new {{PROJECT_NAME_PASCAL}} project from scratch, follow these three
    ```bash
    actr gen -l swift
    ```
-   This generates the Swift code from Actr configuration and protocol definitions.
+   This generates immutable Swift code into `{{PROJECT_NAME_PASCAL}}/Generated` and preserves your editable `ActrService.swift`.
 
 ## Launch and Setup Notes
 
@@ -95,8 +95,15 @@ Modify these settings as needed for your deployment environment.
 1. Modify protocol definitions in `protos/` if needed
 2. Use `actr discovery` to view services and add them to `manifest.toml`
 3. Use `actr deps install` to download proto files and generate `manifest.lock.toml`
-4. Regenerate code: `actr gen -l swift`
-5. Build and test in Xcode
+4. Regenerate immutable code: `actr gen -l swift`
+5. Implement or update business logic in `{{PROJECT_NAME_PASCAL}}/ActrService.swift`
+6. Build and test in Xcode
+
+## Code Ownership
+
+- `{{PROJECT_NAME_PASCAL}}/Generated/` is owned by `actr gen -l swift`. Do not edit these files manually.
+- `{{PROJECT_NAME_PASCAL}}/ActrService.swift` is the mutable business scaffold. Customize it freely.
+- `ContentView.swift` and other UI files are created by `actr init` and are not rewritten by `actr gen`.
 
 ## License
 

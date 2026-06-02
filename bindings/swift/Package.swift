@@ -10,9 +10,9 @@ let bindingsPath = env["ACTR_BINDINGS_PATH"] ?? "ActrBindings"
 let overrideBinaryPath = env["ACTR_BINARY_PATH"]
 let localBinaryPath = "ActrFFI.xcframework"
 
-let releaseTag = env["ACTR_BINARY_TAG"] ?? "v0.1.29"
+let releaseTag = env["ACTR_BINARY_TAG"] ?? "v0.2.0"
 let remoteBinaryURL = "https://github.com/Actrium/actr-swift-package-sync/releases/download/\(releaseTag)/ActrFFI.xcframework.zip"
-let remoteBinaryChecksum = env["ACTR_BINARY_CHECKSUM"] ?? "403e8f520bf728edd4d01565e6ac72485c8adae9c4cb3fdbd7718c2a0af6137c"
+let remoteBinaryChecksum = env["ACTR_BINARY_CHECKSUM"] ?? "33020bdcfababe2049763c8bbbb6e539bc04f4fed2127b97c291b4c3ce7d7654"
 
 let manifestDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
 let localBinaryAbsolutePath = URL(fileURLWithPath: localBinaryPath, relativeTo: URL(fileURLWithPath: manifestDir)).path
@@ -66,7 +66,11 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-protobuf.git", .upToNextMinor(from: "1.32.0")),
+        .package(
+            name: "SwiftProtobuf",
+            url: "https://github.com/apple/swift-protobuf.git",
+            .upToNextMinor(from: "1.32.0")
+        ),
     ],
     targets: [
         actrBinaryTarget,
@@ -89,8 +93,15 @@ let package = Package(
                 "ActrFFI",
                 "ActrBindings",
                 "ActrFFILib",
-                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+                .product(name: "SwiftProtobuf", package: "SwiftProtobuf"),
+            ],
+            linkerSettings: [
+                .linkedFramework("SystemConfiguration"),
             ]
+        ),
+        .testTarget(
+            name: "ActrTests",
+            dependencies: ["Actr"]
         ),
     ]
 )

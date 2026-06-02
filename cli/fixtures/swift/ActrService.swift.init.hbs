@@ -4,6 +4,9 @@ import OSLog
 import SwiftProtobuf
 import SwiftUI
 
+// ACTR: mutable scaffold
+// User-owned business scaffold. Keep Generated/ immutable and customize this file.
+
 @MainActor
 final class ActrService: ObservableObject {
     @Published var connectionStatus: ConnectionStatus = .disconnected

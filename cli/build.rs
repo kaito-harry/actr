@@ -44,12 +44,16 @@ fn main() {
 fn copy_generated_web_assets() {
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let asset_dir = manifest_dir.join("assets/web-runtime");
+    let generated_dir = manifest_dir
+        .parent()
+        .expect("cli crate should live under the workspace root")
+        .join("bindings/web/dist/sw");
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("web-runtime");
 
     fs::create_dir_all(&out_dir).unwrap();
 
     for name in GENERATED_WEB_ASSETS {
-        let src = asset_dir.join(name);
+        let src = resolve_generated_asset_source(&asset_dir, &generated_dir, name);
         if !src.is_file() {
             fail_missing_web_asset(&src);
         }
@@ -61,6 +65,15 @@ fn copy_generated_web_assets() {
             )
         });
     }
+}
+
+fn resolve_generated_asset_source(asset_dir: &Path, generated_dir: &Path, name: &str) -> PathBuf {
+    let cli_asset = asset_dir.join(name);
+    if cli_asset.is_file() {
+        return cli_asset;
+    }
+
+    generated_dir.join(name)
 }
 
 fn fail_missing_web_asset(path: &Path) -> ! {

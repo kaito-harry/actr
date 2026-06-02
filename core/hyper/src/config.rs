@@ -628,4 +628,32 @@ realm_id = 1
             .await
             .expect("top-level [[trust]] registry anchor should be accepted");
     }
+
+    #[tokio::test]
+    async fn node_from_config_file_allows_linked_actor_type_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("actr.toml");
+        let data_dir = dir.path().display().to_string().replace('\\', "/");
+        std::fs::write(
+            &path,
+            format!(
+                "{BASE_CONFIG_TOML}[hyper]\ndata_dir = \"{data_dir}\"\n\
+                 [hyper.trust]\nkind = \"dev_only\"\n"
+            ),
+        )
+        .unwrap();
+
+        let actor_type = actr_protocol::ActrType {
+            manufacturer: "acme".to_string(),
+            name: "EchoApp".to_string(),
+            version: "0.1.0".to_string(),
+        };
+
+        let node = node_from_config_file(&path)
+            .await
+            .expect("dev_only trust should be accepted")
+            .with_actor_type(actor_type.clone());
+
+        assert_eq!(node.runtime_config().actr_type(), &actor_type);
+    }
 }

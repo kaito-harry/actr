@@ -450,6 +450,11 @@ uint64_t uniffi_actr_fn_clone_actrnode(uint64_t handle, RustCallStatus *_Nonnull
 void uniffi_actr_fn_free_actrnode(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CONSTRUCTOR_ACTRNODE_NEW_FROM_LINKED_WORKLOAD
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CONSTRUCTOR_ACTRNODE_NEW_FROM_LINKED_WORKLOAD
+uint64_t uniffi_actr_fn_constructor_actrnode_new_from_linked_workload(RustBuffer config_path, RustBuffer actor_type, uint64_t workload
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CONSTRUCTOR_ACTRNODE_NEW_FROM_PACKAGE_FILE
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CONSTRUCTOR_ACTRNODE_NEW_FROM_PACKAGE_FILE
 uint64_t uniffi_actr_fn_constructor_actrnode_new_from_package_file(RustBuffer config_path, RustBuffer package_path
@@ -1131,6 +1136,12 @@ uint16_t uniffi_actr_checksum_method_opusencoder_encode(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_OPUSENCODER_FRAME_SIZE
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_OPUSENCODER_FRAME_SIZE
 uint16_t uniffi_actr_checksum_method_opusencoder_frame_size(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_ACTRNODE_NEW_FROM_LINKED_WORKLOAD
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_ACTRNODE_NEW_FROM_LINKED_WORKLOAD
+uint16_t uniffi_actr_checksum_constructor_actrnode_new_from_linked_workload(void
     
 );
 #endif
