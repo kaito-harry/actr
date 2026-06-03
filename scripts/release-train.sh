@@ -41,7 +41,7 @@ readonly OPTIONAL_SKIPPED_COMPONENTS=(
 readonly PACKAGE_SYNC_GITHUB_API="https://api.github.com"
 readonly SWIFT_PACKAGE_SYNC_REPO="actr-swift-package-sync"
 readonly KOTLIN_PACKAGE_SYNC_REPO="actr-kotlin-package-sync"
-readonly RELEASE_BRANCH_PREFIX="release/prepare-v"
+readonly RELEASE_BRANCH_PREFIX="release-prepare/v"
 
 ORIGINAL_REPO_ROOT=""
 WORK_REPO_ROOT=""

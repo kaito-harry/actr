@@ -78,7 +78,7 @@ jobs:
         if: steps.prepare.outputs.skip != 'true'
         run: |
           set -euo pipefail
-          BRANCH="release/prepare-v${{ steps.prepare.outputs.version }}"
+          BRANCH="release-prepare/v${{ steps.prepare.outputs.version }}"
           git checkout -b "$BRANCH"
           git push origin "$BRANCH" --force
 
@@ -89,7 +89,7 @@ jobs:
         run: |
           set -euo pipefail
           VER="${{ steps.prepare.outputs.version }}"
-          BRANCH="release/prepare-v${VER}"
+          BRANCH="release-prepare/v${VER}"
           TITLE="chore(release): prepare v${VER}"
 
           LAST_TAG=$(git describe --tags --match "release-train-v*" --abbrev=0 2>/dev/null || echo "")
