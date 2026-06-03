@@ -97,6 +97,7 @@ jobs:
           if [[ "${{ inputs.pre_release }}" == "true" ]]; then
             args+=(--pre-release)
           fi
+          args+=(--branch "${{ github.ref_name }}")
           scripts/release-train.sh "${args[@]}"
 
       - name: Upload release reports

@@ -79,7 +79,9 @@ jobs:
           repo-token: ${{ github.token }}
 
       - name: Run release train script unit checks
-        run: bash scripts/tests/release-train-package-sync.sh
+        run: |
+          bash scripts/tests/release-train-package-sync.sh
+          bash scripts/tests/release-train-modes.sh
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
