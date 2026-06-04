@@ -105,7 +105,21 @@ copy_if_dir_exists() {
     if [[ -d "${source_dir}" ]]; then
         mkdir -p "${target_dir}/arm64-v8a" "${target_dir}/x86_64"
         cp "${TARGET_DIR}/aarch64-linux-android/release/libactr.so" "${target_dir}/arm64-v8a/"
+
+        # Also copy libopus.so (DT_NEEDED dependency of libactr.so)
+        local opus_so
+        opus_so=$(find "${TARGET_DIR}/aarch64-linux-android/release/build" \
+            -maxdepth 1 -name "audiopus_sys-*" -type d 2>/dev/null | head -1)
+        if [[ -n "${opus_so}" && -f "${opus_so}/out/lib/libopus.so" ]]; then
+            cp "${opus_so}/out/lib/libopus.so" "${target_dir}/arm64-v8a/"
+        fi
+
         cp "${TARGET_DIR}/x86_64-linux-android/release/libactr.so" "${target_dir}/x86_64/"
+        opus_so=$(find "${TARGET_DIR}/x86_64-linux-android/release/build" \
+            -maxdepth 1 -name "audiopus_sys-*" -type d 2>/dev/null | head -1)
+        if [[ -n "${opus_so}" && -f "${opus_so}/out/lib/libopus.so" ]]; then
+            cp "${opus_so}/out/lib/libopus.so" "${target_dir}/x86_64/"
+        fi
     fi
 }
 
@@ -167,9 +181,91 @@ HOST_LIBRARY_PATH="$(host_library_path)"
 require_file "${HOST_LIBRARY_PATH}"
 
 echo ""
-echo "Building Android static libraries..."
-(cd "${WORKSPACE_ROOT}" && cargo build -p libactr --release --target aarch64-linux-android)
-(cd "${WORKSPACE_ROOT}" && cargo build -p libactr --release --target x86_64-linux-android)
+echo "Building Android native libraries..."
+
+# -----------------------------------------------------------------------
+# Opus native library (libopus.so) — reproducible build:
+#
+# 1. audiopus_sys crate's cmake build compiles 145 .o files but produces a
+#    broken 96-byte libopus.a (macOS host ar rejects ELF objects).
+# 2. Post-build: repack libopus.a with NDK llvm-ar, then build libopus.so
+#    from the same .o files with NDK clang -shared.
+# 3. RUSTFLAGS="-l opus" creates DT_NEEDED libopus.so in libactr.so so
+#    the Android dynamic linker resolves opus symbols at runtime.
+# -----------------------------------------------------------------------
+fix_opus_for_target() {
+    local target=$1
+    local target_upper=$2
+    local toolchain_bin="${ANDROID_TOOLCHAIN_PATH}/bin"
+
+    # Find the audiopus_sys build directory for this target
+    local audiopus_build_dir
+    audiopus_build_dir=$(find "${TARGET_DIR}/${target}/release/build" \
+        -maxdepth 1 -name "audiopus_sys-*" -type d 2>/dev/null | head -1)
+
+    if [[ -z "${audiopus_build_dir}" ]]; then
+        echo "WARNING: audiopus_sys build directory not found for ${target}, skipping opus fix"
+        return 0
+    fi
+
+    local opus_o_dir="${audiopus_build_dir}/out/build/CMakeFiles/opus.dir"
+    local opus_lib_dir="${audiopus_build_dir}/out/lib"
+
+    if [[ ! -d "${opus_o_dir}" ]]; then
+        echo "WARNING: opus .o directory not found at ${opus_o_dir}, skipping opus fix"
+        return 0
+    fi
+
+    local o_count
+    o_count=$(find "${opus_o_dir}" -name "*.o" | wc -l | tr -d ' ')
+    echo "  Fixing opus for ${target}: ${o_count} .o files → ${opus_lib_dir}"
+
+    # Step 1: Repack libopus.a with NDK llvm-ar
+    rm -f "${opus_lib_dir}/libopus.a"
+    find "${opus_o_dir}" -name "*.o" -print0 \
+        | xargs -0 "${toolchain_bin}/llvm-ar" crs "${opus_lib_dir}/libopus.a" 2>/dev/null
+
+    # Step 2: Build libopus.so from .o files
+    local cc="${toolchain_bin}/${target_upper}-linux-android${ANDROID_API_LEVEL}-clang"
+    "${cc}" -shared -o "${opus_lib_dir}/libopus.so" \
+        $(find "${opus_o_dir}" -name "*.o") -lm 2>/dev/null
+
+    local a_size so_size
+    a_size=$(ls -l "${opus_lib_dir}/libopus.a" 2>/dev/null | awk '{print $5}')
+    so_size=$(ls -l "${opus_lib_dir}/libopus.so" 2>/dev/null | awk '{print $5}')
+    echo "  libopus.a: ${a_size} bytes, libopus.so: ${so_size} bytes"
+
+    # Expose the lib dir for RUSTFLAGS
+    RUSTFLAGS_EXTRA="${RUSTFLAGS_EXTRA} -L ${opus_lib_dir} -l opus"
+}
+
+export ANDROID_TOOLCHAIN_PATH="${TOOLCHAIN_PATH}"
+RUSTFLAGS_EXTRA=""
+
+# Build each Android target
+for target_pair in "aarch64-linux-android aarch64" "x86_64-linux-android x86_64"; do
+    target=$(echo "$target_pair" | awk '{print $1}')
+    target_upper=$(echo "$target_pair" | awk '{print $2}')
+    echo ""
+    echo "==> Building for ${target}..."
+    export LIBOPUS_STATIC=1
+    (cd "${WORKSPACE_ROOT}" && cargo build -p libactr --release --target "${target}")
+    fix_opus_for_target "${target}" "${target_upper}"
+done
+
+# Rebuild libactr with RUSTFLAGS for opus dynamic linking
+echo ""
+echo "==> Relinking libactr with libopus.so DT_NEEDED..."
+for target_pair in "aarch64-linux-android aarch64" "x86_64-linux-android x86_64"; do
+    target=$(echo "$target_pair" | awk '{print $1}')
+    # Force relink
+    rm -f "${TARGET_DIR}/${target}/release/libactr.so"
+    find "${TARGET_DIR}/${target}/release/deps" -name "liblibactr*" -delete 2>/dev/null
+    find "${TARGET_DIR}/${target}/release/.fingerprint" -name "libactr-*" -maxdepth 1 -exec rm -rf {} + 2>/dev/null
+
+    RUSTFLAGS="${RUSTFLAGS_EXTRA}" \
+        (cd "${WORKSPACE_ROOT}" && cargo build -p libactr --release --target "${target}")
+done
 
 echo ""
 echo "Copying native libraries..."

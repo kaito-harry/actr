@@ -7,31 +7,47 @@ manufacturer = "acme"
 version = "0.1.0"
 
 [dependencies]
-DataStreamConcurrentServer = { actr_type = "acme+DataStreamConcurrentServer" }
-EchoService = { actr_type = "acme+EchoService" }
+DataStreamConcurrentServer = { actr_type = "acme:DataStreamConcurrentServer:1.0.0" }
+EchoService = { actr_type = "acme:EchoService:1.0.0" }
 
-[system.signaling]
-url = "ws://localhost:8081/signaling/ws"
+[signaling]
+url = "ws://10.0.2.2:8081/signaling/ws"
 
-[system.deployment]
+[ais_endpoint]
+url = "http://10.0.2.2:8081"
+
+[deployment]
 realm_id = 6
 
-[system.discovery]
-visible = false
+[discovery]
+visible = true
 
-[system.webrtc]
-stun_urls = ["stun:localhost:3478"]
-turn_urls = ["turn:localhost:3478"]
-force_relay = true
+[webrtc]
+stun_urls = []
+turn_urls = []
+force_relay = false
 
 # ACL configuration - allow echo server and data-stream-peer-concurrent server
 [acl]
 
 [[acl.rules]]
 permission = "allow"
-types = ["acme+EchoService", "acme+DataStreamConcurrentServer"]
+type = "acme:EchoService:1.0.0"
 
+[[acl.rules]]
+permission = "allow"
+type = "acme:DataStreamConcurrentServer:1.0.0"
 
-[system.observability]
+[[acl.rules]]
+permission = "allow"
+type = "acme:UnifiedActor:1.0.0"
+
+[observability]
 filter_level = "info"
 tracing_enabled = false
+
+[hyper]
+data_dir = "/data/data/io.actorrtc.demo/files/hyper"
+
+[hyper.trust]
+kind = "dev_only"

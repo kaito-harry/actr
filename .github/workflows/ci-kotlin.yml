@@ -16,9 +16,45 @@ jobs:
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
+          java-version: "17"
+          distribution: "temurin"
           cache: gradle
       - name: Build Kotlin binding
         working-directory: bindings/kotlin
         run: ./gradlew :actr-kotlin:build --no-daemon
+
+  gen-test:
+    name: Kotlin Codegen Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: gradle
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
+      - name: Generate CLI web runtime assets
+        run: bash bindings/web/scripts/sync-cli-assets.sh --build
+      - name: Build CLI
+        run: cargo build -p actr-cli
+      - name: Compile Kotlin demo
+        working-directory: bindings/kotlin
+        run: ./gradlew :demo:compileDebugKotlin --no-daemon
+      - name: Build Kotlin protoc plugin
+        working-directory: tools/protoc-gen/kotlin
+        run: |
+          gradle wrapper --gradle-version 8.10
+          ./gradlew protocPluginJar --no-daemon
+      - name: Run Kotlin codegen integration tests
+        run: cargo test -p actr-cli --test kotlin_echo --verbose

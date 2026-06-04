@@ -5,14 +5,40 @@ import io.actor_rtc.actr.ActrId
 import io.actor_rtc.actr.ActrType
 import io.actor_rtc.actr.ContextBridge
 import io.actor_rtc.actr.DataStream
+import io.actor_rtc.actr.DynamicWorkload as DynamicWorkloadGenerated
 import io.actor_rtc.actr.ErrorEventBridge
 import io.actor_rtc.actr.PayloadType
 import io.actor_rtc.actr.Realm
 import io.actor_rtc.actr.RpcEnvelopeBridge
+import io.actor_rtc.actr.SignalingObserverBridge
+import io.actor_rtc.actr.WebSocketObserverBridge
+import io.actor_rtc.actr.WebRtcObserverBridge
+import io.actor_rtc.actr.CredentialObserverBridge
+import io.actor_rtc.actr.MailboxObserverBridge
 import io.actor_rtc.actr.WorkloadLifecycleBridge
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+
+typealias DynamicWorkload = DynamicWorkloadGenerated
+
+fun dynamicWorkload(
+    lifecycle: WorkloadLifecycleBridge,
+    signaling: SignalingObserverBridge? = null,
+    websocket: WebSocketObserverBridge? = null,
+    webrtc: WebRtcObserverBridge? = null,
+    credential: CredentialObserverBridge? = null,
+    mailbox: MailboxObserverBridge? = null
+): DynamicWorkload {
+    return DynamicWorkloadGenerated(
+        lifecycle = lifecycle,
+        signaling = signaling,
+        websocket = websocket,
+        webrtc = webrtc,
+        credential = credential,
+        mailbox = mailbox
+    )
+}
 
 /**
  * Simple workload implementation that only needs type information.

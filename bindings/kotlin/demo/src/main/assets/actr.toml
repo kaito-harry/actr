@@ -10,34 +10,45 @@ license = "Apache-2.0"
 tags = ["dev", "example", "android"]
 
 [dependencies]
-EchoService = { actr_type = "acme+EchoService" }
-DataStreamConcurrentServer = { actr_type = "acme+DataStreamConcurrentServer" }
+EchoService = { actr_type = "acme:EchoService:1.0.0" }
 
-[system.signaling]
-url = "wss://actrix1.develenv.com/signaling/ws"
+[signaling]
+url = "ws://124.71.231.251:9080/signaling/ws"
 
-[system.webrtc]
-stun_urls = ["stun:actrix1.develenv.com:3478"]
-turn_urls = ["turn:actrix1.develenv.com:3478"]
-force_relay = true
+[ais_endpoint]
+url = "http://124.71.231.251:9080/ais"
 
-[system.deployment]
-realm_id = 2368266035
+[webrtc]
+stun_urls = ["stun:124.71.231.251:3487"]
+turn_urls = ["turn:124.71.231.251:3487"]
+force_relay = false
 
-[system.discovery]
+[deployment]
+realm_id = 33554432
+realm_secret = "rs_QYhdcomiuyqcF6mb_o3oWain2QAm0QNj"
+
+[discovery]
 visible = true
 
-[system.observability]
+[observability]
 filter_level = "info"
 tracing_enabled = false
-tracing_endpoint = "http://10.30.3.206:4317"
-tracing_service_name = "android-echo-client"
+
+[hyper]
+data_dir = "/data/data/io.actorrtc.demo/files/hyper"
+
+[hyper.trust]
+kind = "dev_only"
 
 # ACL configuration
 [acl]
 
 [[acl.rules]]
 permission = "allow"
-types = ["acme+EchoService", "acme+DataStreamConcurrentServer"]
+type = "acme:EchoService:1.0.0"
+
+[[acl.rules]]
+permission = "allow"
+type = "acme:UnifiedActor:1.0.0"
 
 [scripts]

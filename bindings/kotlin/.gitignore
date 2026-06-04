@@ -13,7 +13,7 @@ local.properties
 # Native libraries - exclude demo jniLibs but include library module jniLibs
 # This ensures the native libraries are published via JitPack
 demo/src/main/jniLibs/
-!actr-kotlin/src/main/jniLibs/
+actr-kotlin/src/main/jniLibs/
 
 # Android Studio
 .idea/

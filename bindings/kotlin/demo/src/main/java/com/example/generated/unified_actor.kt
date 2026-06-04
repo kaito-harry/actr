@@ -73,6 +73,14 @@ object UnifiedDispatcher {
     // Cache for discovered remote actors
     private val discoveredActors = mutableMapOf<ActrType, ActrId>()
 
+    private suspend fun resolveRemoteActor(ctx: ContextBridge, actrType: ActrType): ActrId {
+        return discoveredActors[actrType] ?: ctx.discover(actrType).also { discoveredActors[actrType] = it }
+    }
+
+    private fun invalidateRemoteActor(actrType: ActrType) {
+        discoveredActors.remove(actrType)
+    }
+
     /**
      * Discover all remote services
      *
@@ -81,8 +89,12 @@ object UnifiedDispatcher {
     suspend fun discoverRemoteServices(ctx: ContextBridge) {
         for ((_, actrType) in RemoteServiceRegistry.remoteRoutes) {
             if (!discoveredActors.containsKey(actrType)) {
-                val actorId = ctx.discover(actrType)
-                discoveredActors[actrType] = actorId
+                try {
+                    val actorId = ctx.discover(actrType)
+                    discoveredActors[actrType] = actorId
+                } catch (e: Exception) {
+                    android.util.Log.w("UnifiedDispatcher", "Failed to discover $actrType: ${e.message}")
+                }
             }
         }
     }
@@ -120,15 +132,28 @@ object UnifiedDispatcher {
                         RemoteServiceRegistry.getActorType(routeKey)
                                 ?: throw IllegalArgumentException("Unknown remote route: $routeKey")
 
-                // Discover remote actor
-                val targetId =
-                        discoveredActors[actrType]
-                                ?: throw IllegalStateException(
-                                        "Remote actor not discovered: ${actrType.name}. Call discoverRemoteServices() first."
-                                )
+                val targetId = resolveRemoteActor(ctx, actrType)
 
-                // Forward to remote actor
-                ctx.callRaw(targetId, routeKey, PayloadType.RPC_RELIABLE, envelope.payload, 30000L)
+                try {
+                    ctx.callRaw(targetId, routeKey, PayloadType.RPC_RELIABLE, envelope.payload, 30000L)
+                } catch (original: Exception) {
+                    invalidateRemoteActor(actrType)
+                    val freshTargetId = resolveRemoteActor(ctx, actrType)
+                    try {
+                        ctx.callRaw(
+                                freshTargetId,
+                                routeKey,
+                                PayloadType.RPC_RELIABLE,
+                                envelope.payload,
+                                30000L
+                        )
+                    } catch (retry: Exception) {
+                        throw IllegalStateException(
+                                "Remote route $routeKey failed after rediscovery: ${retry.message}",
+                                retry
+                        )
+                    }
+                }
             }
             else -> throw IllegalArgumentException("Unknown route key: $routeKey")
         }

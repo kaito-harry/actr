@@ -91,7 +91,8 @@ impl AisClient {
     /// Encodes a RegisterRequest as protobuf and POSTs it to `{endpoint}/register`,
     /// then decodes the response as RegisterResponse.
     async fn do_register(&self, req: RegisterRequest) -> HyperResult<RegisterResponse> {
-        let url = format!("{}/register", self.endpoint);
+        let base = self.endpoint.to_string().trim_end_matches('/').to_string();
+        let url = format!("{}/register", base);
 
         // encode as protobuf bytes
         let body = req.encode_to_vec();

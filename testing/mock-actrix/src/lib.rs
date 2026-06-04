@@ -64,7 +64,7 @@ impl MockActrixServer {
         Self::start_with_listener(listener).await
     }
 
-    async fn start_with_listener(listener: TcpListener) -> anyhow::Result<Self> {
+    pub async fn start_with_listener(listener: TcpListener) -> anyhow::Result<Self> {
         let port = listener.local_addr()?.port();
 
         // Deterministic keys so tests can reproduce signatures.

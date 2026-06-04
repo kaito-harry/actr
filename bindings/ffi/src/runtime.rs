@@ -78,39 +78,15 @@ impl ActrNode {
         workload: Arc<DynamicWorkload>,
     ) -> ActrResult<Arc<Self>> {
         let actor_type: actr_protocol::ActrType = actor_type.into();
-        let init = Node::from_config_file(&config_path).await.map_err(|e| {
-            error!("Failed to load runtime config: {}", e);
-            ActrError::Config {
-                msg: format!("Failed to load runtime config `{}`: {}", config_path, e),
-            }
-        })?;
-        let init = init.with_actor_type(actor_type.clone());
-        crate::logger::init_observability(init.runtime_config().observability.clone());
-
-        info!(
-            config_path = %config_path,
-            actor_type = %actor_type.to_string_repr(),
-            "Creating linked foreign workload runtime wrapper",
-        );
-
-        let attached = init.link(workload.as_ref().clone()).await.map_err(|e| {
-            error!("Failed to link foreign workload: {}", e);
-            ActrError::Internal {
+        let init = load_linked_init(&config_path).await?;
+        let attached = init
+            .with_actor_type(actor_type.clone())
+            .link(workload.as_ref().clone())
+            .await
+            .map_err(|e| ActrError::Internal {
                 msg: format!("Failed to link foreign workload: {e}"),
-            }
-        })?;
-        let ais_endpoint = attached.ais_endpoint().to_string();
-        let registered = attached.register(&ais_endpoint).await.map_err(|e| {
-            error!("AIS registration failed: {}", e);
-            ActrError::Internal {
-                msg: format!("AIS registration failed: {e}"),
-            }
-        })?;
-
-        Ok(Arc::new(Self {
-            inner: Mutex::new(Some(registered)),
-            network_event_handle: Mutex::new(None),
-        }))
+            })?;
+        register_linked_node(attached).await
     }
 
     /// Create a network event handle for platform callbacks.
@@ -313,4 +289,31 @@ impl ActrRefWrapper {
     pub(crate) async fn app_context_for_test(&self) -> actr_hyper::context::RuntimeContext {
         self.inner.app_context().await
     }
+}
+
+async fn load_linked_init(config_path: &str) -> ActrResult<Node<actr_hyper::Init>> {
+    let init = Node::from_config_file(config_path).await.map_err(|e| {
+        error!("Failed to load runtime config: {}", e);
+        ActrError::Config {
+            msg: format!("Failed to load runtime config `{}`: {}", config_path, e),
+        }
+    })?;
+    crate::logger::init_observability(init.runtime_config().observability.clone());
+    info!(config_path = %config_path, "Creating linked runtime wrapper");
+    Ok(init)
+}
+
+async fn register_linked_node(attached: Node<actr_hyper::Attached>) -> ActrResult<Arc<ActrNode>> {
+    let ais_endpoint = attached.ais_endpoint().to_string();
+    let registered = attached.register(&ais_endpoint).await.map_err(|e| {
+        error!("AIS registration failed: {}", e);
+        ActrError::Internal {
+            msg: format!("AIS registration failed: {e}"),
+        }
+    })?;
+
+    Ok(Arc::new(ActrNode {
+        inner: Mutex::new(Some(registered)),
+        network_event_handle: Mutex::new(None),
+    }))
 }

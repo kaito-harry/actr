@@ -381,20 +381,7 @@ jobs:
     name: Kotlin
     needs: determine
     if: needs.determine.outputs.kotlin_binding == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v5
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: gradle
-      - name: Build Kotlin binding
-        working-directory: bindings/kotlin
-        run: ./gradlew :actr-kotlin:build --no-daemon
+    uses: ./.github/workflows/ci-kotlin.yml
 
   web:
     name: Web

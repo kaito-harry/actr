@@ -1,13 +1,16 @@
 use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
 use crate::error::{ActrCliError, Result};
-use crate::utils::to_snake_case;
+use crate::utils::{command_exists, to_snake_case};
 use actr_config::LockFile;
 use actr_protocol::ActrType;
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use tracing::{debug, info, warn};
+use walkdir::WalkDir;
+
+const PROTOC_GEN_ACTR_FRAMEWORK_KOTLIN: &str = "protoc-gen-actrframework-kotlin";
 
 pub struct KotlinGenerator;
 
@@ -43,9 +46,17 @@ struct MethodInfo {
 }
 
 impl KotlinGenerator {
-    /// Find the framework-codegen-kotlin plugin
-    fn find_kotlin_plugin(&self) -> Result<PathBuf> {
-        // First try the environment variable
+    /// Ensure required tools are available and return the plugin path.
+    ///
+    /// Tries to build the workspace-local Kotlin protoc plugin first,
+    /// then falls back to system PATH lookup.
+    fn ensure_required_tools(&self) -> Result<PathBuf> {
+        // 1. Try building from workspace-local tools/protoc-gen/kotlin/
+        if let Some(local_plugin) = self.try_build_workspace_kotlin_plugin()? {
+            return Ok(local_plugin);
+        }
+
+        // 2. Try environment variable
         if let Ok(plugin_path) = std::env::var("ACTR_KOTLIN_PLUGIN_PATH") {
             let path = PathBuf::from(&plugin_path);
             if path.exists() {
@@ -54,24 +65,9 @@ impl KotlinGenerator {
             }
         }
 
-        // Try common locations
-        let possible_paths = [
-            // Relative to current directory
-            PathBuf::from("../framework-codegen-kotlin/protoc-gen-actrframework-kotlin"),
-            // In PATH
-            PathBuf::from("protoc-gen-actrframework-kotlin"),
-        ];
-
-        for path in &possible_paths {
-            if path.exists() {
-                debug!("Found Kotlin plugin at: {:?}", path);
-                return Ok(path.clone());
-            }
-        }
-
-        // Try `which` command
+        // 3. Try system PATH
         let output = StdCommand::new("which")
-            .arg("protoc-gen-actrframework-kotlin")
+            .arg(PROTOC_GEN_ACTR_FRAMEWORK_KOTLIN)
             .output();
 
         if let Ok(output) = output
@@ -86,17 +82,119 @@ impl KotlinGenerator {
         Err(ActrCliError::config_error(
             "Could not find protoc-gen-actrframework-kotlin plugin.\n\n\
              Installation options:\n\n\
-             1. Build from source (recommended):\n\
-                git clone https://github.com/actor-rtc/framework-codegen-kotlin.git\n\
-                cd framework-codegen-kotlin\n\
-                gradle wrapper --gradle-version 8.5\n\
-                ./gradlew installDist\n\
-                ./gradlew protocPluginJar\n\
-                export PATH=\"$PWD/build/install/protoc-gen-actrframework-kotlin/bin:$PATH\"\n\n\
-             2. Set environment variable (if already built):\n\
+             1. Build from workspace (automatic):\n\
+                The CLI will attempt to build from tools/protoc-gen/kotlin/ if it exists.\n\
+                Requires: Java 17+, Gradle wrapper in that directory.\n\n\
+             2. Build from source:\n\
+                cd tools/protoc-gen/kotlin && ./gradlew protocPluginJar\n\n\
+             3. Set environment variable:\n\
                 export ACTR_KOTLIN_PLUGIN_PATH=/path/to/protoc-gen-actrframework-kotlin\n\n\
              For more information, visit: https://github.com/actor-rtc/framework-codegen-kotlin",
         ))
+    }
+
+    /// Try to build the workspace-local Kotlin protoc plugin from
+    /// `tools/protoc-gen/kotlin/` and return its path on success.
+    fn try_build_workspace_kotlin_plugin(&self) -> Result<Option<PathBuf>> {
+        let plugin_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|path| path.join("tools/protoc-gen/kotlin"))
+            .unwrap_or_else(|| PathBuf::from("tools/protoc-gen/kotlin"));
+
+        let build_gradle = plugin_root.join("build.gradle.kts");
+        if !build_gradle.is_file() {
+            return Ok(None);
+        }
+
+        let gradlew = if plugin_root.join("gradlew").is_file() {
+            "./gradlew"
+        } else if command_exists("gradle") {
+            "gradle"
+        } else {
+            debug!(
+                "No gradlew or gradle found in {:?}, skipping workspace-local build",
+                plugin_root
+            );
+            return Ok(None);
+        };
+
+        info!(
+            "🔨 Building workspace-local {}...",
+            PROTOC_GEN_ACTR_FRAMEWORK_KOTLIN
+        );
+        let output = StdCommand::new(gradlew)
+            .args(["protocPluginJar"])
+            .current_dir(&plugin_root)
+            .output()
+            .map_err(|e| {
+                ActrCliError::command_error(format!(
+                    "Failed to build workspace-local {PROTOC_GEN_ACTR_FRAMEWORK_KOTLIN}: {e}"
+                ))
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ActrCliError::command_error(format!(
+                "workspace-local {PROTOC_GEN_ACTR_FRAMEWORK_KOTLIN} build failed: {stderr}"
+            )));
+        }
+
+        // The wrapper script in the plugin root calls the built JAR
+        let wrapper_script = plugin_root.join(PROTOC_GEN_ACTR_FRAMEWORK_KOTLIN);
+        if wrapper_script.is_file() {
+            info!(
+                "✅ Using workspace-local {} at {}",
+                PROTOC_GEN_ACTR_FRAMEWORK_KOTLIN,
+                wrapper_script.display()
+            );
+            return Ok(Some(wrapper_script));
+        }
+
+        // Also check the built JAR directly
+        let jar_candidates = [
+            plugin_root.join("build/libs/protoc-gen-actrframework-kotlin-0.1.0.jar"),
+            plugin_root.join("build/libs/protoc-gen-actrframework-kotlin.jar"),
+        ];
+        for candidate in jar_candidates {
+            if candidate.is_file() {
+                info!(
+                    "✅ Using workspace-local {} JAR at {}",
+                    PROTOC_GEN_ACTR_FRAMEWORK_KOTLIN,
+                    candidate.display()
+                );
+                // Return the wrapper script path (it knows how to invoke the JAR)
+                if wrapper_script.is_file() {
+                    return Ok(Some(wrapper_script));
+                }
+                // If no wrapper script, we can't use it directly via protoc --plugin
+                break;
+            }
+        }
+
+        Err(ActrCliError::command_error(format!(
+            "workspace-local {PROTOC_GEN_ACTR_FRAMEWORK_KOTLIN} build completed but plugin not found under {}",
+            plugin_root.display()
+        )))
+    }
+
+    /// Collect generated `*_actor.kt` file paths from the output directory.
+    #[allow(dead_code)] // Used by future workload-name discovery (aligned with Swift codegen)
+    fn generated_actor_files(&self, output_dir: &Path) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = WalkDir::new(output_dir)
+            .min_depth(1)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.into_path())
+            .filter(|path| {
+                path.is_file()
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.ends_with("_actor.kt"))
+            })
+            .collect();
+        paths.sort();
+        paths
     }
 
     /// Get Kotlin package name - infer from output path or use default
@@ -622,18 +720,34 @@ object RemoteServiceRegistry {
                 val actrType = RemoteServiceRegistry.getActorType(routeKey)
                     ?: throw IllegalArgumentException("Unknown remote route: $routeKey")
 
-                // Discover remote actor
-                val targetId = discoveredActors[actrType]
-                    ?: throw IllegalStateException("Remote actor not discovered: ${actrType.name}. Call discoverRemoteServices() first.")
+                val targetId = resolveRemoteActor(ctx, actrType)
 
-                // Forward to remote actor
-                ctx.callRaw(
-                    targetId,
-                    routeKey,
-                    PayloadType.RPC_RELIABLE,
-                    envelope.payload,
-                    30000L
-                )
+                try {
+                    ctx.callRaw(
+                        targetId,
+                        routeKey,
+                        PayloadType.RPC_RELIABLE,
+                        envelope.payload,
+                        30000L
+                    )
+                } catch (original: Exception) {
+                    invalidateRemoteActor(actrType)
+                    val freshTargetId = resolveRemoteActor(ctx, actrType)
+                    try {
+                        ctx.callRaw(
+                            freshTargetId,
+                            routeKey,
+                            PayloadType.RPC_RELIABLE,
+                            envelope.payload,
+                            30000L
+                        )
+                    } catch (retry: Exception) {
+                        throw IllegalStateException(
+                            "Remote route $routeKey failed after rediscovery: ${retry.message}",
+                            retry
+                        )
+                    }
+                }
             }
 "#
         } else {
@@ -644,6 +758,14 @@ object RemoteServiceRegistry {
             r#"
     // Cache for discovered remote actors
     private val discoveredActors = mutableMapOf<ActrType, ActrId>()
+
+    private suspend fun resolveRemoteActor(ctx: ContextBridge, actrType: ActrType): ActrId {
+        return discoveredActors[actrType] ?: ctx.discover(actrType).also { discoveredActors[actrType] = it }
+    }
+
+    private fun invalidateRemoteActor(actrType: ActrType) {
+        discoveredActors.remove(actrType)
+    }
 
     /**
      * Discover all remote services
@@ -714,8 +836,8 @@ impl LanguageGenerator for KotlinGenerator {
     async fn generate_infrastructure(&self, context: &GenContext) -> Result<Vec<PathBuf>> {
         info!("🔧 Generating Kotlin Actor infrastructure code...");
 
-        // Find the Kotlin plugin
-        let plugin_path = self.find_kotlin_plugin()?;
+        // Find or build the Kotlin plugin
+        let plugin_path = self.ensure_required_tools()?;
         info!("✅ Using Kotlin plugin: {:?}", plugin_path);
 
         let kotlin_package = self.get_kotlin_package(context);
@@ -975,31 +1097,29 @@ import {kotlin_package}.UnifiedDispatcher{handler_import}
 import io.actor_rtc.actr.ActrId
 import io.actor_rtc.actr.ActrType
 import io.actor_rtc.actr.ContextBridge
+import io.actor_rtc.actr.DynamicWorkload
 import io.actor_rtc.actr.Realm
 import io.actor_rtc.actr.RpcEnvelopeBridge
-import io.actor_rtc.actr.WorkloadBridge
+import io.actor_rtc.actr.WorkloadLifecycleBridge
 
 /**
- * Unified Workload
+ * Unified Workload lifecycle scaffold
+ *
+ * This can already handle dispatch and lifecycle callbacks.
+ * The generated [DynamicWorkload] wrapper is ready to use once
+ * Kotlin bindings expose a linked-runtime node constructor.
  *
  * Usage:
  * ```kotlin
  * val handler = MyUnifiedHandler()
  * val workload = UnifiedWorkload(handler)
- * val node = createActrNode(configPath, packagePath)
- * val actrRef = node.start()
- *
- * // Wait for remote service discovery
- * delay(2000)
- *
- * // Make local or remote RPC calls
- * val response = actrRef.call("route.key", PayloadType.RPC_RELIABLE, payload, 30000L)
+ * val dynamicWorkload = workload.toDynamicWorkload()
  * ```
  */
 class UnifiedWorkload(
     {handler_field}
     private val realmId: UInt = 2368266035u
-) : WorkloadBridge {{
+) : WorkloadLifecycleBridge {{
 
     companion object {{
         private const val TAG = "UnifiedWorkload"
@@ -1015,8 +1135,16 @@ class UnifiedWorkload(
         Log.i(TAG, "UnifiedWorkload.onStart"){discover_call}
     }}
 
+    override suspend fun onReady(ctx: ContextBridge) {{
+        Log.i(TAG, "UnifiedWorkload.onReady")
+    }}
+
     override suspend fun onStop(ctx: ContextBridge) {{
         Log.i(TAG, "UnifiedWorkload.onStop")
+    }}
+
+    override suspend fun onError(ctx: ContextBridge, event: io.actor_rtc.actr.ErrorEventBridge) {{
+        Log.e(TAG, "UnifiedWorkload.onError: $event")
     }}
 
     /**
@@ -1033,6 +1161,23 @@ class UnifiedWorkload(
         Log.i(TAG, "   payload size: ${{envelope.payload.size}} bytes")
 
         return UnifiedDispatcher.dispatch({dispatch_handler}ctx, envelope)
+    }}
+
+    /**
+     * Create a DynamicWorkload suitable for the linked() factory function.
+     *
+     * This wraps this lifecycle implementation into a DynamicWorkload
+     * that can be passed to `linked(configPath, actorType, workload)`.
+     */
+    fun toDynamicWorkload(): DynamicWorkload {{
+        return DynamicWorkload(
+            lifecycle = this,
+            signaling = null,
+            websocket = null,
+            webrtc = null,
+            credential = null,
+            mailbox = null
+        )
     }}
 }}
 "#,

@@ -4,6 +4,7 @@
 
 use actr_mock_actrix::MockActrixServer;
 use clap::Parser;
+use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -16,6 +17,10 @@ struct Args {
     /// TCP port to bind. Defaults to 8081 to match the echo e2e config.
     #[arg(long, default_value_t = 8081)]
     port: u16,
+
+    /// Bind address (default 0.0.0.0 for accessibility from emulators).
+    #[arg(long, default_value = "0.0.0.0")]
+    bind: String,
 
     /// Log filter (defaults to `info` for mock-actrix, `warn` elsewhere).
     #[arg(long, default_value = "actr_mock_actrix=info,info")]
@@ -31,7 +36,8 @@ async fn main() -> anyhow::Result<()> {
         .with_target(true)
         .init();
 
-    let server = MockActrixServer::start_on_port(args.port).await?;
+    let listener = TcpListener::bind(format!("{}:{}", args.bind, args.port)).await?;
+    let server = MockActrixServer::start_with_listener(listener).await?;
 
     // This log line is the readiness marker scripts grep for.
     println!("mock-actrix listening on 127.0.0.1:{}", server.port());

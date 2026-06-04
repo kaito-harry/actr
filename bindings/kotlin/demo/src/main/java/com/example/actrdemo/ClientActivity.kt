@@ -8,10 +8,13 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import com.example.MyUnifiedHandler
+import com.example.UnifiedWorkload
 import data_stream_peer.StreamClientOuterClass.ClientStartStreamRequest
 import data_stream_peer.StreamClientOuterClass.ClientStartStreamResponse
 import echo.Echo.EchoRequest
 import echo.Echo.EchoResponse
+import io.actor_rtc.actr.ActrType
 import io.actor_rtc.actr.PayloadType
 import io.actor_rtc.actr.dsl.*
 import io.actorrtc.demo.R
@@ -20,8 +23,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-// NetworkMonitor is now imported from the actr-kotlin library
 
 class ClientActivity : AppCompatActivity() {
 
@@ -38,11 +39,8 @@ class ClientActivity : AppCompatActivity() {
     private lateinit var logText: TextView
     private lateinit var scrollView: ScrollView
 
-    // Actor-RTC components
     private var clientRef: ActrRef? = null
     private var clientSystem: ActrNode? = null
-
-    // Network monitoring - uses library's NetworkMonitor with automatic ActrNode integration
     private lateinit var networkMonitor: NetworkMonitor
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -53,19 +51,16 @@ class ClientActivity : AppCompatActivity() {
         setupClickListeners()
         initNetworkMonitoring()
 
-        log("Ready to connect (package-backed runtime)")
+        log("Ready to connect (linked multi-service workload)")
     }
 
     private fun initNetworkMonitoring() {
-        // Use the library's NetworkMonitor.create() factory method
-        // It automatically integrates with ActrNode and handles network events
         networkMonitor =
                 NetworkMonitor.create(
                         context = this,
                         scope = lifecycleScope,
-                        getSystem = { clientSystem }, // Lazy reference to ActrNode
+                        getSystem = { clientSystem },
                         onNetworkStatusLog = { message ->
-                            // Update UI with network status changes (runs on IO thread)
                             lifecycleScope.launch(Dispatchers.Main) { log(message) }
                         }
                 )
@@ -86,20 +81,12 @@ class ClientActivity : AppCompatActivity() {
 
     private fun setupClickListeners() {
         connectButton.setOnClickListener { connect() }
-
         disconnectButton.setOnClickListener { disconnect() }
-
         sendButton.setOnClickListener { sendMessage() }
-
         sendFileButton.setOnClickListener {
-            // First log current network status
             val networkStatus = networkMonitor.getCurrentNetworkStatus()
             log("📡 Current network: $networkStatus")
-
-            // Then trigger manual network check
             networkMonitor.triggerNetworkCheck()
-
-            // Finally send file
             sendFile()
         }
     }
@@ -114,37 +101,26 @@ class ClientActivity : AppCompatActivity() {
         return outputFile.absolutePath
     }
 
-    private fun copyFirstPackageAssetToInternalStorage(): String {
-        val packageName =
-                assets
-                        .list("")!!
-                        .firstOrNull { it.endsWith(".actr") }
-                        ?: error("No .actr package found in app assets")
-        return copyAssetToInternalStorage(packageName)
-    }
-
     private fun connect() {
         updateStatus("Connecting...")
         connectButton.isEnabled = false
 
         lifecycleScope.launch {
             try {
-                // Copy config file from assets to internal storage
                 val configPath = copyAssetToInternalStorage("actr.toml")
-                copyAssetToInternalStorage("manifest.lock.toml")
-                val packagePath = copyFirstPackageAssetToInternalStorage()
                 Log.i(TAG, "Config path: $configPath")
 
-                // Create ActrNode
-                val clientSystem = createActrNode(configPath, packagePath)
-                this@ClientActivity.clientSystem = clientSystem
+                val actorType =
+                        ActrType(manufacturer = "acme", name = "UnifiedActor", version = "1.0.0")
+                val workload = UnifiedWorkload(MyUnifiedHandler())
+                val system = linked(configPath, actorType, workload.toDynamicWorkload())
+                clientSystem = system
                 Log.i(TAG, "✅ ActrNode created - NetworkMonitor will auto-handle network events")
 
-                Log.i(TAG, "🚀 Starting package-backed actor...")
-                clientRef = clientSystem.start()
+                Log.i(TAG, "🚀 Starting linked multi-service actor...")
+                clientRef = system.start()
                 Log.i(TAG, "✅ Client started: ${clientRef?.actorId()?.serialNumber}")
 
-                // Wait for client to discover remote services
                 delay(2000)
 
                 withContext(Dispatchers.Main) {
@@ -153,7 +129,7 @@ class ClientActivity : AppCompatActivity() {
                     messageInput.isEnabled = true
                     sendButton.isEnabled = true
                     sendFileButton.isEnabled = true
-                    log("Connected (package-backed mode)")
+                    log("Connected (linked multi-service mode)")
                     log("Client ID: ${clientRef?.actorId()?.serialNumber}")
                 }
             } catch (e: Exception) {
@@ -167,25 +143,6 @@ class ClientActivity : AppCompatActivity() {
         }
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-
-        // Stop network monitoring
-        if (::networkMonitor.isInitialized) {
-            networkMonitor.stopMonitoring()
-        }
-
-        // Clean up ActrNode
-        lifecycleScope.launch {
-            try {
-                clientSystem?.close()
-                clientSystem = null
-            } catch (e: Exception) {
-                Log.w(TAG, "Error during onDestroy cleanup: ${e.message}")
-            }
-        }
-    }
-
     private fun disconnect() {
         updateStatus("Disconnecting...")
         disconnectButton.isEnabled = false
@@ -195,14 +152,9 @@ class ClientActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             try {
-                // Shutdown the client
                 clientRef?.shutdown()
                 clientRef?.awaitShutdown()
                 clientRef = null
-
-                // Note: clientSystem is kept alive for potential reconnection
-                // NetworkMonitor will automatically handle reconnection events
-                // It will be cleaned up in onDestroy()
 
                 withContext(Dispatchers.Main) {
                     updateStatus("Disconnected")
@@ -236,11 +188,7 @@ class ClientActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             try {
-                // Create EchoRequest using generated protobuf class
                 val request = EchoRequest.newBuilder().setMessage(message).build()
-
-                // Send RPC via ActrRef.call() - routed through UnifiedDispatcher
-                Log.i(TAG, "📞 Sending Echo RPC via UnifiedDispatcher...")
                 val responsePayload =
                         ref.call(
                                 "echo.EchoService.Echo",
@@ -248,8 +196,6 @@ class ClientActivity : AppCompatActivity() {
                                 request.toByteArray(),
                                 30000L
                         )
-
-                // Parse response using generated protobuf class
                 val response = EchoResponse.parseFrom(responsePayload)
                 Log.i(TAG, "📬 Echo Response: ${response.reply}")
 
@@ -272,7 +218,6 @@ class ClientActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             try {
-                // Create ClientStartStreamRequest for local service
                 val request =
                         ClientStartStreamRequest.newBuilder()
                                 .setClientId("android-client")
@@ -280,9 +225,6 @@ class ClientActivity : AppCompatActivity() {
                                 .setMessageCount(3)
                                 .build()
 
-                // Send RPC via ActrRef.call() - routed through UnifiedDispatcher to
-                // StreamClient.StartStream
-                Log.i(TAG, "📞 Sending StartStream RPC via UnifiedDispatcher (local service)...")
                 val responsePayload =
                         ref.call(
                                 "data_stream_peer.StreamClient.StartStream",
@@ -291,7 +233,6 @@ class ClientActivity : AppCompatActivity() {
                                 60000L
                         )
 
-                // Parse response
                 val response = ClientStartStreamResponse.parseFrom(responsePayload)
                 Log.i(
                         TAG,
@@ -323,8 +264,23 @@ class ClientActivity : AppCompatActivity() {
                         .format(java.util.Date())
         val logEntry = "[$currentTime] $message\n"
         logText.append(logEntry)
-
-        // Auto scroll to bottom
         scrollView.post { scrollView.fullScroll(ScrollView.FOCUS_DOWN) }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+
+        if (::networkMonitor.isInitialized) {
+            networkMonitor.stopMonitoring()
+        }
+
+        lifecycleScope.launch {
+            try {
+                clientSystem?.close()
+                clientSystem = null
+            } catch (e: Exception) {
+                Log.w(TAG, "Error during onDestroy cleanup: ${e.message}")
+            }
+        }
     }
 }
