@@ -196,27 +196,237 @@ impl From<actr_protocol::PayloadType> for PayloadType {
 }
 
 /// Network event types for runtime lifecycle callbacks
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum NetworkAvailability {
+    Unknown,
+    Available,
+    Unavailable,
+}
+
+impl From<NetworkAvailability> for runtime_lifecycle::NetworkAvailability {
+    fn from(availability: NetworkAvailability) -> Self {
+        match availability {
+            NetworkAvailability::Unknown => runtime_lifecycle::NetworkAvailability::Unknown,
+            NetworkAvailability::Available => runtime_lifecycle::NetworkAvailability::Available,
+            NetworkAvailability::Unavailable => runtime_lifecycle::NetworkAvailability::Unavailable,
+        }
+    }
+}
+
+impl From<runtime_lifecycle::NetworkAvailability> for NetworkAvailability {
+    fn from(availability: runtime_lifecycle::NetworkAvailability) -> Self {
+        match availability {
+            runtime_lifecycle::NetworkAvailability::Unknown => NetworkAvailability::Unknown,
+            runtime_lifecycle::NetworkAvailability::Available => NetworkAvailability::Available,
+            runtime_lifecycle::NetworkAvailability::Unavailable => NetworkAvailability::Unavailable,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Record)]
+pub struct NetworkTransportFlags {
+    pub wifi: bool,
+    pub cellular: bool,
+    pub ethernet: bool,
+    pub vpn: bool,
+    pub other: bool,
+}
+
+impl From<NetworkTransportFlags> for runtime_lifecycle::NetworkTransportFlags {
+    fn from(transport: NetworkTransportFlags) -> Self {
+        Self {
+            wifi: transport.wifi,
+            cellular: transport.cellular,
+            ethernet: transport.ethernet,
+            vpn: transport.vpn,
+            other: transport.other,
+        }
+    }
+}
+
+impl From<runtime_lifecycle::NetworkTransportFlags> for NetworkTransportFlags {
+    fn from(transport: runtime_lifecycle::NetworkTransportFlags) -> Self {
+        Self {
+            wifi: transport.wifi,
+            cellular: transport.cellular,
+            ethernet: transport.ethernet,
+            vpn: transport.vpn,
+            other: transport.other,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, uniffi::Record)]
+pub struct NetworkSnapshot {
+    pub sequence: u64,
+    pub availability: NetworkAvailability,
+    pub transport: NetworkTransportFlags,
+    pub is_expensive: bool,
+    pub is_constrained: bool,
+}
+
+impl From<NetworkSnapshot> for runtime_lifecycle::NetworkSnapshot {
+    fn from(snapshot: NetworkSnapshot) -> Self {
+        Self {
+            sequence: snapshot.sequence,
+            availability: snapshot.availability.into(),
+            transport: snapshot.transport.into(),
+            is_expensive: snapshot.is_expensive,
+            is_constrained: snapshot.is_constrained,
+        }
+    }
+}
+
+impl From<runtime_lifecycle::NetworkSnapshot> for NetworkSnapshot {
+    fn from(snapshot: runtime_lifecycle::NetworkSnapshot) -> Self {
+        Self {
+            sequence: snapshot.sequence,
+            availability: snapshot.availability.into(),
+            transport: snapshot.transport.into(),
+            is_expensive: snapshot.is_expensive,
+            is_constrained: snapshot.is_constrained,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum AppLifecycleState {
+    Background,
+    Foreground { background_duration_ms: u64 },
+}
+
+impl From<AppLifecycleState> for runtime_lifecycle::AppLifecycleState {
+    fn from(state: AppLifecycleState) -> Self {
+        match state {
+            AppLifecycleState::Background => runtime_lifecycle::AppLifecycleState::Background,
+            AppLifecycleState::Foreground {
+                background_duration_ms,
+            } => runtime_lifecycle::AppLifecycleState::Foreground {
+                background_duration_ms,
+            },
+        }
+    }
+}
+
+impl From<runtime_lifecycle::AppLifecycleState> for AppLifecycleState {
+    fn from(state: runtime_lifecycle::AppLifecycleState) -> Self {
+        match state {
+            runtime_lifecycle::AppLifecycleState::Background => AppLifecycleState::Background,
+            runtime_lifecycle::AppLifecycleState::Foreground {
+                background_duration_ms,
+            } => AppLifecycleState::Foreground {
+                background_duration_ms,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum CleanupReason {
+    AppTerminating,
+    UserLogout,
+    StaleConnectionSuspected,
+    ManualReset,
+}
+
+impl From<CleanupReason> for runtime_lifecycle::CleanupReason {
+    fn from(reason: CleanupReason) -> Self {
+        match reason {
+            CleanupReason::AppTerminating => runtime_lifecycle::CleanupReason::AppTerminating,
+            CleanupReason::UserLogout => runtime_lifecycle::CleanupReason::UserLogout,
+            CleanupReason::StaleConnectionSuspected => {
+                runtime_lifecycle::CleanupReason::StaleConnectionSuspected
+            }
+            CleanupReason::ManualReset => runtime_lifecycle::CleanupReason::ManualReset,
+        }
+    }
+}
+
+impl From<runtime_lifecycle::CleanupReason> for CleanupReason {
+    fn from(reason: runtime_lifecycle::CleanupReason) -> Self {
+        match reason {
+            runtime_lifecycle::CleanupReason::AppTerminating => CleanupReason::AppTerminating,
+            runtime_lifecycle::CleanupReason::UserLogout => CleanupReason::UserLogout,
+            runtime_lifecycle::CleanupReason::StaleConnectionSuspected => {
+                CleanupReason::StaleConnectionSuspected
+            }
+            runtime_lifecycle::CleanupReason::ManualReset => CleanupReason::ManualReset,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum ReconnectReason {
+    NetworkPathChanged,
+    LongBackground,
+    ProbeFailed,
+    ManualReconnect,
+    StaleConnectionSuspected,
+}
+
+impl From<ReconnectReason> for runtime_lifecycle::ReconnectReason {
+    fn from(reason: ReconnectReason) -> Self {
+        match reason {
+            ReconnectReason::NetworkPathChanged => {
+                runtime_lifecycle::ReconnectReason::NetworkPathChanged
+            }
+            ReconnectReason::LongBackground => runtime_lifecycle::ReconnectReason::LongBackground,
+            ReconnectReason::ProbeFailed => runtime_lifecycle::ReconnectReason::ProbeFailed,
+            ReconnectReason::ManualReconnect => runtime_lifecycle::ReconnectReason::ManualReconnect,
+            ReconnectReason::StaleConnectionSuspected => {
+                runtime_lifecycle::ReconnectReason::StaleConnectionSuspected
+            }
+        }
+    }
+}
+
+impl From<runtime_lifecycle::ReconnectReason> for ReconnectReason {
+    fn from(reason: runtime_lifecycle::ReconnectReason) -> Self {
+        match reason {
+            runtime_lifecycle::ReconnectReason::NetworkPathChanged => {
+                ReconnectReason::NetworkPathChanged
+            }
+            runtime_lifecycle::ReconnectReason::LongBackground => ReconnectReason::LongBackground,
+            runtime_lifecycle::ReconnectReason::ProbeFailed => ReconnectReason::ProbeFailed,
+            runtime_lifecycle::ReconnectReason::ManualReconnect => ReconnectReason::ManualReconnect,
+            runtime_lifecycle::ReconnectReason::StaleConnectionSuspected => {
+                ReconnectReason::StaleConnectionSuspected
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum NetworkEvent {
-    Available,
-    Lost,
-    TypeChanged { is_wifi: bool, is_cellular: bool },
-    CleanupConnections,
+    NetworkPathChanged { snapshot: NetworkSnapshot },
+    AppLifecycleChanged { state: AppLifecycleState },
+    CleanupConnections { reason: CleanupReason },
+    ForceReconnect { reason: ReconnectReason },
 }
 
 impl From<runtime_lifecycle::NetworkEvent> for NetworkEvent {
     fn from(event: runtime_lifecycle::NetworkEvent) -> Self {
         match event {
-            runtime_lifecycle::NetworkEvent::Available => NetworkEvent::Available,
-            runtime_lifecycle::NetworkEvent::Lost => NetworkEvent::Lost,
-            runtime_lifecycle::NetworkEvent::TypeChanged {
-                is_wifi,
-                is_cellular,
-            } => NetworkEvent::TypeChanged {
-                is_wifi,
-                is_cellular,
-            },
-            runtime_lifecycle::NetworkEvent::CleanupConnections => NetworkEvent::CleanupConnections,
+            runtime_lifecycle::NetworkEvent::NetworkPathChanged { snapshot } => {
+                NetworkEvent::NetworkPathChanged {
+                    snapshot: snapshot.into(),
+                }
+            }
+            runtime_lifecycle::NetworkEvent::AppLifecycleChanged { state } => {
+                NetworkEvent::AppLifecycleChanged {
+                    state: state.into(),
+                }
+            }
+            runtime_lifecycle::NetworkEvent::CleanupConnections { reason } => {
+                NetworkEvent::CleanupConnections {
+                    reason: reason.into(),
+                }
+            }
+            runtime_lifecycle::NetworkEvent::ForceReconnect { reason } => {
+                NetworkEvent::ForceReconnect {
+                    reason: reason.into(),
+                }
+            }
         }
     }
 }

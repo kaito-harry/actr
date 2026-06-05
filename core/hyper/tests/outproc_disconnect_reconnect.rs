@@ -17,7 +17,8 @@
 //!   → sends IceRestartRequest → Offerer receives → wakes backoff → immediate retry
 
 use actr_hyper::lifecycle::{
-    DefaultNetworkEventProcessor, NetworkEvent, NetworkEventProcessor, NetworkRecoveryAction,
+    DefaultNetworkEventProcessor, NetworkAvailability, NetworkEvent, NetworkEventProcessor,
+    NetworkRecoveryAction, NetworkSnapshot, NetworkTransportFlags, ReconnectReason,
     process_network_event_batch, select_network_recovery_action,
 };
 use actr_hyper::test_support::TestHarness;
@@ -34,6 +35,40 @@ fn init_tracing() {
         .with_test_writer()
         .try_init()
         .ok();
+}
+
+fn network_event(sequence: u64, available: bool, wifi: bool, cellular: bool) -> NetworkEvent {
+    NetworkEvent::NetworkPathChanged {
+        snapshot: NetworkSnapshot {
+            sequence,
+            availability: if available {
+                NetworkAvailability::Available
+            } else {
+                NetworkAvailability::Unavailable
+            },
+            transport: NetworkTransportFlags {
+                wifi,
+                cellular,
+                ethernet: false,
+                vpn: false,
+                other: false,
+            },
+            is_expensive: false,
+            is_constrained: false,
+        },
+    }
+}
+
+fn offline_event(sequence: u64) -> NetworkEvent {
+    network_event(sequence, false, false, false)
+}
+
+fn online_event(sequence: u64) -> NetworkEvent {
+    network_event(sequence, true, false, false)
+}
+
+fn wifi_event(sequence: u64) -> NetworkEvent {
+    network_event(sequence, true, true, false)
 }
 
 async fn wait_for_data_channel_opened(
@@ -342,6 +377,355 @@ async fn wait_for_signaling_reconnect(
     }
 }
 
+async fn force_reconnect_and_wait_for_new_session(
+    harness: &TestHarness,
+    from_serial: u64,
+    to_serial: u64,
+    old_session_id: u64,
+    request_prefix: &str,
+) -> u64 {
+    let target_id = harness.peer(to_serial).id.clone();
+    let results = process_network_event_batch(
+        vec![
+            NetworkEvent::ForceReconnect {
+                reason: ReconnectReason::ManualReconnect,
+            },
+            wifi_event(1),
+        ],
+        harness.peer(from_serial).network_processor(),
+    )
+    .await;
+    assert!(
+        results.iter().all(|result| result.success),
+        "force reconnect batch should succeed: {results:?}"
+    );
+
+    let response = expect_request_eventually_ok(
+        harness,
+        from_serial,
+        to_serial,
+        request_prefix,
+        Duration::from_secs(20),
+        2_000,
+    )
+    .await;
+    assert!(!response.is_empty());
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(session_id) = harness
+            .peer(from_serial)
+            .coordinator
+            .get_peer_session_id(&target_id)
+            .await
+        {
+            if session_id != old_session_id {
+                return session_id;
+            }
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for a new session after force reconnect"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[derive(Clone, Copy)]
+enum LateOldSessionEvent {
+    Failed,
+    Closed,
+    Ready,
+}
+
+impl LateOldSessionEvent {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Failed => "old_failed",
+            Self::Closed => "old_closed",
+            Self::Ready => "old_ready",
+        }
+    }
+
+    fn reconnect_prefix(self) -> &'static str {
+        match self {
+            Self::Failed => "rc09_force_reconnect",
+            Self::Closed => "rc10_force_reconnect",
+            Self::Ready => "rc11_force_reconnect",
+        }
+    }
+
+    fn verification_prefix(self) -> &'static str {
+        match self {
+            Self::Failed => "rc09_late_failed_new_session_still_usable",
+            Self::Closed => "rc10_late_closed_new_session_still_usable",
+            Self::Ready => "rc11_late_ready_new_session_still_usable",
+        }
+    }
+
+    fn settle_delay(self) -> Duration {
+        match self {
+            Self::Closed => Duration::from_millis(300),
+            Self::Failed | Self::Ready => Duration::from_millis(150),
+        }
+    }
+
+    fn inject(self, harness: &TestHarness, peer_serial: u64, target_id: &ActrId, session_id: u64) {
+        match self {
+            Self::Failed => {
+                harness
+                    .peer(peer_serial)
+                    .send_event(ConnectionEvent::StateChanged {
+                        peer_id: target_id.clone(),
+                        session_id,
+                        state: ConnectionState::Failed,
+                    });
+            }
+            Self::Closed => {
+                harness
+                    .peer(peer_serial)
+                    .send_event(ConnectionEvent::DataChannelClosed {
+                        peer_id: target_id.clone(),
+                        session_id,
+                        payload_type: PayloadType::RpcReliable,
+                    });
+                harness
+                    .peer(peer_serial)
+                    .send_event(ConnectionEvent::StateChanged {
+                        peer_id: target_id.clone(),
+                        session_id,
+                        state: ConnectionState::Closed,
+                    });
+                harness
+                    .peer(peer_serial)
+                    .send_event(ConnectionEvent::ConnectionClosed {
+                        peer_id: target_id.clone(),
+                        session_id,
+                    });
+            }
+            Self::Ready => {
+                harness
+                    .peer(peer_serial)
+                    .send_event(ConnectionEvent::DataChannelOpened {
+                        peer_id: target_id.clone(),
+                        session_id,
+                        payload_type: PayloadType::RpcReliable,
+                    });
+                harness
+                    .peer(peer_serial)
+                    .send_event(ConnectionEvent::IceRestartCompleted {
+                        peer_id: target_id.clone(),
+                        session_id,
+                        success: true,
+                    });
+                harness
+                    .peer(peer_serial)
+                    .send_event(ConnectionEvent::StateChanged {
+                        peer_id: target_id.clone(),
+                        session_id,
+                        state: ConnectionState::Connected,
+                    });
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_unreachable_peer_request_fails_bounded_and_clears_pending() {
+    init_tracing();
+
+    let mut harness = TestHarness::new().await;
+    harness.add_peer(100).await;
+
+    let source = harness.peer(100);
+    let request = source.spawn_request(999, "unreachable_peer_bounded_failure", 500);
+
+    match tokio::time::timeout(Duration::from_secs(3), request).await {
+        Ok(Ok(Err(err))) => {
+            let message = err.to_string();
+            assert!(
+                message.contains("Request timeout")
+                    || message.contains("timeout")
+                    || message.contains("Connection")
+                    || message.contains("Unavailable")
+                    || message.contains("unavailable"),
+                "unreachable peer should fail with an explainable bounded error, got: {message}"
+            );
+        }
+        Ok(Ok(Ok(response))) => panic!(
+            "unreachable peer request unexpectedly succeeded with {} bytes",
+            response.len()
+        ),
+        Ok(Err(err)) => panic!("unreachable peer request task panicked: {err}"),
+        Err(_) => panic!("unreachable peer request did not complete within bounded timeout"),
+    }
+
+    assert_eq!(
+        source.pending_count().await,
+        0,
+        "unreachable peer request must clear pending state after bounded failure"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_l2_signaling_unreachable_e2e_fails_bounded_without_pending_leak() {
+    init_tracing();
+
+    let mut harness = TestHarness::with_vnet().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+    harness.connect(100, 200).await;
+
+    harness.simulate_disconnect();
+    for serial in [100, 200] {
+        harness
+            .peer(serial)
+            .signaling_client
+            .disconnect()
+            .await
+            .expect("test should explicitly disconnect signaling before server shutdown");
+    }
+    harness.server.shutdown().await;
+    harness
+        .vnet
+        .as_ref()
+        .expect("VNet harness should have network controls")
+        .unblock_network();
+
+    let results = tokio::time::timeout(
+        Duration::from_secs(5),
+        process_network_event_batch(
+            vec![
+                NetworkEvent::ForceReconnect {
+                    reason: ReconnectReason::NetworkPathChanged,
+                },
+                wifi_event(1),
+            ],
+            harness.peer(100).network_processor(),
+        ),
+    )
+    .await
+    .expect("signaling-unreachable network event should be bounded");
+
+    assert!(
+        results.iter().any(|result| !result.success),
+        "network event should report failure while signaling server is unreachable: {results:?}"
+    );
+
+    let request = harness
+        .peer(100)
+        .spawn_request(200, "l2_signaling_unreachable_request", 1_000);
+    match tokio::time::timeout(Duration::from_secs(4), request).await {
+        Ok(Ok(Err(err))) => {
+            let msg = err.to_string();
+            assert!(
+                msg.contains("Connection")
+                    || msg.contains("timeout")
+                    || msg.contains("Unavailable")
+                    || msg.contains("unavailable"),
+                "unexpected signaling-unreachable request error: {msg}"
+            );
+        }
+        Ok(Ok(Ok(response))) => panic!(
+            "request unexpectedly succeeded while signaling is unreachable: {} bytes",
+            response.len()
+        ),
+        Ok(Err(err)) => panic!("request task panicked: {err}"),
+        Err(_) => panic!("request should not hang while signaling is unreachable"),
+    }
+
+    assert_eq!(
+        harness.peer(100).pending_count().await,
+        0,
+        "signaling-unreachable request must not leak pending state"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_l2_data_channel_not_ready_during_initial_connect_fails_bounded_then_recovers() {
+    init_tracing();
+
+    let mut harness = TestHarness::with_vnet().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+
+    let _bg_tasks = [
+        harness
+            .peer(200)
+            .start_echo_responder("l2_dc_not_ready_echo"),
+        harness
+            .peer(100)
+            .start_response_receiver("l2_dc_not_ready_recv"),
+    ];
+
+    harness
+        .vnet
+        .as_ref()
+        .expect("VNet harness should have network controls")
+        .block_network();
+
+    let blocked = harness
+        .peer(100)
+        .spawn_request(200, "l2_data_channel_not_ready_initial", 1_500);
+    match tokio::time::timeout(Duration::from_secs(5), blocked).await {
+        Ok(Ok(Err(err))) => {
+            let msg = err.to_string();
+            assert!(
+                msg.contains("Request timeout")
+                    || msg.contains("timeout")
+                    || msg.contains("Connection")
+                    || msg.contains("DataChannel")
+                    || msg.contains("data channel"),
+                "unexpected DataChannel-not-ready error: {msg}"
+            );
+        }
+        Ok(Ok(Ok(response))) => panic!(
+            "request unexpectedly succeeded while DataChannel cannot become ready: {} bytes",
+            response.len()
+        ),
+        Ok(Err(err)) => panic!("blocked request task panicked: {err}"),
+        Err(_) => panic!("DataChannel-not-ready request should fail within a bounded deadline"),
+    }
+    assert_eq!(
+        harness.peer(100).pending_count().await,
+        0,
+        "DataChannel-not-ready failure must clear pending state"
+    );
+
+    harness
+        .vnet
+        .as_ref()
+        .expect("VNet harness should have network controls")
+        .unblock_network();
+
+    let restore_results = process_network_event_batch(
+        vec![
+            NetworkEvent::ForceReconnect {
+                reason: ReconnectReason::StaleConnectionSuspected,
+            },
+            wifi_event(2),
+        ],
+        harness.peer(100).network_processor(),
+    )
+    .await;
+    assert!(
+        restore_results.iter().all(|result| result.success),
+        "mobile force reconnect should clean stale not-ready transport: {restore_results:?}"
+    );
+
+    let response = expect_request_eventually_ok(
+        &harness,
+        100,
+        200,
+        "l2_data_channel_not_ready_recovered",
+        Duration::from_secs(25),
+        2_000,
+    )
+    .await;
+    assert!(!response.is_empty());
+}
+
 // ==================== DataChannel close cleanup ====================
 
 #[tokio::test]
@@ -611,6 +995,180 @@ async fn test_duplicate_network_recovery_same_session_is_coalesced() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_late_old_session_events_do_not_affect_new_session() {
+    init_tracing();
+
+    for case in [
+        LateOldSessionEvent::Failed,
+        LateOldSessionEvent::Closed,
+        LateOldSessionEvent::Ready,
+    ] {
+        let mut harness = TestHarness::new().await;
+        harness.add_peer(100).await;
+        harness.add_peer(200).await;
+        harness.connect(100, 200).await;
+
+        let target_id = harness.peer(200).id.clone();
+        let old_session_id = harness
+            .peer(100)
+            .coordinator
+            .get_peer_session_id(&target_id)
+            .await
+            .expect("initial session should exist");
+
+        let new_session_id = force_reconnect_and_wait_for_new_session(
+            &harness,
+            100,
+            200,
+            old_session_id,
+            case.reconnect_prefix(),
+        )
+        .await;
+
+        case.inject(&harness, 100, &target_id, old_session_id);
+        tokio::time::sleep(case.settle_delay()).await;
+
+        assert_eq!(
+            harness
+                .peer(100)
+                .coordinator
+                .get_peer_session_id(&target_id)
+                .await,
+            Some(new_session_id),
+            "{} late old event must not replace or close the active session",
+            case.name()
+        );
+
+        if matches!(case, LateOldSessionEvent::Closed) {
+            assert!(
+                harness.peer(100).transport_manager.dest_count().await >= 1,
+                "{} late old event must not remove the current DestTransport",
+                case.name()
+            );
+        }
+
+        let response = expect_request_eventually_ok(
+            &harness,
+            100,
+            200,
+            case.verification_prefix(),
+            Duration::from_secs(10),
+            2_000,
+        )
+        .await;
+        assert!(!response.is_empty(), "{} should remain usable", case.name());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_both_peers_first_rpc_concurrently_is_bounded_then_mobile_restore_recovers() {
+    init_tracing();
+
+    let mut harness = TestHarness::new().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+
+    let _bg_tasks = [
+        harness.peer(100).start_echo_responder("rc14_echo_100"),
+        harness.peer(200).start_echo_responder("rc14_echo_200"),
+        harness.peer(100).start_response_receiver("rc14_recv_100"),
+        harness.peer(200).start_response_receiver("rc14_recv_200"),
+    ];
+
+    let request_100_to_200 =
+        harness
+            .peer(100)
+            .spawn_request(200, "rc14_first_rpc_100_to_200", 5_000);
+    let request_200_to_100 =
+        harness
+            .peer(200)
+            .spawn_request(100, "rc14_first_rpc_200_to_100", 5_000);
+
+    let (result_100_to_200, result_200_to_100) =
+        tokio::time::timeout(Duration::from_secs(8), async {
+            tokio::join!(request_100_to_200, request_200_to_100)
+        })
+        .await
+        .expect("simultaneous first RPCs should be bounded");
+
+    for (label, result) in [
+        ("100 -> 200", result_100_to_200),
+        ("200 -> 100", result_200_to_100),
+    ] {
+        match result.expect("first RPC task should not panic") {
+            Ok(response) => assert!(
+                !response.is_empty(),
+                "{label} first RPC returned an empty response"
+            ),
+            Err(err) => {
+                let msg = err.to_string();
+                assert!(
+                    msg.contains("Request timeout")
+                        || msg.contains("timeout")
+                        || msg.contains("Connection")
+                        || msg.contains("closed")
+                        || msg.contains("DataChannel")
+                        || msg.contains("data channel"),
+                    "{label} first RPC should fail with a bounded transport error, got: {msg}"
+                );
+            }
+        }
+    }
+
+    assert_eq!(harness.peer(100).pending_count().await, 0);
+    assert_eq!(harness.peer(200).pending_count().await, 0);
+
+    let restore_100 = process_network_event_batch(
+        vec![
+            NetworkEvent::ForceReconnect {
+                reason: ReconnectReason::StaleConnectionSuspected,
+            },
+            wifi_event(1),
+        ],
+        harness.peer(100).network_processor(),
+    );
+    let restore_200 = process_network_event_batch(
+        vec![
+            NetworkEvent::ForceReconnect {
+                reason: ReconnectReason::StaleConnectionSuspected,
+            },
+            wifi_event(1),
+        ],
+        harness.peer(200).network_processor(),
+    );
+    let (restore_100, restore_200) = tokio::join!(restore_100, restore_200);
+    assert!(
+        restore_100.iter().all(|result| result.success),
+        "peer 100 restore should succeed after simultaneous first-send race: {restore_100:?}"
+    );
+    assert!(
+        restore_200.iter().all(|result| result.success),
+        "peer 200 restore should succeed after simultaneous first-send race: {restore_200:?}"
+    );
+
+    let response_100_to_200 = expect_request_eventually_ok(
+        &harness,
+        100,
+        200,
+        "rc14_recovered_rpc_100_to_200",
+        Duration::from_secs(15),
+        2_000,
+    )
+    .await;
+    let response_200_to_100 = expect_request_eventually_ok(
+        &harness,
+        200,
+        100,
+        "rc14_recovered_rpc_200_to_100",
+        Duration::from_secs(15),
+        2_000,
+    )
+    .await;
+    assert!(!response_100_to_200.is_empty());
+    assert!(!response_200_to_100.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_signaling_restore_wakes_existing_restart_without_duplicate_offer() {
     init_tracing();
 
@@ -668,6 +1226,71 @@ async fn test_signaling_restore_wakes_existing_restart_without_duplicate_offer()
         harness.ice_restart_count(),
         1,
         "repeated recovery resumes should wake the existing restart task, not send duplicate offers"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_default_network_processor_mobile_restore_wakes_existing_restart_retry() {
+    init_tracing();
+
+    let mut harness = TestHarness::new().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+
+    tracing::info!("Step 1: Establish connection with peer 100 as offerer");
+    harness.connect(100, 200).await;
+    harness.reset_counters();
+
+    let offerer_signaling = harness.peer(100).signaling_client.clone();
+    let offerer_coordinator = harness.peer(100).coordinator.clone();
+    let network_processor = harness.peer(100).network_processor();
+
+    tracing::info!("Step 2: Start network recovery while offerer signaling is disconnected");
+    offerer_signaling
+        .disconnect()
+        .await
+        .expect("test should disconnect offerer signaling");
+    offerer_coordinator
+        .begin_network_recovery("NetworkLost")
+        .await;
+    offerer_coordinator
+        .restart_network_recovery_connections()
+        .await;
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(
+        harness.ice_restart_count(),
+        0,
+        "ICE restart must not send an offer while signaling is disconnected"
+    );
+
+    tracing::info!("Step 3: Restore through the real DefaultNetworkEventProcessor");
+    let events = vec![offline_event(1), online_event(2), wifi_event(3)];
+    assert_eq!(
+        select_network_recovery_action(&events),
+        NetworkRecoveryAction::Restore
+    );
+
+    let started = Instant::now();
+    let results = process_network_event_batch(events, network_processor).await;
+    assert!(
+        results.iter().all(|result| result.success),
+        "DefaultNetworkEventProcessor restore should succeed: {results:?}"
+    );
+
+    harness
+        .wait_for_ice_restart_count(1, Duration::from_secs(3))
+        .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "mobile restore should wake the existing ICE restart retry before the 5s backoff expires"
+    );
+
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(
+        harness.ice_restart_count(),
+        1,
+        "DefaultNetworkEventProcessor restore should wake the existing restart task, not send duplicate offers"
     );
 }
 
@@ -889,7 +1512,7 @@ async fn test_data_channel_on_close_cleans_webrtc_transport() {
 // ==================== Test 1: Two-peer disconnect/reconnect with NetworkEvent ====================
 
 /// Test: disconnect two peers via VNet + signaling pause,
-/// simulate NetworkEvent::Available (retry_failed_connections),
+/// simulate a network-online snapshot (retry_failed_connections),
 /// verify the connection is actually recovered by sending a message through the gate.
 #[tokio::test]
 async fn test_two_peer_disconnect_reconnect() {
@@ -922,9 +1545,9 @@ async fn test_two_peer_disconnect_reconnect() {
     tracing::info!("🟢 Step 3: Restoring network (VNet + signaling)...");
     harness.simulate_reconnect();
 
-    // Step 4: Simulate NetworkEvent::Available → triggers retry_failed_connections()
+    // Step 4: Simulate network-online snapshot -> triggers retry_failed_connections()
     // This is what happens in production when the platform layer detects network recovery
-    tracing::info!("📱 Step 4: Triggering NetworkEvent::Available (retry_failed_connections)...");
+    tracing::info!("Step 4: Triggering network-online snapshot (retry_failed_connections)...");
     let start = tokio::time::Instant::now();
     harness.peer(100).retry_failed().await;
 
@@ -934,7 +1557,7 @@ async fn test_two_peer_disconnect_reconnect() {
 
     let recovery_time = start.elapsed();
     tracing::info!(
-        "📊 Recovery time (from NetworkEvent::Available): {:?}",
+        "Recovery time (from network-online snapshot): {:?}",
         recovery_time
     );
 
@@ -981,14 +1604,7 @@ async fn test_lost_available_type_changed_batch_restores_webrtc_end_to_end() {
     tracing::info!("🟢 Step 3: Restoring network (VNet + signaling)...");
     harness.simulate_reconnect();
 
-    let events = vec![
-        NetworkEvent::Lost,
-        NetworkEvent::Available,
-        NetworkEvent::TypeChanged {
-            is_wifi: true,
-            is_cellular: false,
-        },
-    ];
+    let events = vec![offline_event(1), online_event(2), wifi_event(3)];
     assert_eq!(
         select_network_recovery_action(&events),
         NetworkRecoveryAction::Restore
@@ -1037,16 +1653,15 @@ async fn test_cleanup_available_type_changed_batch_rebuilds_webrtc_end_to_end() 
     harness.reset_counters();
 
     let events = vec![
-        NetworkEvent::CleanupConnections,
-        NetworkEvent::Available,
-        NetworkEvent::TypeChanged {
-            is_wifi: true,
-            is_cellular: false,
+        NetworkEvent::ForceReconnect {
+            reason: ReconnectReason::LongBackground,
         },
+        online_event(1),
+        wifi_event(2),
     ];
     assert_eq!(
         select_network_recovery_action(&events),
-        NetworkRecoveryAction::CleanupConnectionsCompat
+        NetworkRecoveryAction::ForceReconnect
     );
 
     tracing::info!(
@@ -1075,6 +1690,225 @@ async fn test_cleanup_available_type_changed_batch_rebuilds_webrtc_end_to_end() 
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_cleanup_during_ice_restart_prioritizes_cleanup_then_mobile_restore() {
+    init_tracing();
+
+    let mut harness = TestHarness::with_vnet().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+    harness.connect(100, 200).await;
+    harness.reset_counters();
+
+    let target = harness.peer(200).id.clone();
+
+    tracing::info!("Step 1: Block UDP and start mobile recovery/ICE restart");
+    harness
+        .vnet
+        .as_ref()
+        .expect("VNet harness should have network controls")
+        .block_network();
+    harness
+        .peer(100)
+        .coordinator
+        .begin_network_recovery("rc12 cleanup during ice restart")
+        .await;
+
+    let restart_task = {
+        let coordinator = harness.peer(100).coordinator.clone();
+        tokio::spawn(async move {
+            coordinator.restart_network_recovery_connections().await;
+        })
+    };
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    tracing::info!("Step 2: Cleanup overlaps the in-flight restart window");
+    let cleanup_result = tokio::time::timeout(
+        Duration::from_secs(8),
+        harness.peer(100).network_processor().cleanup_connections(),
+    )
+    .await
+    .expect("cleanup during ICE restart should be bounded");
+    assert!(
+        cleanup_result.is_ok(),
+        "cleanup during ICE restart should not fail: {:?}",
+        cleanup_result
+    );
+
+    tokio::time::timeout(Duration::from_secs(2), restart_task)
+        .await
+        .expect("restart trigger task should not hang")
+        .expect("restart trigger task should not panic");
+
+    assert!(
+        harness
+            .peer(100)
+            .coordinator
+            .peer_recovery_status(&target)
+            .await
+            .is_none(),
+        "cleanup should clear the old recovery guard once the old peer is gone"
+    );
+    assert_eq!(
+        harness.peer(100).transport_manager.dest_count().await,
+        0,
+        "cleanup during ICE restart must not leave stale transport state"
+    );
+
+    tracing::info!("Step 3: Only a later mobile event restores connectivity");
+    harness
+        .vnet
+        .as_ref()
+        .expect("VNet harness should have network controls")
+        .unblock_network();
+    let results =
+        process_network_event_batch(vec![wifi_event(1)], harness.peer(100).network_processor())
+            .await;
+    assert!(results.iter().all(|result| result.success));
+
+    let response = expect_request_eventually_ok(
+        &harness,
+        100,
+        200,
+        "rc12_cleanup_then_mobile_restore",
+        Duration::from_secs(20),
+        2_000,
+    )
+    .await;
+    assert!(!response.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_signaling_reconnect_overlapping_cleanup_does_not_revive_old_transport() {
+    init_tracing();
+
+    let mut harness = TestHarness::with_vnet().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+    harness.connect(100, 200).await;
+    harness.reset_counters();
+
+    tracing::info!("Step 1: Start a signaling reconnect while cleanup is about to run");
+    harness
+        .peer(100)
+        .signaling_client
+        .disconnect()
+        .await
+        .expect("test should disconnect signaling before reconnect race");
+
+    let reconnect_task = {
+        let signaling = harness.peer(100).signaling_client.clone();
+        tokio::spawn(async move { signaling.connect_once().await })
+    };
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+
+    tracing::info!("Step 2: Cleanup overlaps reconnect and must remove old WebRTC transport");
+    let cleanup_result = tokio::time::timeout(
+        Duration::from_secs(8),
+        harness.peer(100).network_processor().cleanup_connections(),
+    )
+    .await
+    .expect("cleanup overlapping signaling reconnect should be bounded");
+    assert!(
+        cleanup_result.is_ok(),
+        "cleanup overlapping signaling reconnect should not fail: {:?}",
+        cleanup_result
+    );
+
+    let _ = tokio::time::timeout(Duration::from_secs(5), reconnect_task)
+        .await
+        .expect("signaling reconnect task should not hang")
+        .expect("signaling reconnect task should not panic");
+
+    assert_eq!(
+        harness.peer(100).transport_manager.dest_count().await,
+        0,
+        "overlapped signaling reconnect must not revive the old DestTransport"
+    );
+    assert_eq!(
+        harness.peer(100).pending_count().await,
+        0,
+        "cleanup/reconnect overlap must leave no pending RPC state"
+    );
+
+    tracing::info!("Step 3: Explicit mobile restore establishes a fresh connection");
+    let results =
+        process_network_event_batch(vec![wifi_event(1)], harness.peer(100).network_processor())
+            .await;
+    assert!(results.iter().all(|result| result.success));
+
+    let response = expect_request_eventually_ok(
+        &harness,
+        100,
+        200,
+        "rc13_signaling_cleanup_then_restore",
+        Duration::from_secs(20),
+        2_000,
+    )
+    .await;
+    assert!(!response.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_both_peers_simultaneous_mobile_restore_has_bounded_offer_count() {
+    init_tracing();
+
+    let mut harness = TestHarness::with_vnet().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+    harness.connect(100, 200).await;
+    harness.reset_counters();
+
+    tracing::info!("Step 1: Full outage puts both peers into a mobile recovery scenario");
+    harness.simulate_disconnect();
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    harness.simulate_reconnect();
+
+    let events = vec![offline_event(1), online_event(2), wifi_event(3)];
+    assert_eq!(
+        select_network_recovery_action(&events),
+        NetworkRecoveryAction::Restore
+    );
+
+    tracing::info!("Step 2: Both mobile endpoints report restore concurrently");
+    let peer_100_processor = harness.peer(100).network_processor();
+    let peer_200_processor = harness.peer(200).network_processor();
+    let peer_100_events = events.clone();
+    let peer_200_events = events;
+
+    let (results_100, results_200) = tokio::join!(
+        process_network_event_batch(peer_100_events, peer_100_processor),
+        process_network_event_batch(peer_200_events, peer_200_processor),
+    );
+    assert!(results_100.iter().all(|result| result.success));
+    assert!(results_200.iter().all(|result| result.success));
+
+    let restart_count = harness
+        .wait_for_ice_restart_count(1, Duration::from_secs(10))
+        .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let final_restart_count = harness.ice_restart_count();
+    assert!(
+        final_restart_count <= restart_count + 3,
+        "simultaneous mobile restore should not create an offer storm: first={}, final={}",
+        restart_count,
+        final_restart_count
+    );
+
+    let response = expect_request_eventually_ok(
+        &harness,
+        100,
+        200,
+        "rc15_simultaneous_mobile_restore",
+        Duration::from_secs(20),
+        2_000,
+    )
+    .await;
+    assert!(!response.is_empty());
+}
+
 // ==================== Test 2: Offerer recovery latency ====================
 
 /// Test: offerer-triggered recovery after network outage.
@@ -1087,7 +1921,7 @@ async fn test_cleanup_available_type_changed_batch_rebuilds_webrtc_end_to_end() 
 ///    → ICE Disconnected → auto-restart triggered on offerer (peer 100)
 ///    → First attempt fails (signaling blocked) → enters backoff
 /// 3. Unblock network
-/// 4. Offerer (peer 100) calls `retry_failed_connections()` (simulating NetworkEvent::Available)
+/// 4. Offerer (peer 100) calls `retry_failed_connections()` (simulating network-online snapshot)
 ///    → `restart_ice()` but already inflight → no-op (dedup check)
 /// 5. Measure time from unblock to message delivery
 ///
@@ -1128,7 +1962,7 @@ async fn test_offerer_recovery_latency() {
     let recovery_start = std::time::Instant::now();
     harness.simulate_reconnect();
 
-    // === Step 4: Offerer calls retry_failed (simulating NetworkEvent::Available) ===
+    // === Step 4: Offerer calls retry_failed (simulating network-online snapshot) ===
     tracing::info!("📱 Step 4: Offerer (100) calls retry_failed_connections()...");
     tracing::info!("   → restart_ice() will find restart already inflight → no-op");
     harness.peer(100).retry_failed().await;
@@ -1213,7 +2047,7 @@ async fn test_answerer_recovery_latency() {
     let recovery_start = std::time::Instant::now();
     harness.simulate_reconnect();
 
-    // === Step 4: ANSWERER calls retry_failed (simulating NetworkEvent::Available) ===
+    // === Step 4: ANSWERER calls retry_failed (simulating network-online snapshot) ===
     tracing::info!("📱 Step 4: Answerer (200) calls retry_failed_connections()...");
     tracing::info!("   → restart_ice() → !is_offerer → sends IceRestartRequest to Offerer");
     harness.peer(200).retry_failed().await;
@@ -1311,18 +2145,20 @@ async fn repro_network_event_returns_before_webrtc_ready_causing_early_rpc_timeo
         harness.peer(CLIENT).signaling_client.is_connected(),
         "client signaling should be connected before NetworkEvent closes it"
     );
-    let processor = DefaultNetworkEventProcessor::new(
+    let processor = std::sync::Arc::new(DefaultNetworkEventProcessor::new(
         harness.peer(CLIENT).signaling_client.clone(),
         Some(harness.peer(CLIENT).coordinator.clone()),
-    );
+    ));
     let event_started = std::time::Instant::now();
-    processor
-        .process_network_type_changed(true, false)
-        .await
-        .expect("NetworkEvent::TypeChanged should report success");
+    let results = process_network_event_batch(vec![wifi_event(1)], processor).await;
+    assert!(
+        results.iter().all(|result| result.success),
+        "NetworkEvent path change should report success: {:?}",
+        results
+    );
     let event_elapsed = event_started.elapsed();
     tracing::info!(
-        "NetworkEvent::TypeChanged returned in {:?}; ICE restart offers observed={}",
+        "network snapshot event returned in {:?}; ICE restart offers observed={}",
         event_elapsed,
         harness.ice_restart_count()
     );

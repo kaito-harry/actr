@@ -118,22 +118,20 @@ impl WirePool {
     /// # Behavior
     /// - **Unconditionally starts**: Always starts connection attempt, even if a connection already exists
     /// - Use `add_connection_smart()` if you want to skip already-ready connections
-    pub(crate) fn add_connection(&self, connection: Arc<dyn WireHandle>) {
+    pub(crate) async fn add_connection(&self, connection: Arc<dyn WireHandle>) {
+        let conn_type = connection.connection_type();
+        {
+            let mut conns = self.connections.write().await;
+            conns[conn_type.as_index()] = Some(WireStatus::Connecting);
+        }
+
         let connections = Arc::clone(&self.connections);
         let ready_tx = self.ready_tx.clone();
         let pending = Arc::clone(&self.pending);
         let retry_config = self.retry_config;
         let closed = Arc::clone(&self.closed);
 
-        let conn_type = connection.connection_type();
-
         tokio::spawn(async move {
-            // Initialize status
-            {
-                let mut conns = connections.write().await;
-                conns[conn_type.as_index()] = Some(WireStatus::Connecting);
-            }
-
             // Create exponential backoff iterator
             let backoff = retry_config.create_backoff();
 
@@ -218,20 +216,24 @@ impl WirePool {
                 retry_config.max_attempts
             );
 
-            let mut conns = connections.write().await;
-            conns[conn_type.as_index()] = Some(WireStatus::Failed);
+            {
+                let mut conns = connections.write().await;
+                conns[conn_type.as_index()] = Some(WireStatus::Failed);
 
-            // Check if all connections failed
-            let remaining = pending.load(Ordering::Relaxed);
-            if remaining == 0 {
-                let all_failed = conns
-                    .iter()
-                    .all(|s| matches!(s, Some(WireStatus::Failed) | None));
+                // Check if all connections failed
+                let remaining = pending.load(Ordering::Relaxed);
+                if remaining == 0 {
+                    let all_failed = conns
+                        .iter()
+                        .all(|s| matches!(s, Some(WireStatus::Failed) | None));
 
-                if all_failed {
-                    tracing::error!("💀💀 All connections failed");
+                    if all_failed {
+                        tracing::error!("💀💀 All connections failed");
+                    }
                 }
             }
+
+            Self::broadcast_ready_connections(&connections, &ready_tx).await;
         });
     }
 
@@ -273,7 +275,7 @@ impl WirePool {
         };
 
         if should_add {
-            self.add_connection(connection);
+            self.add_connection(connection).await;
         }
     }
 
@@ -310,6 +312,18 @@ impl WirePool {
             Some(WireStatus::Ready(conn)) => Some(Arc::clone(conn)),
             _ => None,
         }
+    }
+
+    /// Return true if any candidate can still become sendable.
+    pub(crate) async fn has_live_candidate(&self, conn_types: &[ConnType]) -> bool {
+        let conns = self.connections.read().await;
+
+        conn_types.iter().any(|conn_type| {
+            matches!(
+                &conns[conn_type.as_index()],
+                Some(WireStatus::Ready(_)) | Some(WireStatus::Connecting)
+            )
+        })
     }
 
     /// Mark a connection as closed/failed

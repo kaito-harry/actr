@@ -264,6 +264,21 @@ impl PeerTransport {
                     .create_connections_with_cancel(dest, Some(cancel_token.clone()))
                     .await?;
 
+                if cancel_token.is_cancelled() {
+                    for conn in connections {
+                        if let Err(e) = conn.close().await {
+                            tracing::warn!(
+                                "Failed to close connection created after cancellation for {:?}: {}",
+                                dest,
+                                e
+                            );
+                        }
+                    }
+                    return Err(NetworkError::ConnectionClosed(
+                        "Connection creation cancelled".to_string(),
+                    ));
+                }
+
                 if connections.is_empty() {
                     return Err(NetworkError::ConfigurationError(format!(
                         "Connection factory returned no connections: {dest:?}"
@@ -276,6 +291,20 @@ impl PeerTransport {
                     connections.len()
                 );
                 let transport = DestTransport::new(dest.clone(), connections).await?;
+
+                if cancel_token.is_cancelled() {
+                    if let Err(e) = transport.close().await {
+                        tracing::warn!(
+                            "Failed to close DestTransport created after cancellation for {:?}: {}",
+                            dest,
+                            e
+                        );
+                    }
+                    return Err(NetworkError::ConnectionClosed(
+                        "Connection creation cancelled".to_string(),
+                    ));
+                }
+
                 Ok(Arc::new(transport))
             }
             .await;
@@ -355,11 +384,23 @@ impl PeerTransport {
         };
 
         match current_state {
-            Some(Either::Left(_)) => {
-                tracing::debug!(
-                    "Ignoring close request for connecting destination {:?}; creator owns retry/cleanup",
-                    dest
-                );
+            Some(Either::Left(notify)) => {
+                {
+                    let mut tokens = self.pending_tokens.lock().await;
+                    if let Some(token) = tokens.remove(dest) {
+                        tracing::info!("Cancelling in-progress connection for {:?}", dest);
+                        token.cancel();
+                    }
+                }
+
+                {
+                    let mut transports = self.transports.write().await;
+                    if matches!(transports.get(dest), Some(Either::Left(_))) {
+                        transports.remove(dest);
+                    }
+                }
+
+                notify.notify_waiters();
             }
             Some(Either::Right(_)) => {
                 // 3. Cancel any auxiliary pending connection creation state.
@@ -445,19 +486,34 @@ impl PeerTransport {
     /// Close all DestTransports
     #[allow(dead_code)]
     pub async fn close_all(&self) -> NetworkResult<()> {
-        let mut transports = self.transports.write().await;
+        {
+            let mut tokens = self.pending_tokens.lock().await;
+            for (dest, token) in tokens.drain() {
+                tracing::info!("Cancelling in-progress connection for {:?}", dest);
+                token.cancel();
+            }
+        }
 
-        tracing::info!("Closing all DestTransports (count: {})", transports.len());
+        let states = {
+            let mut transports = self.transports.write().await;
+            tracing::info!("Closing all DestTransports (count: {})", transports.len());
+            transports.drain().collect::<Vec<_>>()
+        };
 
-        for (dest, state) in transports.drain() {
+        for (dest, state) in states {
             match state {
                 Either::Right(transport) => {
+                    self.closing_peers.write().await.insert(dest.clone());
                     if let Err(e) = transport.close().await {
                         tracing::warn!("Failed to close DestTransport {:?}: {}", dest, e);
                     }
+                    self.closing_peers.write().await.remove(&dest);
                 }
-                Either::Left(_notify) => {
-                    tracing::debug!("Skipped Connecting state for: {:?}", dest);
+                Either::Left(notify) => {
+                    self.closing_peers.write().await.insert(dest.clone());
+                    tracing::debug!("Cancelled Connecting state for: {:?}", dest);
+                    notify.notify_waiters();
+                    self.closing_peers.write().await.remove(&dest);
                 }
             }
         }

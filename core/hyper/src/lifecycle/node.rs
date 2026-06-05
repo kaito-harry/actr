@@ -80,6 +80,9 @@ pub(crate) struct Inner {
     /// WebRTC coordinator (created after startup)
     pub(crate) webrtc_coordinator: Option<Arc<crate::wire::webrtc::WebRtcCoordinator>>,
 
+    /// Peer transport manager (created after startup)
+    pub(crate) peer_transport: Option<Arc<crate::transport::PeerTransport>>,
+
     /// WebRTC Gate (created after startup)
     pub(crate) webrtc_gate: Option<Arc<crate::wire::webrtc::gate::WebRtcGate>>,
 
@@ -106,11 +109,7 @@ pub(crate) struct Inner {
     pub(crate) actr_lock: Option<Arc<actr_config::lock::LockFile>>,
     /// Network event receiver (from NetworkEventHandle)
     pub(crate) network_event_rx:
-        Option<tokio::sync::mpsc::Receiver<crate::lifecycle::network_event::NetworkEvent>>,
-
-    /// Network event result sender (to NetworkEventHandle)
-    pub(crate) network_event_result_tx:
-        Option<tokio::sync::mpsc::Sender<crate::lifecycle::network_event::NetworkEventResult>>,
+        Option<tokio::sync::mpsc::Receiver<crate::lifecycle::network_event::NetworkEventRequest>>,
 
     /// Network event debounce configuration
     pub(crate) network_event_debounce_config:
@@ -573,14 +572,12 @@ impl Inner {
     /// - Delegate to NetworkEventProcessor for handling
     /// - Record processing time and send results
     async fn network_event_loop(
-        event_rx: tokio::sync::mpsc::Receiver<crate::lifecycle::network_event::NetworkEvent>,
-        result_tx: tokio::sync::mpsc::Sender<crate::lifecycle::network_event::NetworkEventResult>,
+        event_rx: tokio::sync::mpsc::Receiver<crate::lifecycle::network_event::NetworkEventRequest>,
         event_processor: Arc<dyn crate::lifecycle::network_event::NetworkEventProcessor>,
         shutdown_token: CancellationToken,
     ) {
         crate::lifecycle::network_event::run_network_event_reconciler(
             event_rx,
-            result_tx,
             event_processor,
             shutdown_token,
         )
@@ -887,6 +884,7 @@ impl Inner {
             actor_id: None,
             credential_state: None,
             webrtc_coordinator: None,
+            peer_transport: None,
             webrtc_gate: None,
             websocket_gate: None,
             shell_to_workload: Some(shell_to_workload),
@@ -894,7 +892,6 @@ impl Inner {
             shutdown_token: CancellationToken::new(),
             actr_lock,
             network_event_rx: None,
-            network_event_result_tx: None,
             network_event_debounce_config: None,
             dedup_state: Arc::new(Mutex::new(DedupState::new())),
             package_manifest,
@@ -968,7 +965,6 @@ impl Inner {
         }
 
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(100);
-        let (result_tx, result_rx) = tokio::sync::mpsc::channel(100);
 
         let debounce_config = if debounce_ms > 0 {
             Some(crate::lifecycle::network_event::DebounceConfig {
@@ -979,10 +975,15 @@ impl Inner {
         };
 
         self.network_event_rx = Some(event_rx);
-        self.network_event_result_tx = Some(result_tx);
         self.network_event_debounce_config = debounce_config;
 
-        crate::lifecycle::NetworkEventHandle::new(event_tx, result_rx)
+        tracing::info!(
+            debounce_ms,
+            channel_capacity = 100_u64,
+            "network_event.node.handle_created"
+        );
+
+        crate::lifecycle::NetworkEventHandle::new(event_tx)
     }
 
     /// Attach a credential already issued by AIS so that `start()` can skip
@@ -1324,6 +1325,7 @@ impl Inner {
             // Create PeerTransport
             use crate::transport::PeerTransport;
             let transport_manager = Arc::new(PeerTransport::new(actor_id.clone(), wire_builder));
+            self.peer_transport = Some(transport_manager.clone());
 
             // Create PeerGate with WebRTC coordinator for MediaTrack support
             use crate::outbound::PeerGate;
@@ -1519,34 +1521,37 @@ impl Inner {
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             // 1.8.5. Spawn network event processing loop
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            if let (Some(event_rx), Some(result_tx)) = (
-                self.network_event_rx.take(),
-                self.network_event_result_tx.take(),
-            ) {
+            if let Some(event_rx) = self.network_event_rx.take() {
                 use crate::lifecycle::network_event::DefaultNetworkEventProcessor;
 
                 // Create DefaultNetworkEventProcessor
                 // If debounce config exists, use new_with_debounce
                 let event_processor =
                     if let Some(config) = self.network_event_debounce_config.clone() {
-                        Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
-                            self.signaling_client.clone(),
-                            self.webrtc_coordinator.clone(),
-                            config,
-                        ))
+                        Arc::new(
+                            DefaultNetworkEventProcessor::new_with_debounce_and_peer_transport(
+                                self.signaling_client.clone(),
+                                self.webrtc_coordinator.clone(),
+                                config,
+                                self.peer_transport.clone(),
+                            ),
+                        )
                     } else {
-                        Arc::new(DefaultNetworkEventProcessor::new(
+                        Arc::new(DefaultNetworkEventProcessor::new_with_peer_transport(
                             self.signaling_client.clone(),
                             self.webrtc_coordinator.clone(),
+                            self.peer_transport.clone(),
                         ))
                     };
 
                 let shutdown = self.shutdown_token.clone();
                 let network_event_handle = tokio::spawn(async move {
-                    Self::network_event_loop(event_rx, result_tx, event_processor, shutdown).await;
+                    Self::network_event_loop(event_rx, event_processor, shutdown).await;
                 });
                 task_handles.push(network_event_handle);
-                tracing::info!("✅ Network event loop started");
+                tracing::info!("network_event.node.loop_started");
+            } else {
+                tracing::debug!("network_event.node.loop_not_started_no_handle");
             }
 
             {

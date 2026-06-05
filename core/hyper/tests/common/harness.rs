@@ -83,9 +83,10 @@ impl TestPeer {
 
     /// Create a network event processor for this peer.
     pub fn network_processor(&self) -> Arc<DefaultNetworkEventProcessor> {
-        Arc::new(DefaultNetworkEventProcessor::new(
+        Arc::new(DefaultNetworkEventProcessor::new_with_peer_transport(
             self.signaling_client.clone(),
             Some(self.coordinator.clone()),
+            Some(self.transport_manager.clone()),
         ))
     }
 

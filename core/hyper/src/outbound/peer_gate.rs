@@ -14,12 +14,19 @@ use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActorResult, ActrError, ActrId, Classify, PayloadType, RpcEnvelope};
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, broadcast, oneshot};
 
 /// Pending requests map type: request_id -> (target_actor_id, oneshot response sender)
 type PendingRequestsMap =
     Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>;
+
+/// Internal upper bound for a single DataStream send operation.
+///
+/// DataStream has no caller-provided request deadline like RPC envelopes, so
+/// this prevents a stalled WebRTC DataChannel send from holding the mobile
+/// caller forever during unrecoverable network loss.
+const DATA_STREAM_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// PeerGate - Outproc transport adapter (outbound)
 ///
@@ -1001,11 +1008,19 @@ impl PeerGate {
             false
         };
 
-        let result = self
-            .transport_manager
-            .send(&dest, payload_type, &data)
-            .await
-            .map_err(|e| ActrError::Unavailable(e.to_string()));
+        let result = match tokio::time::timeout(
+            DATA_STREAM_SEND_TIMEOUT,
+            self.transport_manager.send(&dest, payload_type, &data),
+        )
+        .await
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(ActrError::Unavailable(e.to_string())),
+            Err(_) => Err(ActrError::Unavailable(format!(
+                "DataStream send timeout: {}ms",
+                DATA_STREAM_SEND_TIMEOUT.as_millis()
+            ))),
+        };
 
         if tracks_data_stream {
             if result.is_err() {

@@ -9,8 +9,8 @@
 use std::time::{Duration, Instant};
 
 use actr_hyper::lifecycle::{
-    NetworkEvent, NetworkRecoveryAction, process_network_event_batch,
-    select_network_recovery_action,
+    NetworkAvailability, NetworkEvent, NetworkRecoveryAction, NetworkSnapshot,
+    NetworkTransportFlags, process_network_event_batch, select_network_recovery_action,
 };
 use actr_hyper::test_support::TestHarness;
 use actr_protocol::ActrId;
@@ -30,6 +30,28 @@ fn init_tracing() {
         .with_test_writer()
         .try_init()
         .ok();
+}
+
+fn network_event(sequence: u64, available: bool, wifi: bool, cellular: bool) -> NetworkEvent {
+    NetworkEvent::NetworkPathChanged {
+        snapshot: NetworkSnapshot {
+            sequence,
+            availability: if available {
+                NetworkAvailability::Available
+            } else {
+                NetworkAvailability::Unavailable
+            },
+            transport: NetworkTransportFlags {
+                wifi,
+                cellular,
+                ethernet: false,
+                vpn: false,
+                other: false,
+            },
+            is_expensive: false,
+            is_constrained: false,
+        },
+    }
 }
 
 async fn setup_mobile_server_harness() -> TestHarness {
@@ -196,11 +218,8 @@ async fn restore_half_open_and_process_network_available(
         harness,
         label,
         vec![
-            NetworkEvent::Available,
-            NetworkEvent::TypeChanged {
-                is_wifi: true,
-                is_cellular: false,
-            },
+            network_event(1, true, false, false),
+            network_event(2, true, true, false),
         ],
         NetworkRecoveryAction::Restore,
     )

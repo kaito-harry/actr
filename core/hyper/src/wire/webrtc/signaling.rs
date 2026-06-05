@@ -58,6 +58,7 @@ const RESPONSE_TIMEOUT_SECS: u64 = 15;
 const PING_INTERVAL_SECS: u64 = 5;
 const PONG_TIMEOUT_SECS: u64 = 10;
 const SIGNALING_SEND_TIMEOUT_SECS: u64 = 5;
+const CONCURRENT_CONNECT_WAIT_TIMEOUT_SECS: u64 = 5;
 const DISCONNECT_LOCK_TIMEOUT_SECS: u64 = 5;
 const DISCONNECT_CLOSE_TIMEOUT_SECS: u64 = 1;
 
@@ -373,6 +374,12 @@ pub enum HookEvent {
 pub type HookCallback =
     Arc<dyn Fn(HookEvent) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
+#[derive(Debug, Clone, Copy)]
+enum ConnectIntent {
+    Explicit,
+    AutoReconnect { generation: u64 },
+}
+
 /// WebSocket signaling clientImplementation
 pub struct WebSocketSignalingClient {
     config: SignalingConfig,
@@ -413,6 +420,10 @@ pub struct WebSocketSignalingClient {
     reconnector_started: Arc<AtomicBool>,
     /// Notify channel to wake up the reconnect manager
     reconnect_notify: Arc<tokio::sync::Notify>,
+    /// Explicit disconnects from lifecycle/cleanup suppress stale auto-reconnect cycles.
+    auto_reconnect_suppressed: AtomicBool,
+    /// Incremented by explicit disconnects to invalidate in-flight auto-reconnect attempts.
+    reconnect_generation: AtomicU64,
     /// Hook callback for synchronous lifecycle notification (set once, lock-free read)
     hook_callback: OnceLock<HookCallback>,
 }
@@ -443,6 +454,8 @@ impl WebSocketSignalingClient {
             last_pong: Arc::new(AtomicU64::new(0)),
             reconnector_started: Arc::new(AtomicBool::new(false)),
             reconnect_notify: Arc::new(tokio::sync::Notify::new()),
+            auto_reconnect_suppressed: AtomicBool::new(false),
+            reconnect_generation: AtomicU64::new(0),
             hook_callback: OnceLock::new(),
         }
     }
@@ -523,11 +536,32 @@ impl WebSocketSignalingClient {
         use actr_framework::ExponentialBackoff;
 
         let cfg = &self.config.reconnect_config;
+        let generation = self.reconnect_generation.load(Ordering::Acquire);
 
-        // Cleanup old WebSocket resources first
-        tracing::debug!("🧹 Cleaning up old WebSocket resources before reconnect");
-        if let Err(e) = self.disconnect().await {
-            tracing::warn!("⚠️ Disconnect cleanup failed (non-fatal): {e}");
+        if self.auto_reconnect_cancelled(generation) {
+            tracing::debug!("Skipping signaling auto-reconnect cycle after explicit disconnect");
+            return;
+        }
+
+        if self.connected.load(Ordering::Acquire) {
+            tracing::debug!("🔎 Probing connected signaling before reconnect cycle");
+            match self
+                .probe_alive(Duration::from_secs(PONG_TIMEOUT_SECS))
+                .await
+            {
+                Ok(()) => {
+                    tracing::debug!("Signaling probe succeeded, skipping reconnect cycle");
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!("Signaling probe failed before reconnect: {e}");
+                    if let Err(disconnect_err) = self.disconnect_internal(false).await {
+                        tracing::warn!(
+                            "⚠️ Disconnect cleanup failed after failed probe (non-fatal): {disconnect_err}"
+                        );
+                    }
+                }
+            }
         }
 
         let backoff = ExponentialBackoff::builder()
@@ -540,6 +574,13 @@ impl WebSocketSignalingClient {
         let mut attempt: u32 = 0;
 
         for delay in backoff {
+            if self.auto_reconnect_cancelled(generation) {
+                tracing::debug!(
+                    "Stopping signaling auto-reconnect cycle after explicit disconnect"
+                );
+                return;
+            }
+
             if self.connected.load(Ordering::Acquire) {
                 tracing::debug!("Already connected, aborting reconnect cycle");
                 return;
@@ -548,14 +589,19 @@ impl WebSocketSignalingClient {
             attempt += 1;
             let _ = self.event_tx.send(SignalingEvent::ConnectStart { attempt });
 
-            match self.establish_connection_once().await {
+            match self.connect_once_for_auto_reconnect(generation).await {
                 Ok(()) => {
                     tracing::info!("✅ Signaling reconnect succeeded on attempt {attempt}");
-                    self.start_receiver().await;
-                    self.start_ping_task().await;
                     return;
                 }
                 Err(e) => {
+                    if self.auto_reconnect_cancelled(generation) {
+                        tracing::debug!(
+                            "Stopping signaling auto-reconnect cycle after explicit disconnect"
+                        );
+                        return;
+                    }
+
                     tracing::warn!(
                         "❌ Reconnect attempt {attempt} failed: {e}, retrying in {delay:?}"
                     );
@@ -564,6 +610,12 @@ impl WebSocketSignalingClient {
                         _ = self.reconnect_notify.notified() => {
                             tracing::debug!("Explicit reconnect request interrupted reconnect backoff");
                         }
+                    }
+                    if self.auto_reconnect_cancelled(generation) {
+                        tracing::debug!(
+                            "Stopping signaling auto-reconnect cycle after explicit disconnect"
+                        );
+                        return;
                     }
                 }
             }
@@ -577,6 +629,11 @@ impl WebSocketSignalingClient {
             _ = self.reconnect_notify.notified() => {
                 tracing::debug!("Explicit reconnect request interrupted reconnect cooldown");
             }
+        }
+        if self.auto_reconnect_cancelled(generation) {
+            tracing::debug!(
+                "Signaling auto-reconnect cooldown ended after explicit disconnect suppression"
+            );
         }
         // After cooldown, the loop returns to notify.notified() and can be woken again
     }
@@ -749,10 +806,31 @@ impl WebSocketSignalingClient {
         redacted.to_string()
     }
 
+    fn auto_reconnect_cancelled(&self, generation: u64) -> bool {
+        self.auto_reconnect_suppressed.load(Ordering::Acquire)
+            || self.reconnect_generation.load(Ordering::Acquire) != generation
+    }
+
     /// Establish a single signaling WebSocket connection attempt, honoring connection_timeout.
     ///
     /// This does not perform any retry logic; callers that want retries should wrap this.
     async fn establish_connection_once(&self) -> NetworkResult<()> {
+        self.establish_connection_once_with_intent(ConnectIntent::Explicit)
+            .await
+    }
+
+    async fn establish_connection_once_for_auto_reconnect(
+        &self,
+        generation: u64,
+    ) -> NetworkResult<()> {
+        self.establish_connection_once_with_intent(ConnectIntent::AutoReconnect { generation })
+            .await
+    }
+
+    async fn establish_connection_once_with_intent(
+        &self,
+        intent: ConnectIntent,
+    ) -> NetworkResult<()> {
         // Guard: Check if already connected (handles rare TOCTOU scenarios)
         if self.connected.load(Ordering::Acquire) {
             tracing::debug!("Connection already established, skipping establish_connection_once()");
@@ -790,9 +868,30 @@ impl WebSocketSignalingClient {
         // Split read/write halves and initialize client state
         let (sink, stream) = ws_stream.split();
 
+        if let ConnectIntent::AutoReconnect { generation } = intent
+            && self.auto_reconnect_cancelled(generation)
+        {
+            tracing::debug!(
+                generation,
+                "Discarding completed signaling auto-reconnect after explicit disconnect"
+            );
+            let mut sink = sink;
+            if let Err(e) = sink.close().await {
+                tracing::warn!(
+                    "Signaling auto-reconnect socket close failed after cancellation: {}",
+                    e
+                );
+            }
+            return Err(NetworkError::ConnectionError(
+                "Signaling auto-reconnect was cancelled by explicit disconnect".to_string(),
+            ));
+        }
+
         *self.ws_sink.lock().await = Some(sink);
         *self.ws_stream.lock().await = Some(stream);
         self.connected.store(true, Ordering::Release);
+        self.auto_reconnect_suppressed
+            .store(false, Ordering::Release);
         self.last_pong.store(current_unix_secs(), Ordering::Release);
         // Invoke hook synchronously, then broadcast for other subscribers
         self.invoke_hook(HookEvent::SignalingConnected).await;
@@ -1112,12 +1211,215 @@ impl WebSocketSignalingClient {
         *existing = Some(handle);
     }
 
+    async fn disconnect_internal(&self, suppress_auto_reconnect: bool) -> NetworkResult<()> {
+        if suppress_auto_reconnect {
+            self.reconnect_generation.fetch_add(1, Ordering::AcqRel);
+            self.auto_reconnect_suppressed
+                .store(true, Ordering::Release);
+            self.reconnect_notify.notify_waiters();
+        }
+
+        self.drop_pending_replies("signaling disconnect").await;
+        self.drop_pending_pongs("signaling disconnect").await;
+        let was_connected = self.connected.swap(false, Ordering::AcqRel);
+
+        // Stop background tasks before taking the WebSocket sink/stream locks.
+        // A ping or receiver task can be inside a socket operation while holding
+        // one of those locks; aborting first keeps disconnect from waiting on
+        // the task it is about to shut down.
+        let ping_handle = match tokio::time::timeout(
+            std::time::Duration::from_secs(DISCONNECT_LOCK_TIMEOUT_SECS),
+            self.ping_task.lock(),
+        )
+        .await
+        {
+            Ok(mut task_guard) => task_guard.take(),
+            Err(_) => {
+                tracing::warn!("Timed out waiting for signaling ping task lock during disconnect");
+                None
+            }
+        };
+        if let Some(handle) = ping_handle {
+            handle.abort();
+        }
+
+        let receiver_handle = match tokio::time::timeout(
+            std::time::Duration::from_secs(DISCONNECT_LOCK_TIMEOUT_SECS),
+            self.receiver_task.lock(),
+        )
+        .await
+        {
+            Ok(mut task_guard) => task_guard.take(),
+            Err(_) => {
+                tracing::warn!(
+                    "Timed out waiting for signaling receiver task lock during disconnect"
+                );
+                None
+            }
+        };
+        if let Some(handle) = receiver_handle {
+            handle.abort();
+        }
+
+        // Fetch and close the sink without holding the mutex during the close
+        // await. The lock itself is bounded because a stalled send can hold it
+        // on broken mobile network transitions.
+        let sink = match tokio::time::timeout(
+            std::time::Duration::from_secs(DISCONNECT_LOCK_TIMEOUT_SECS),
+            self.ws_sink.lock(),
+        )
+        .await
+        {
+            Ok(mut sink_guard) => sink_guard.take(),
+            Err(_) => {
+                tracing::warn!(
+                    "Timed out waiting for signaling WebSocket sink lock during disconnect"
+                );
+                None
+            }
+        };
+
+        if let Some(mut sink) = sink {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(DISCONNECT_CLOSE_TIMEOUT_SECS),
+                sink.close(),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!("Signaling WebSocket close failed during disconnect: {}", e);
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "Signaling WebSocket close timed out during disconnect; continuing cleanup"
+                    );
+                }
+            }
+        }
+
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(DISCONNECT_LOCK_TIMEOUT_SECS),
+            self.ws_stream.lock(),
+        )
+        .await
+        {
+            Ok(mut stream_guard) => {
+                stream_guard.take();
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Timed out waiting for signaling WebSocket stream lock during disconnect"
+                );
+            }
+        }
+
+        self.reset_inbound_channel().await;
+
+        // Invoke hook synchronously, then broadcast for other subscribers
+        Self::publish_disconnected_transition(
+            was_connected,
+            &self.stats,
+            &self.event_tx,
+            self.hook_callback.get().cloned(),
+            DisconnectReason::Manual,
+            None,
+        )
+        .await;
+
+        Ok(())
+    }
+
+    async fn connect_once_for_auto_reconnect(&self, generation: u64) -> NetworkResult<()> {
+        if self.auto_reconnect_cancelled(generation) {
+            return Err(NetworkError::ConnectionError(
+                "Signaling auto-reconnect was cancelled".to_string(),
+            ));
+        }
+
+        if self.connected.load(Ordering::Acquire) {
+            tracing::debug!("Already connected, skipping auto-reconnect connect_once()");
+            return Ok(());
+        }
+
+        match self
+            .connecting
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => {}
+            Err(_) => {
+                if self.connected.load(Ordering::Acquire) {
+                    tracing::debug!("Already connected, skipping auto-reconnect connect_once()");
+                    return Ok(());
+                }
+
+                tracing::debug!(
+                    "Another connection attempt in progress, waiting for state change..."
+                );
+                let result = self.wait_for_connection_result().await;
+                if self.auto_reconnect_cancelled(generation) {
+                    return Err(NetworkError::ConnectionError(
+                        "Signaling auto-reconnect was cancelled".to_string(),
+                    ));
+                }
+                return result;
+            }
+        }
+
+        if self.auto_reconnect_cancelled(generation) {
+            self.connecting.store(false, Ordering::Release);
+            return Err(NetworkError::ConnectionError(
+                "Signaling auto-reconnect was cancelled".to_string(),
+            ));
+        }
+
+        if self.connected.load(Ordering::Acquire) {
+            tracing::debug!("Connection completed by another task while acquiring lock");
+            self.connecting.store(false, Ordering::Release);
+            return Ok(());
+        }
+
+        tracing::debug!(
+            generation,
+            "Acquired connection lock, establishing one auto-reconnect signaling attempt..."
+        );
+
+        let result = self
+            .establish_connection_once_for_auto_reconnect(generation)
+            .await;
+        self.connecting.store(false, Ordering::Release);
+
+        match result {
+            Ok(()) => {
+                if self.auto_reconnect_cancelled(generation) {
+                    self.disconnect_internal(false).await?;
+                    return Err(NetworkError::ConnectionError(
+                        "Signaling auto-reconnect was cancelled".to_string(),
+                    ));
+                }
+                self.start_receiver().await;
+                self.start_ping_task().await;
+                Ok(())
+            }
+            Err(e) => {
+                if !self.auto_reconnect_cancelled(generation) {
+                    let _ = self.event_tx.send(SignalingEvent::Disconnected {
+                        reason: DisconnectReason::ConnectionFailed(e.to_string()),
+                    });
+                    tracing::error!("Connection attempt failed: {e}");
+                }
+                Err(e)
+            }
+        }
+    }
+
     /// Wait for ongoing connection attempt to complete (used when another task is connecting).
     ///
     /// Uses the broadcast channel to wait for a Connected event without recursion.
     async fn wait_for_connection_result(&self) -> NetworkResult<()> {
         let mut event_rx = self.event_tx.subscribe();
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_secs(CONCURRENT_CONNECT_WAIT_TIMEOUT_SECS);
 
         loop {
             tokio::select! {
@@ -1137,7 +1439,12 @@ impl WebSocketSignalingClient {
                             tracing::debug!("Connection established by another task");
                             return Ok(());
                         }
-                        Ok(_) => continue, // ConnectStart / Disconnected — keep waiting
+                        Ok(SignalingEvent::Disconnected { reason }) => {
+                            return Err(NetworkError::ConnectionError(format!(
+                                "Concurrent signaling connection failed: {reason:?}"
+                            )));
+                        }
+                        Ok(_) => continue, // ConnectStart — keep waiting
                         Err(broadcast::error::RecvError::Lagged(n)) => {
                             tracing::warn!("Event receiver lagged by {n} events");
                             // Check current state after lag
@@ -1279,115 +1586,7 @@ impl SignalingClient for WebSocketSignalingClient {
     }
 
     async fn disconnect(&self) -> NetworkResult<()> {
-        self.drop_pending_replies("signaling disconnect").await;
-        self.drop_pending_pongs("signaling disconnect").await;
-        let was_connected = self.connected.swap(false, Ordering::AcqRel);
-
-        // Stop background tasks before taking the WebSocket sink/stream locks.
-        // A ping or receiver task can be inside a socket operation while holding
-        // one of those locks; aborting first keeps disconnect from waiting on
-        // the task it is about to shut down.
-        let ping_handle = match tokio::time::timeout(
-            std::time::Duration::from_secs(DISCONNECT_LOCK_TIMEOUT_SECS),
-            self.ping_task.lock(),
-        )
-        .await
-        {
-            Ok(mut task_guard) => task_guard.take(),
-            Err(_) => {
-                tracing::warn!("Timed out waiting for signaling ping task lock during disconnect");
-                None
-            }
-        };
-        if let Some(handle) = ping_handle {
-            handle.abort();
-        }
-
-        let receiver_handle = match tokio::time::timeout(
-            std::time::Duration::from_secs(DISCONNECT_LOCK_TIMEOUT_SECS),
-            self.receiver_task.lock(),
-        )
-        .await
-        {
-            Ok(mut task_guard) => task_guard.take(),
-            Err(_) => {
-                tracing::warn!(
-                    "Timed out waiting for signaling receiver task lock during disconnect"
-                );
-                None
-            }
-        };
-        if let Some(handle) = receiver_handle {
-            handle.abort();
-        }
-
-        // Fetch and close the sink without holding the mutex during the close
-        // await. The lock itself is bounded because a stalled send can hold it
-        // on broken mobile network transitions.
-        let sink = match tokio::time::timeout(
-            std::time::Duration::from_secs(DISCONNECT_LOCK_TIMEOUT_SECS),
-            self.ws_sink.lock(),
-        )
-        .await
-        {
-            Ok(mut sink_guard) => sink_guard.take(),
-            Err(_) => {
-                tracing::warn!(
-                    "Timed out waiting for signaling WebSocket sink lock during disconnect"
-                );
-                None
-            }
-        };
-
-        if let Some(mut sink) = sink {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(DISCONNECT_CLOSE_TIMEOUT_SECS),
-                sink.close(),
-            )
-            .await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    tracing::warn!("Signaling WebSocket close failed during disconnect: {}", e);
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        "Signaling WebSocket close timed out during disconnect; continuing cleanup"
-                    );
-                }
-            }
-        }
-
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(DISCONNECT_LOCK_TIMEOUT_SECS),
-            self.ws_stream.lock(),
-        )
-        .await
-        {
-            Ok(mut stream_guard) => {
-                stream_guard.take();
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "Timed out waiting for signaling WebSocket stream lock during disconnect"
-                );
-            }
-        }
-
-        self.reset_inbound_channel().await;
-
-        // Invoke hook synchronously, then broadcast for other subscribers
-        Self::publish_disconnected_transition(
-            was_connected,
-            &self.stats,
-            &self.event_tx,
-            self.hook_callback.get().cloned(),
-            DisconnectReason::Manual,
-            None,
-        )
-        .await;
-
-        Ok(())
+        self.disconnect_internal(true).await
     }
 
     async fn probe_alive(&self, timeout: Duration) -> NetworkResult<()> {
@@ -2350,6 +2549,134 @@ mod tests {
         );
 
         handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_explicit_disconnect_suppresses_reconnect_cycle_in_backoff() {
+        let mut config = make_config();
+        config.connection_timeout = 1;
+        config.reconnect_config = ReconnectConfig {
+            enabled: true,
+            max_attempts: 5,
+            initial_delay: 1,
+            max_delay: 1,
+            backoff_multiplier: 1.0,
+        };
+        let client = make_ws_client(config);
+        let mut rx = client.subscribe_events();
+
+        let reconnect_client = client.clone();
+        let reconnect_task = tokio::spawn(async move {
+            reconnect_client.run_reconnect_cycle().await;
+        });
+
+        match tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
+            Ok(Ok(SignalingEvent::ConnectStart { attempt: 1 })) => {}
+            other => panic!("expected first reconnect attempt, got {other:?}"),
+        }
+
+        client
+            .disconnect()
+            .await
+            .expect("explicit disconnect should be idempotent");
+
+        tokio::time::timeout(Duration::from_secs(2), reconnect_task)
+            .await
+            .expect("suppressed reconnect cycle should exit promptly")
+            .expect("reconnect task should not panic");
+
+        while let Ok(Ok(event)) = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await
+        {
+            if let SignalingEvent::ConnectStart { attempt } = event {
+                panic!("suppressed reconnect cycle sent unexpected attempt {attempt}");
+            }
+        }
+
+        assert!(
+            client.auto_reconnect_suppressed.load(Ordering::Acquire),
+            "explicit disconnect should suppress stale auto-reconnect cycles"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_explicit_disconnect_suppresses_in_flight_auto_reconnect_connected_event() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener should bind");
+        let server_url = format!(
+            "ws://{}/signaling/ws",
+            listener
+                .local_addr()
+                .expect("test listener should have local addr")
+        );
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener
+                .accept()
+                .await
+                .expect("test server should accept tcp connection");
+            let _ = release_rx.await;
+            let ws_stream = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("test server should complete websocket handshake");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            drop(ws_stream);
+        });
+
+        let mut config = make_config();
+        config.server_url = Url::parse(&server_url).expect("test websocket URL should parse");
+        config.connection_timeout = 5;
+        config.reconnect_config = ReconnectConfig {
+            enabled: true,
+            max_attempts: 3,
+            initial_delay: 1,
+            max_delay: 1,
+            backoff_multiplier: 1.0,
+        };
+        let client = make_ws_client(config);
+        let mut rx = client.subscribe_events();
+
+        let reconnect_client = client.clone();
+        let reconnect_task = tokio::spawn(async move {
+            reconnect_client.run_reconnect_cycle().await;
+        });
+
+        match tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
+            Ok(Ok(SignalingEvent::ConnectStart { attempt: 1 })) => {}
+            other => panic!("expected first reconnect attempt, got {other:?}"),
+        }
+
+        client
+            .disconnect()
+            .await
+            .expect("explicit disconnect should cancel the in-flight auto-reconnect");
+        release_tx
+            .send(())
+            .expect("test server handshake should still be waiting");
+
+        tokio::time::timeout(Duration::from_secs(2), reconnect_task)
+            .await
+            .expect("cancelled in-flight reconnect should exit promptly")
+            .expect("reconnect task should not panic");
+
+        while let Ok(Ok(event)) = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await
+        {
+            assert!(
+                !matches!(event, SignalingEvent::Connected),
+                "cancelled auto-reconnect must not publish Connected"
+            );
+        }
+
+        assert!(
+            !client.is_connected(),
+            "cancelled auto-reconnect must not leave signaling connected"
+        );
+
+        tokio::time::timeout(Duration::from_secs(1), server_task)
+            .await
+            .expect("test server task should finish")
+            .expect("test server task should not panic");
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

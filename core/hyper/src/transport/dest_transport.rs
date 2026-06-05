@@ -5,7 +5,7 @@
 
 use super::Dest; // Re-exported from actr-framework
 use super::error::{NetworkError, NetworkResult};
-use super::route_table::PayloadTypeExt;
+use super::route_table::{DataLaneType, PayloadTypeExt};
 use super::wire_handle::{WireHandle, WireIdentity};
 use super::wire_pool::{ConnType, ReadySet, RetryConfig, WirePool};
 use actr_protocol::PayloadType;
@@ -40,7 +40,7 @@ impl DestTransport {
         // Start connection tasks in background (concurrently)
         tracing::info!("🚀 [{:?}] Starting connection tasks...", dest);
         for conn in connections {
-            conn_mgr.add_connection(conn);
+            conn_mgr.add_connection(conn).await;
         }
 
         Ok(Self { conn_mgr })
@@ -75,6 +75,7 @@ impl DestTransport {
                 "No route for: {payload_type:?}"
             )));
         }
+        let candidate_conn_types = candidate_conn_types(lane_types);
 
         // 2. Subscribe to connection status changes
         let mut conn_watcher = self.conn_mgr.watch_ready();
@@ -181,6 +182,16 @@ impl DestTransport {
                 return Err(NetworkError::ChannelClosed(
                     "connection manager closed".into(),
                 ));
+            }
+
+            if !self
+                .conn_mgr
+                .has_live_candidate(&candidate_conn_types)
+                .await
+            {
+                return Err(NetworkError::NoRoute(format!(
+                    "all transport candidates exhausted for {payload_type:?}: {candidate_conn_types:?}"
+                )));
             }
 
             // Event-driven wait!
@@ -299,6 +310,21 @@ impl DestTransport {
     }
 }
 
+fn candidate_conn_types(lane_types: &[DataLaneType]) -> Vec<ConnType> {
+    let mut conn_types = Vec::new();
+    for &lane_type in lane_types {
+        let conn_type = if lane_type.needs_webrtc() {
+            ConnType::WebRTC
+        } else {
+            ConnType::WebSocket
+        };
+        if !conn_types.contains(&conn_type) {
+            conn_types.push(conn_type);
+        }
+    }
+    conn_types
+}
+
 /// Heuristic: errors that indicate the underlying transport is gone.
 // FIXME: Replace heuristic substring matching with precise error discrimination (typed
 // `NetworkError` variants, stable error codes, or structured payloads). Parsing display strings is
@@ -322,5 +348,203 @@ fn is_closed_like_error(e: &NetworkError) -> bool {
         | NetworkError::WebSocketError(msg)
         | NetworkError::SendError(msg) => contains_closed_like(msg),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::lane::DataLane;
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use tokio::time::{Duration, timeout};
+
+    #[derive(Debug)]
+    struct FakeLane {
+        send_count: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl DataLane for FakeLane {
+        async fn send(&self, _data: bytes::Bytes) -> NetworkResult<()> {
+            self.send_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn lane_type(&self) -> &'static str {
+            "fake"
+        }
+    }
+
+    #[derive(Debug)]
+    struct FakeWire {
+        conn_type: ConnType,
+        connect_fails: bool,
+        lane_closed: bool,
+        connected: AtomicBool,
+        send_count: Arc<AtomicUsize>,
+        identity: Option<WireIdentity>,
+    }
+
+    impl FakeWire {
+        fn new(conn_type: ConnType) -> Self {
+            Self {
+                conn_type,
+                connect_fails: false,
+                lane_closed: false,
+                connected: AtomicBool::new(false),
+                send_count: Arc::new(AtomicUsize::new(0)),
+                identity: None,
+            }
+        }
+
+        fn connect_fails(mut self) -> Self {
+            self.connect_fails = true;
+            self
+        }
+
+        fn lane_closed(mut self) -> Self {
+            self.lane_closed = true;
+            self
+        }
+
+        fn with_identity(mut self, identity: WireIdentity) -> Self {
+            self.identity = Some(identity);
+            self
+        }
+
+        fn with_send_count(mut self, send_count: Arc<AtomicUsize>) -> Self {
+            self.send_count = send_count;
+            self
+        }
+    }
+
+    #[async_trait]
+    impl WireHandle for FakeWire {
+        fn connection_type(&self) -> ConnType {
+            self.conn_type
+        }
+
+        fn priority(&self) -> u8 {
+            match self.conn_type {
+                ConnType::WebSocket => 0,
+                ConnType::WebRTC => 1,
+            }
+        }
+
+        async fn connect(&self) -> NetworkResult<()> {
+            if self.connect_fails {
+                return Err(NetworkError::ConnectionError("connect failed".into()));
+            }
+            self.connected.store(true, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn is_connected(&self) -> bool {
+            self.connected.load(Ordering::Relaxed)
+        }
+
+        async fn close(&self) -> NetworkResult<()> {
+            self.connected.store(false, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn get_lane(&self, _payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
+            if self.lane_closed {
+                return Err(NetworkError::DataChannelError(
+                    "DataChannel closed".to_string(),
+                ));
+            }
+            Ok(Arc::new(FakeLane {
+                send_count: Arc::clone(&self.send_count),
+            }))
+        }
+
+        fn identity(&self) -> Option<WireIdentity> {
+            self.identity.clone()
+        }
+    }
+
+    async fn test_transport(connections: Vec<Arc<dyn WireHandle>>) -> DestTransport {
+        let conn_mgr = Arc::new(WirePool::new(RetryConfig {
+            max_attempts: 1,
+            initial_delay_ms: 0,
+            max_delay_ms: 0,
+            multiplier: 1.0,
+        }));
+        for conn in connections {
+            conn_mgr.add_connection(conn).await;
+        }
+        DestTransport { conn_mgr }
+    }
+
+    #[tokio::test]
+    async fn send_returns_when_only_webrtc_candidate_exhausted() {
+        let transport = test_transport(vec![Arc::new(
+            FakeWire::new(ConnType::WebRTC).connect_fails(),
+        )])
+        .await;
+
+        let err = timeout(
+            Duration::from_secs(1),
+            transport.send(PayloadType::StreamReliable, b"payload"),
+        )
+        .await
+        .expect("send should not hang")
+        .expect_err("send should fail after WebRTC candidate is exhausted");
+
+        assert!(
+            matches!(err, NetworkError::NoRoute(ref msg) if msg.contains("all transport candidates exhausted")),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_falls_back_to_websocket_when_webrtc_fails() {
+        let websocket_sends = Arc::new(AtomicUsize::new(0));
+        let transport = test_transport(vec![
+            Arc::new(FakeWire::new(ConnType::WebRTC).connect_fails()),
+            Arc::new(
+                FakeWire::new(ConnType::WebSocket).with_send_count(Arc::clone(&websocket_sends)),
+            ),
+        ])
+        .await;
+
+        timeout(
+            Duration::from_secs(1),
+            transport.send(PayloadType::StreamReliable, b"payload"),
+        )
+        .await
+        .expect("send should not hang")
+        .expect("send should use WebSocket fallback");
+
+        assert_eq!(websocket_sends.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn stale_webrtc_ready_candidate_does_not_wait_forever() {
+        let peer_id = actr_protocol::ActrId::default();
+        let transport = test_transport(vec![Arc::new(
+            FakeWire::new(ConnType::WebRTC)
+                .lane_closed()
+                .with_identity(WireIdentity::WebRtc {
+                    peer_id,
+                    session_id: 7,
+                }),
+        )])
+        .await;
+
+        let err = timeout(
+            Duration::from_secs(1),
+            transport.send(PayloadType::StreamReliable, b"payload"),
+        )
+        .await
+        .expect("send should not hang")
+        .expect_err("stale WebRTC-only candidate should fail clearly");
+
+        assert!(
+            matches!(err, NetworkError::NoRoute(ref msg) if msg.contains("all transport candidates exhausted")),
+            "unexpected error: {err:?}"
+        );
     }
 }
