@@ -1,6 +1,6 @@
 [package]
 name = "actr-runtime"
-version = "0.3.2"
+version = "0.3.3"
 edition.workspace = true
 rust-version.workspace = true
 description = "Thin business dispatch layer for Actor-RTC — wasm32-compatible"

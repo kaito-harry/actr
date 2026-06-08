@@ -1,6 +1,6 @@
 {
   "name": "@actrium/actr-web-react",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "React hooks for Actrium Web",
   "type": "module",
   "main": "./dist/index.js",
