@@ -11,9 +11,9 @@ resolver = "2"
 
 [patch.crates-io]
 # Use actr main branch
-actr-protocol = { git = "https://github.com/Actrium/actr.git", rev = "a13c71343a0d707702ea6f183da08ce7810ba851" }
-actr-runtime = { git = "https://github.com/Actrium/actr.git", rev = "a13c71343a0d707702ea6f183da08ce7810ba851" }
-actr-runtime-mailbox = { git = "https://github.com/Actrium/actr.git", rev = "a13c71343a0d707702ea6f183da08ce7810ba851" }
+actr-protocol = { git = "https://github.com/Actrium/actr.git", rev = "4e7a76ceed44e3a7cd20eee3b132e93298c7738a" }
+actr-runtime = { git = "https://github.com/Actrium/actr.git", rev = "4e7a76ceed44e3a7cd20eee3b132e93298c7738a" }
+actr-runtime-mailbox = { git = "https://github.com/Actrium/actr.git", rev = "4e7a76ceed44e3a7cd20eee3b132e93298c7738a" }
 
 [workspace.package]
 version = "0.1.1"
