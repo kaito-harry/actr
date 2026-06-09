@@ -5,13 +5,19 @@
 //! complex scenario below runs the same reconciled events through the real
 //! network event processor with real signaling/WebRTC peers.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use actr_hyper::lifecycle::{
-    CleanupReason, NetworkAvailability, NetworkEvent, NetworkRecoveryAction, NetworkSnapshot,
-    NetworkTransportFlags, process_network_event_batch, select_network_recovery_action,
+    AppLifecycleState, CleanupReason, NetworkAvailability, NetworkEvent, NetworkEventHandle,
+    NetworkEventProcessor, NetworkEventResult, NetworkRecoveryAction, NetworkSnapshot,
+    NetworkTransportFlags, ReconnectReason, process_network_event_batch,
+    run_network_event_reconciler, select_network_recovery_action,
 };
 use actr_hyper::test_support::TestHarness;
+use actr_protocol::prost::Message as ProstMessage;
+use actr_protocol::{DataStream, PayloadType};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy)]
 enum EventSpec {
@@ -152,6 +158,10 @@ fn offline_event(sequence: u64) -> NetworkEvent {
 
 fn wifi_event(sequence: u64) -> NetworkEvent {
     network_event(sequence, true, true, false)
+}
+
+fn cellular_event(sequence: u64) -> NetworkEvent {
+    network_event(sequence, true, false, true)
 }
 
 #[derive(Clone, Copy)]
@@ -629,14 +639,22 @@ fn parse_mobile_jsonl_events(jsonl: &str) -> Vec<NetworkEvent> {
     events
 }
 
-async fn expect_request_ok(harness: &TestHarness, request_id: &str, timeout: Duration) {
+async fn expect_request_ok(
+    harness: &TestHarness,
+    from_serial: u64,
+    to_serial: u64,
+    request_id: &str,
+    timeout: Duration,
+) {
     let deadline = tokio::time::Instant::now() + timeout;
     let mut attempt = 0;
 
     loop {
         attempt += 1;
         let attempt_id = format!("{request_id}_{attempt}");
-        let handle = harness.peer(100).spawn_request(200, &attempt_id, 2_000);
+        let handle = harness
+            .peer(from_serial)
+            .spawn_request(to_serial, &attempt_id, 2_000);
 
         let last_error = match tokio::time::timeout(Duration::from_secs(3), handle).await {
             Ok(Ok(Ok(response))) => {
@@ -670,6 +688,118 @@ async fn expect_request_ok(harness: &TestHarness, request_id: &str, timeout: Dur
 
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+fn is_expected_bounded_send_error(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    [
+        "connection",
+        "request timeout",
+        "closed",
+        "recovering",
+        "data channel",
+        "datachannel",
+        "channel error",
+        "not opened",
+        "timeout",
+        "unavailable",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
+}
+
+async fn send_data_stream_bounded(
+    harness: &TestHarness,
+    from_serial: u64,
+    to_serial: u64,
+    stream_id: &str,
+    timeout: Duration,
+) {
+    let target_id = harness.peer(to_serial).id.clone();
+    let stream = DataStream {
+        stream_id: stream_id.to_string(),
+        sequence: 1,
+        payload: bytes::Bytes::from_static(b"mobile-event-storm-stream-payload"),
+        metadata: Vec::new(),
+        timestamp_ms: Some(0),
+    };
+    let payload = bytes::Bytes::from(stream.encode_to_vec());
+    let send = harness.peer(from_serial).gate.send_data_stream(
+        &target_id,
+        PayloadType::StreamReliable,
+        &stream.stream_id,
+        payload,
+    );
+
+    let result = tokio::time::timeout(timeout, send)
+        .await
+        .unwrap_or_else(|_| panic!("{stream_id} DataStream send hung for {:?}", timeout));
+
+    if let Err(err) = result {
+        let msg = err.to_string();
+        assert!(
+            is_expected_bounded_send_error(&msg),
+            "{stream_id} DataStream failed with unexpected error: {msg}"
+        );
+    }
+}
+
+fn spawn_network_event_reconciler(
+    processor: Arc<dyn NetworkEventProcessor>,
+    result_timeout: Duration,
+) -> (
+    NetworkEventHandle,
+    CancellationToken,
+    tokio::task::JoinHandle<()>,
+) {
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(32);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, result_timeout);
+    let shutdown = CancellationToken::new();
+    let reconciler_shutdown = shutdown.clone();
+    let task = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    (handle, shutdown, task)
+}
+
+async fn submit_mobile_event(
+    handle: NetworkEventHandle,
+    event: NetworkEvent,
+) -> Result<NetworkEventResult, String> {
+    match event {
+        NetworkEvent::NetworkPathChanged { snapshot } => {
+            handle.handle_network_path_changed(snapshot).await
+        }
+        NetworkEvent::AppLifecycleChanged { state } => {
+            handle.handle_app_lifecycle_changed(state).await
+        }
+        NetworkEvent::CleanupConnections { reason } => handle.cleanup_connections(reason).await,
+        NetworkEvent::ForceReconnect { reason } => handle.force_reconnect(reason).await,
+    }
+}
+
+async fn submit_mobile_event_storm(
+    handle: &NetworkEventHandle,
+    events: Vec<NetworkEvent>,
+) -> Vec<NetworkEventResult> {
+    let mut tasks = Vec::new();
+    for event in events {
+        let handle = handle.clone();
+        tasks.push(tokio::spawn(async move {
+            submit_mobile_event(handle, event).await
+        }));
+    }
+
+    let mut results = Vec::new();
+    for task in tasks {
+        let result = task
+            .await
+            .expect("mobile network event task should not panic")
+            .expect("mobile network event should complete");
+        results.push(result);
+    }
+    results
 }
 
 fn assert_scenario_action(platform: &str, scenario: &MobileScenario) {
@@ -836,6 +966,8 @@ async fn test_complex_mobile_event_storms_with_real_network_outage() {
         .await;
     expect_request_ok(
         &harness,
+        100,
+        200,
         "complex_full_outage_recovered",
         Duration::from_secs(15),
     )
@@ -851,6 +983,8 @@ async fn test_complex_mobile_event_storms_with_real_network_outage() {
     assert!(results.iter().all(|result| result.success));
     expect_request_ok(
         &harness,
+        100,
+        200,
         "complex_available_lost_available",
         Duration::from_secs(15),
     )
@@ -873,8 +1007,120 @@ async fn test_complex_mobile_event_storms_with_real_network_outage() {
     assert!(restore_results.iter().all(|result| result.success));
     expect_request_ok(
         &harness,
+        100,
+        200,
         "complex_offline_then_restore",
         Duration::from_secs(15),
     )
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_mobile_network_event_handle_storm_then_call_and_data_stream_are_bounded() {
+    init_tracing();
+
+    struct RoleCase {
+        name: &'static str,
+        mobile_serial: u64,
+        server_serial: u64,
+    }
+
+    let cases = [
+        RoleCase {
+            name: "mobile_offerer",
+            mobile_serial: 100,
+            server_serial: 200,
+        },
+        RoleCase {
+            name: "mobile_answerer",
+            mobile_serial: 200,
+            server_serial: 100,
+        },
+    ];
+
+    for case in cases {
+        let mut harness = TestHarness::with_vnet().await;
+        for serial in [
+            case.mobile_serial.min(case.server_serial),
+            case.mobile_serial.max(case.server_serial),
+        ] {
+            harness.add_peer(serial).await;
+        }
+        harness
+            .connect(case.mobile_serial, case.server_serial)
+            .await;
+        harness.reset_counters();
+
+        let processor: Arc<dyn NetworkEventProcessor> =
+            harness.peer(case.mobile_serial).network_processor();
+        let (handle, shutdown, reconciler) =
+            spawn_network_event_reconciler(processor, Duration::from_secs(10));
+
+        harness.simulate_disconnect();
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        harness.simulate_reconnect();
+
+        let storm_events = vec![
+            offline_event(1),
+            online_event(2),
+            wifi_event(3),
+            cellular_event(4),
+            wifi_event(5),
+            NetworkEvent::AppLifecycleChanged {
+                state: AppLifecycleState::Foreground {
+                    background_duration_ms: 5_000,
+                },
+            },
+            NetworkEvent::ForceReconnect {
+                reason: ReconnectReason::StaleConnectionSuspected,
+            },
+        ];
+        assert_eq!(
+            select_network_recovery_action(&storm_events),
+            NetworkRecoveryAction::ForceReconnect
+        );
+
+        let results = submit_mobile_event_storm(&handle, storm_events).await;
+        assert!(
+            results.iter().all(|result| result.success),
+            "{} network events should all succeed",
+            case.name
+        );
+
+        expect_request_ok(
+            &harness,
+            case.mobile_serial,
+            case.server_serial,
+            &format!("{}_handle_storm_then_call", case.name),
+            Duration::from_secs(25),
+        )
+        .await;
+        send_data_stream_bounded(
+            &harness,
+            case.mobile_serial,
+            case.server_serial,
+            &format!("{}-handle-storm-then-stream", case.name),
+            Duration::from_secs(20),
+        )
+        .await;
+        expect_request_ok(
+            &harness,
+            case.mobile_serial,
+            case.server_serial,
+            &format!("{}_handle_storm_after_stream_call", case.name),
+            Duration::from_secs(25),
+        )
+        .await;
+        assert_eq!(
+            harness.peer(case.mobile_serial).pending_count().await,
+            0,
+            "{} mobile event storm call/DataStream path should not leak pending requests",
+            case.name
+        );
+
+        shutdown.cancel();
+        reconciler
+            .await
+            .expect("network event reconciler should not panic");
+    }
 }

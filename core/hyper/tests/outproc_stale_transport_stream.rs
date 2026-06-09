@@ -14,6 +14,7 @@
 //! 1. after a real disconnect + event storm, does the later `StreamReliable`
 //!    send still hang on the current branch?
 //! 2. does a stale close event avoid deleting the current active transport?
+//! 3. does a normal RPC call still recover after the same stream probe?
 
 use actr_hyper::test_support::TestHarness;
 use actr_hyper::transport::{ConnectionEvent, ConnectionState, Dest};
@@ -76,6 +77,62 @@ fn spawn_event_storm(
             tracing::info!("🌪️ Injected 256 synthetic connection events");
         }
     })
+}
+
+fn is_expected_recovery_error(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    [
+        "connection",
+        "request timeout",
+        "closed",
+        "recovering",
+        "data channel",
+        "datachannel",
+        "channel error",
+        "not opened",
+        "timeout",
+        "unavailable",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
+}
+
+async fn expect_request_eventually_ok(harness: &TestHarness, request_id: &str, deadline: Duration) {
+    let stop_at = tokio::time::Instant::now() + deadline;
+    let mut attempt = 0;
+
+    loop {
+        attempt += 1;
+        let attempt_id = format!("{request_id}_{attempt}");
+        let handle = harness
+            .peer(SOURCE_SERIAL)
+            .spawn_request(TARGET_SERIAL, &attempt_id, 2_000);
+
+        match tokio::time::timeout(Duration::from_secs(3), handle).await {
+            Ok(Ok(Ok(response))) => {
+                assert!(
+                    !response.is_empty(),
+                    "{request_id} should receive a non-empty response"
+                );
+                return;
+            }
+            Ok(Ok(Err(err))) => {
+                let msg = err.to_string();
+                assert!(
+                    is_expected_recovery_error(&msg),
+                    "{request_id} failed with unexpected error: {msg}"
+                );
+            }
+            Ok(Err(err)) => panic!("{request_id} task panicked: {err}"),
+            Err(_) => {}
+        }
+
+        if tokio::time::Instant::now() >= stop_at {
+            panic!("{request_id} did not recover within {:?}", deadline);
+        }
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 
 #[tokio::test]
@@ -152,7 +209,15 @@ async fn test_real_disconnect_stream_send_recovers_and_stale_close_is_ignored() 
         }
     }
 
-    tracing::info!("🧪 Step 5: Send stale ConnectionClosed sentinel");
+    tracing::info!("📤 Step 5: Probe normal RPC call after StreamReliable probe");
+    expect_request_eventually_ok(
+        &harness,
+        "stale-transport-after-stream-call",
+        Duration::from_secs(15),
+    )
+    .await;
+
+    tracing::info!("🧪 Step 6: Send stale ConnectionClosed sentinel");
     let receiver_count = source_peer
         .coordinator
         .event_sender()

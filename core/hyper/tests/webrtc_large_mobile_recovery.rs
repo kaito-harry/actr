@@ -142,26 +142,37 @@ fn spawn_data_echo_responder(
 }
 
 async fn setup_mobile_to_server() -> (TestHarness, BackgroundTasks) {
+    setup_mobile_to_server_with_serials(MOBILE, SERVER).await
+}
+
+async fn setup_mobile_to_server_with_serials(
+    mobile_serial: u64,
+    server_serial: u64,
+) -> (TestHarness, BackgroundTasks) {
     let mut harness = TestHarness::with_vnet().await;
-    harness.add_peer(SERVER).await;
-    harness.add_peer(MOBILE).await;
+    for serial in [
+        mobile_serial.min(server_serial),
+        mobile_serial.max(server_serial),
+    ] {
+        harness.add_peer(serial).await;
+    }
 
     let bg_tasks = BackgroundTasks {
         handles: vec![
             spawn_data_echo_responder(
-                harness.peer(SERVER).coordinator.clone(),
-                harness.peer(SERVER).gate.clone(),
+                harness.peer(server_serial).coordinator.clone(),
+                harness.peer(server_serial).gate.clone(),
                 "server_data_echo",
             ),
             spawn_response_receiver(
-                harness.peer(MOBILE).coordinator.clone(),
-                harness.peer(MOBILE).gate.clone(),
+                harness.peer(mobile_serial).coordinator.clone(),
+                harness.peer(mobile_serial).gate.clone(),
                 "mobile_response_receiver",
             ),
         ],
     };
 
-    let server_id = harness.peer(SERVER).id.clone();
+    let server_id = harness.peer(server_serial).id.clone();
     let setup_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let mut setup_attempt = 0;
     loop {
@@ -176,7 +187,10 @@ async fn setup_mobile_to_server() -> (TestHarness, BackgroundTasks) {
 
         match tokio::time::timeout(
             Duration::from_secs(7),
-            harness.peer(MOBILE).gate.send_request(&server_id, setup),
+            harness
+                .peer(mobile_serial)
+                .gate
+                .send_request(&server_id, setup),
         )
         .await
         {
@@ -281,6 +295,27 @@ async fn expect_large_request_eventually_ok(
     expected_hash: &[u8; 32],
     deadline: Duration,
 ) {
+    expect_large_request_eventually_ok_between(
+        harness,
+        MOBILE,
+        SERVER,
+        request_id,
+        data,
+        expected_hash,
+        deadline,
+    )
+    .await;
+}
+
+async fn expect_large_request_eventually_ok_between(
+    harness: &TestHarness,
+    mobile_serial: u64,
+    server_serial: u64,
+    request_id: &str,
+    data: &[u8],
+    expected_hash: &[u8; 32],
+    deadline: Duration,
+) {
     let stop_at = tokio::time::Instant::now() + deadline;
     let mut attempt = 0;
 
@@ -288,8 +323,8 @@ async fn expect_large_request_eventually_ok(
         attempt += 1;
         let attempt_id = format!("{request_id}_{attempt}");
         let handle = spawn_large_request(
-            harness.peer(MOBILE).gate.clone(),
-            harness.peer(SERVER).id.clone(),
+            harness.peer(mobile_serial).gate.clone(),
+            harness.peer(server_serial).id.clone(),
             &attempt_id,
             data.to_vec(),
             5_000,
@@ -299,7 +334,7 @@ async fn expect_large_request_eventually_ok(
             Ok(Ok(Ok(response))) => {
                 assert_payload_integrity(&attempt_id, &response, data, expected_hash);
                 assert_eq!(
-                    harness.peer(MOBILE).pending_count().await,
+                    harness.peer(mobile_serial).pending_count().await,
                     0,
                     "{} should leave no pending request",
                     request_id
@@ -447,9 +482,47 @@ async fn expect_bounded_completion(
 }
 
 async fn process_mobile_events(harness: &TestHarness, events: Vec<NetworkEvent>) {
+    process_mobile_events_for(harness, MOBILE, events).await;
+}
+
+async fn process_mobile_events_for(
+    harness: &TestHarness,
+    mobile_serial: u64,
+    events: Vec<NetworkEvent>,
+) {
     let results =
-        process_network_event_batch(events, harness.peer(MOBILE).network_processor()).await;
+        process_network_event_batch(events, harness.peer(mobile_serial).network_processor()).await;
     assert!(results.iter().all(|result| result.success));
+}
+
+fn spawn_mobile_event_storm(
+    harness: &TestHarness,
+    mobile_serial: u64,
+) -> tokio::task::JoinHandle<()> {
+    let processor = harness.peer(mobile_serial).network_processor();
+    tokio::spawn(async move {
+        let batches = [
+            vec![
+                offline_event(101),
+                network_event(102, true, false, false),
+                cellular_event(103),
+            ],
+            vec![
+                NetworkEvent::ForceReconnect {
+                    reason: ReconnectReason::StaleConnectionSuspected,
+                },
+                network_event(104, true, false, false),
+                wifi_event(105),
+            ],
+            vec![network_event(106, true, false, true), wifi_event(107)],
+        ];
+
+        for batch in batches {
+            let results = process_network_event_batch(batch, processor.clone()).await;
+            assert!(results.iter().all(|result| result.success));
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
 }
 
 async fn inflight_short_offline_recovers_original_request() {
@@ -911,6 +984,118 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain() {
         Duration::from_secs(25),
     )
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mobile_event_storm_during_call_and_data_stream_does_not_hang() {
+    init_tracing();
+
+    struct RoleCase {
+        name: &'static str,
+        mobile_serial: u64,
+        server_serial: u64,
+    }
+
+    let cases = [
+        RoleCase {
+            name: "mobile_offerer",
+            mobile_serial: 100,
+            server_serial: 200,
+        },
+        RoleCase {
+            name: "mobile_answerer",
+            mobile_serial: 200,
+            server_serial: 100,
+        },
+    ];
+
+    for case in cases {
+        let (harness, _bg_tasks) =
+            setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
+        let server_id = harness.peer(case.server_serial).id.clone();
+        let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
+
+        harness.simulate_disconnect();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        harness.simulate_reconnect();
+
+        let storm_task = spawn_mobile_event_storm(&harness, case.mobile_serial);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let call = spawn_large_request(
+            harness.peer(case.mobile_serial).gate.clone(),
+            server_id.clone(),
+            &format!("{}_mobile_event_storm_concurrent_call", case.name),
+            data.clone(),
+            30_000,
+        );
+
+        let stream = DataStream {
+            stream_id: format!("{}-mobile-event-storm-concurrent-stream", case.name),
+            sequence: 19,
+            payload: Bytes::from(vec![0x42; LARGE_PAYLOAD_SIZE]),
+            metadata: Vec::new(),
+            timestamp_ms: Some(0),
+        };
+        let payload = Bytes::from(stream.encode_to_vec());
+        let stream_task = {
+            let gate = harness.peer(case.mobile_serial).gate.clone();
+            let stream_id = stream.stream_id.clone();
+            tokio::spawn(async move {
+                gate.send_data_stream(&server_id, PayloadType::StreamReliable, &stream_id, payload)
+                    .await
+            })
+        };
+
+        expect_bounded_completion(
+            call,
+            &format!("{} mobile event storm concurrent call", case.name),
+            &data,
+            &hash,
+            Duration::from_secs(35),
+        )
+        .await;
+
+        let stream_result = tokio::time::timeout(Duration::from_secs(20), stream_task)
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "{} DataStream send during mobile event storm should not hang",
+                    case.name
+                )
+            })
+            .expect("DataStream send task should not panic");
+        if let Err(err) = stream_result {
+            let msg = err.to_string();
+            assert!(
+                is_expected_bounded_transport_failure(&msg),
+                "{} unexpected DataStream error during mobile event storm: {msg}",
+                case.name
+            );
+        }
+
+        storm_task
+            .await
+            .expect("mobile event storm task should not panic");
+        assert_eq!(
+            harness.peer(case.mobile_serial).pending_count().await,
+            0,
+            "{} mobile event storm send path should not leak pending state",
+            case.name
+        );
+
+        let (retry_payload, retry_hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
+        expect_large_request_eventually_ok_between(
+            &harness,
+            case.mobile_serial,
+            case.server_serial,
+            &format!("{}_after_mobile_event_storm_concurrent_stream", case.name),
+            &retry_payload,
+            &retry_hash,
+            Duration::from_secs(25),
+        )
+        .await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
