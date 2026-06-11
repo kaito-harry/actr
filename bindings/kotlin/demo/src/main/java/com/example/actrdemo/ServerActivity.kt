@@ -39,6 +39,7 @@ import java.util.Locale
 class ServerActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "ServerActivity"
+
         // Limit log buffer to avoid exceeding Android clipboard ~1MB transaction limit
         private const val MAX_LOG_CHARS = 50_000
     }
@@ -161,9 +162,10 @@ class ServerActivity : AppCompatActivity() {
 
     private fun appendToLog(text: String) {
         // Auto-scroll only when user is at the bottom, avoiding forced layout spam
-        val atBottom = scrollView.run {
-            childCount > 0 && scrollY + height >= getChildAt(0).height - 20
-        }
+        val atBottom =
+            scrollView.run {
+                childCount > 0 && scrollY + height >= getChildAt(0).height - 20
+            }
         logText.append(text)
         val excess = logText.length() - MAX_LOG_CHARS
         if (excess > 0) {
@@ -203,11 +205,12 @@ class ServerActivity : AppCompatActivity() {
             Toast.makeText(this, "Logs saved: ${file.absolutePath}", Toast.LENGTH_LONG).show()
 
             // Also offer to share
-            val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"
-                putExtra(Intent.EXTRA_TEXT, text)
-                putExtra(Intent.EXTRA_SUBJECT, "actr Logs $timestamp")
-            }
+            val shareIntent =
+                Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, text)
+                    putExtra(Intent.EXTRA_SUBJECT, "actr Logs $timestamp")
+                }
             startActivity(Intent.createChooser(shareIntent, "Share Logs"))
         } catch (e: Exception) {
             Toast.makeText(this, "Failed to save logs: ${e.message}", Toast.LENGTH_LONG).show()

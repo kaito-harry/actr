@@ -10,7 +10,7 @@ import android.util.Log
  * delivery to avoid flooding the UI thread.
  */
 class LogcatReader(
-    private val onLines: (String) -> Unit
+    private val onLines: (String) -> Unit,
 ) {
     private var thread: Thread? = null
     private var process: java.lang.Process? = null
@@ -18,60 +18,74 @@ class LogcatReader(
     private val buffer = StringBuilder()
     private val lock = Any()
 
-    private val flushRunnable = object : Runnable {
-        override fun run() {
-            val batch = synchronized(lock) {
-                if (buffer.isEmpty()) null
-                else buffer.toString().also { buffer.clear() }
+    private val flushRunnable =
+        object : Runnable {
+            override fun run() {
+                val batch =
+                    synchronized(lock) {
+                        if (buffer.isEmpty()) {
+                            null
+                        } else {
+                            buffer.toString().also { buffer.clear() }
+                        }
+                    }
+                if (batch != null) onLines(batch)
+                mainHandler.postDelayed(this, 100)
             }
-            if (batch != null) onLines(batch)
-            mainHandler.postDelayed(this, 100)
         }
-    }
 
     fun start() {
         if (thread?.isAlive == true) return
 
-        thread = Thread {
-            try {
-                // Only capture "actr" tag, suppress GC/system noise
-                val pb = ProcessBuilder("logcat", "-v", "threadtime", "actr:V", "*:S")
-                pb.redirectErrorStream(true)
-                val proc = pb.start()
-                process = proc
+        thread =
+            Thread {
+                try {
+                    // Only capture "actr" tag, suppress GC/system noise
+                    val pb = ProcessBuilder("logcat", "-v", "threadtime", "actr:V", "*:S")
+                    pb.redirectErrorStream(true)
+                    val proc = pb.start()
+                    process = proc
 
-                proc.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
-                    while (!Thread.currentThread().isInterrupted) {
-                        val line = reader.readLine()
-                        if (line == null) {
-                            val exitCode = try { proc.exitValue() } catch (_: Exception) { -1 }
-                            val msg = "[LogcatReader] logcat exited with code=$exitCode, restarting in 2s..."
-                            Log.w("LogcatReader", msg)
-                            synchronized(lock) { buffer.append(msg).append('\n') }
-                            break
+                    proc.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                        while (!Thread.currentThread().isInterrupted) {
+                            val line = reader.readLine()
+                            if (line == null) {
+                                val exitCode =
+                                    try {
+                                        proc.exitValue()
+                                    } catch (_: Exception) {
+                                        -1
+                                    }
+                                val msg = "[LogcatReader] logcat exited with code=$exitCode, restarting in 2s..."
+                                Log.w("LogcatReader", msg)
+                                synchronized(lock) { buffer.append(msg).append('\n') }
+                                break
+                            }
+                            synchronized(lock) { buffer.append(line).append('\n') }
                         }
-                        synchronized(lock) { buffer.append(line).append('\n') }
+                    }
+                } catch (_: InterruptedException) {
+                    // Normal shutdown
+                } catch (e: Exception) {
+                    Log.e("LogcatReader", "logcat error", e)
+                    synchronized(lock) { buffer.append("[LogcatReader] error: ${e.message}\n") }
+                }
+
+                // Auto-restart after logcat process exits
+                if (!Thread.currentThread().isInterrupted) {
+                    try {
+                        Thread.sleep(2000)
+                    } catch (_: InterruptedException) {
+                    }
+                    if (!Thread.currentThread().isInterrupted) {
+                        thread = null
+                        start()
                     }
                 }
-            } catch (_: InterruptedException) {
-                // Normal shutdown
-            } catch (e: Exception) {
-                Log.e("LogcatReader", "logcat error", e)
-                synchronized(lock) { buffer.append("[LogcatReader] error: ${e.message}\n") }
+            }.apply {
+                name = "LogcatReader"
+                isDaemon = true
             }
-
-            // Auto-restart after logcat process exits
-            if (!Thread.currentThread().isInterrupted) {
-                try { Thread.sleep(2000) } catch (_: InterruptedException) {}
-                if (!Thread.currentThread().isInterrupted) {
-                    thread = null
-                    start()
-                }
-            }
-        }.apply {
-            name = "LogcatReader"
-            isDaemon = true
-        }
 
         thread!!.start()
         mainHandler.post(flushRunnable)
@@ -79,7 +93,10 @@ class LogcatReader(
 
     fun stop() {
         mainHandler.removeCallbacks(flushRunnable)
-        try { process?.destroy() } catch (_: Exception) {}
+        try {
+            process?.destroy()
+        } catch (_: Exception) {
+        }
         process = null
         thread?.interrupt()
         thread = null

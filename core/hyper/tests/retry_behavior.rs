@@ -21,13 +21,16 @@
 //! 7. `get_or_create_transport` deduplicates concurrent callers via
 //!    `Either<Notify, DestTransport>` — one creator, many waiters.
 
+use actr_framework::Bytes;
 use actr_hyper::test_support::TestHarness;
 use actr_hyper::test_support::{
     expect_request_eventually_ok, wait_for_data_channel_close_chain, wait_for_data_channel_opened,
     wait_for_peer_state,
 };
 use actr_hyper::transport::{ConnectionEvent, ConnectionState};
+use actr_hyper::wire::webrtc::{HookCallback, HookEvent};
 use actr_protocol::{ActrError, PayloadType};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Initialize tracing for test output.
@@ -39,6 +42,118 @@ fn init_tracing() {
         .with_test_writer()
         .try_init()
         .ok();
+}
+
+fn recording_hook_callback() -> (
+    HookCallback,
+    tokio::sync::mpsc::UnboundedReceiver<HookEvent>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let hook: HookCallback = Arc::new(move |event| {
+        let tx = tx.clone();
+        Box::pin(async move {
+            let _ = tx.send(event);
+        })
+    });
+    (hook, rx)
+}
+
+async fn wait_for_webrtc_disconnected_hook(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<HookEvent>,
+    peer_id: &actr_protocol::ActrId,
+    timeout: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "timed out waiting for WebRtcDisconnected hook for peer {peer_id}"
+        );
+
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Some(HookEvent::WebRtcDisconnected { peer_id: got })) if &got == peer_id => {
+                return;
+            }
+            Ok(Some(other)) => {
+                tracing::debug!("ignoring hook while waiting for disconnected: {other:?}");
+            }
+            Ok(None) => panic!("hook channel closed while waiting for disconnected"),
+            Err(_) => panic!("timed out waiting for WebRtcDisconnected hook for peer {peer_id}"),
+        }
+    }
+}
+
+async fn wait_for_webrtc_connected_hook(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<HookEvent>,
+    peer_id: &actr_protocol::ActrId,
+    timeout: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "timed out waiting for WebRtcConnected hook for peer {peer_id}"
+        );
+
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Some(HookEvent::WebRtcConnected { peer_id: got, .. })) if &got == peer_id => {
+                return;
+            }
+            Ok(Some(other)) => {
+                tracing::debug!("ignoring hook while waiting for connected: {other:?}");
+            }
+            Ok(None) => panic!("hook channel closed while waiting for connected"),
+            Err(_) => panic!("timed out waiting for WebRtcConnected hook for peer {peer_id}"),
+        }
+    }
+}
+
+async fn assert_no_webrtc_connected_hook(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<HookEvent>,
+    peer_id: &actr_protocol::ActrId,
+    timeout: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Some(HookEvent::WebRtcConnected { peer_id: got, .. })) if &got == peer_id => {
+                panic!("stale recovery event unexpectedly emitted WebRtcConnected for {peer_id}");
+            }
+            Ok(Some(other)) => {
+                tracing::debug!("ignoring hook while asserting no connected: {other:?}");
+            }
+            Ok(None) | Err(_) => return,
+        }
+    }
+}
+
+async fn expect_connection_not_ready(
+    handle: tokio::task::JoinHandle<actr_protocol::ActorResult<Bytes>>,
+    label: &str,
+) {
+    match tokio::time::timeout(Duration::from_secs(3), handle).await {
+        Ok(Ok(Err(ActrError::ConnectionNotReady(info)))) => {
+            assert!(
+                info.retry_after_ms.is_some(),
+                "{label} should include retry_after_ms"
+            );
+        }
+        Ok(Ok(Err(other))) => panic!("{label} failed with unexpected error: {other}"),
+        Ok(Ok(Ok(response))) => {
+            panic!(
+                "{label} unexpectedly succeeded with {} response bytes",
+                response.len()
+            );
+        }
+        Ok(Err(err)) => panic!("{label} task panicked: {err}"),
+        Err(_) => panic!("{label} did not finish within the outer timeout"),
+    }
 }
 
 // ─── Scenario 1 ─────────────────────────────────────────────────────────────
@@ -309,6 +424,8 @@ async fn test_call_returns_promptly_after_connection_closed_cleanup() {
             assert!(
                 msg.contains("Connection")
                     || msg.contains("connection")
+                    || msg.contains("DataChannel closed")
+                    || msg.contains("Data channel")
                     || msg.contains("Unavailable")
                     || msg.contains("recovering"),
                 "expected connection error, got: {}",
@@ -683,5 +800,108 @@ async fn test_call_fast_fails_during_recovery_window() {
         Ok(Ok(Ok(_))) => panic!("call should be blocked during recovery window"),
         Ok(Err(e)) => panic!("task panicked: {}", e),
         Err(_) => panic!("call timed out — preflight_send did not fast-fail"),
+    }
+}
+
+// ─── Scenario 11 ────────────────────────────────────────────────────────────
+// Mobile UI retry flow:
+//   connected + sendable → network recovery guard → call fast-fails with
+//   ConnectionNotReady → stale completion does not emit ready → current
+//   sendable completion emits WebRtcConnected → retry after the hook succeeds.
+//
+// This protects the contract that `on_webrtc_connected(peer)` is the reliable
+// signal for mobile callers to clear a Recovering UI state and retry a send.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_recovery_ready_hook_unblocks_mobile_retry() {
+    init_tracing();
+
+    let mut harness = TestHarness::new().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+    harness.connect(100, 200).await;
+
+    let target_id = harness.peer(200).id.clone();
+    let session_id = harness
+        .peer(100)
+        .coordinator
+        .get_peer_session_id(&target_id)
+        .await
+        .expect("initial connection should have a current WebRTC session");
+    assert!(
+        harness
+            .peer(100)
+            .coordinator
+            .has_open_data_channel_for_test(&target_id)
+            .await
+            .expect("data channel state should be queryable"),
+        "initial connection must have an open data channel before entering recovery"
+    );
+
+    let (hook, mut hook_rx) = recording_hook_callback();
+    harness.peer(100).coordinator.set_hook_callback(hook);
+
+    let guarded = harness
+        .peer(100)
+        .coordinator
+        .begin_network_recovery("mobile network switch")
+        .await;
+    assert!(
+        guarded.iter().any(|peer| peer == &target_id),
+        "network recovery should guard the already-sendable target"
+    );
+    wait_for_webrtc_disconnected_hook(&mut hook_rx, &target_id, Duration::from_secs(1)).await;
+
+    let guarded_request = harness
+        .peer(100)
+        .spawn_request(200, "mobile_retry_guarded", 30_000);
+    expect_connection_not_ready(guarded_request, "request during recovery guard").await;
+
+    harness
+        .peer(100)
+        .send_event(ConnectionEvent::IceRestartCompleted {
+            peer_id: target_id.clone(),
+            session_id: session_id + 1,
+            success: true,
+        });
+    assert_no_webrtc_connected_hook(&mut hook_rx, &target_id, Duration::from_millis(200)).await;
+
+    let stale_request =
+        harness
+            .peer(100)
+            .spawn_request(200, "mobile_retry_after_stale_completion", 30_000);
+    expect_connection_not_ready(stale_request, "request after stale recovery completion").await;
+
+    harness
+        .peer(100)
+        .send_event(ConnectionEvent::IceRestartCompleted {
+            peer_id: target_id.clone(),
+            session_id,
+            success: true,
+        });
+    wait_for_webrtc_connected_hook(&mut hook_rx, &target_id, Duration::from_secs(1)).await;
+    assert!(
+        harness
+            .peer(100)
+            .coordinator
+            .peer_recovery_status(&target_id)
+            .await
+            .is_none(),
+        "ready hook should only be emitted after the recovery guard is cleared"
+    );
+
+    let retry_after_ready =
+        harness
+            .peer(100)
+            .spawn_request(200, "mobile_retry_after_ready_hook", 5_000);
+    match tokio::time::timeout(Duration::from_secs(6), retry_after_ready).await {
+        Ok(Ok(Ok(response))) => {
+            tracing::info!(
+                "retry after WebRtcConnected hook succeeded with {} bytes",
+                response.len()
+            );
+        }
+        Ok(Ok(Err(err))) => panic!("retry after ready hook failed: {err}"),
+        Ok(Err(err)) => panic!("retry task panicked: {err}"),
+        Err(_) => panic!("retry after ready hook timed out"),
     }
 }
