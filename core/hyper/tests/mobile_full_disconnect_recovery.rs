@@ -13,8 +13,12 @@ use actr_hyper::lifecycle::{
     NetworkAvailability, NetworkEvent, NetworkRecoveryAction, NetworkSnapshot,
     NetworkTransportFlags, process_network_event_batch, select_network_recovery_action,
 };
+use actr_hyper::outbound::PeerGate;
 use actr_hyper::test_support::TestHarness;
-use actr_protocol::ActrId;
+use actr_hyper::wire::webrtc::WebRtcCoordinator;
+use actr_protocol::prost::Message as ProstMessage;
+use actr_protocol::{ActrId, RpcEnvelope};
+use std::sync::Arc;
 
 const ICE_RESTART_SEMANTIC_ELAPSED: Duration = Duration::from_secs(15);
 const REBUILD_SEMANTIC_ELAPSED: Duration = Duration::from_secs(65);
@@ -34,6 +38,30 @@ impl RoleCase {
     }
 }
 
+#[derive(Clone, Copy)]
+struct DirectionCase {
+    name: &'static str,
+    from_serial: u64,
+    to_serial: u64,
+}
+
+impl RoleCase {
+    fn directions(self) -> [DirectionCase; 2] {
+        [
+            DirectionCase {
+                name: "mobile_to_server",
+                from_serial: self.mobile_serial,
+                to_serial: self.server_serial,
+            },
+            DirectionCase {
+                name: "server_to_mobile",
+                from_serial: self.server_serial,
+                to_serial: self.mobile_serial,
+            },
+        ]
+    }
+}
+
 const ROLE_CASES: [RoleCase; 2] = [
     RoleCase {
         name: "mobile_offerer",
@@ -46,6 +74,18 @@ const ROLE_CASES: [RoleCase; 2] = [
         server_serial: 100,
     },
 ];
+
+struct BackgroundTasks {
+    handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for BackgroundTasks {
+    fn drop(&mut self) {
+        for handle in &self.handles {
+            handle.abort();
+        }
+    }
+}
 
 fn init_tracing() {
     tracing_subscriber::fmt()
@@ -79,7 +119,85 @@ fn network_event(sequence: u64, available: bool, wifi: bool, cellular: bool) -> 
     }
 }
 
-async fn setup_mobile_server_harness(case: RoleCase) -> TestHarness {
+fn spawn_rpc_router(
+    coordinator: Arc<WebRtcCoordinator>,
+    gate: Arc<PeerGate>,
+    name: &str,
+) -> tokio::task::JoinHandle<()> {
+    let name = name.to_string();
+    tokio::spawn(async move {
+        loop {
+            match coordinator.receive_message().await {
+                Ok(Some((sender_bytes, message_data, _payload_type))) => {
+                    let sender_id = match ActrId::decode(sender_bytes.as_slice()) {
+                        Ok(sender_id) => sender_id,
+                        Err(e) => {
+                            tracing::error!("{} failed to decode sender ActrId: {}", name, e);
+                            continue;
+                        }
+                    };
+
+                    let envelope = match RpcEnvelope::decode(message_data.as_ref()) {
+                        Ok(envelope) => envelope,
+                        Err(e) => {
+                            tracing::error!("{} failed to decode RpcEnvelope: {}", name, e);
+                            continue;
+                        }
+                    };
+
+                    if envelope.route_key == "response" {
+                        let result = if let Some(error) = envelope.error {
+                            Err(actr_protocol::ActrError::Unavailable(format!(
+                                "RPC error {}: {}",
+                                error.code, error.message
+                            )))
+                        } else if let Some(payload) = envelope.payload {
+                            Ok(payload)
+                        } else {
+                            Err(actr_protocol::ActrError::DecodeFailure(
+                                "Invalid response: no payload or error".to_string(),
+                            ))
+                        };
+
+                        if let Err(e) = gate.handle_response(&envelope.request_id, result).await {
+                            tracing::error!(
+                                "{} failed to handle response {}: {}",
+                                name,
+                                envelope.request_id,
+                                e
+                            );
+                        }
+                        continue;
+                    }
+
+                    let response = RpcEnvelope {
+                        request_id: envelope.request_id.clone(),
+                        route_key: "response".to_string(),
+                        payload: envelope.payload.clone(),
+                        timeout_ms: 0,
+                        ..Default::default()
+                    };
+
+                    if let Err(e) = gate.send_message(&sender_id, response).await {
+                        tracing::error!(
+                            "{} failed to send echo response for {}: {}",
+                            name,
+                            envelope.request_id,
+                            e
+                        );
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::error!("{} receive loop failed: {}", name, e);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+    })
+}
+
+async fn setup_mobile_server_harness(case: RoleCase) -> (TestHarness, BackgroundTasks) {
     let mut harness = TestHarness::with_vnet().await;
     for serial in [
         case.mobile_serial.min(case.server_serial),
@@ -87,10 +205,32 @@ async fn setup_mobile_server_harness(case: RoleCase) -> TestHarness {
     ] {
         harness.add_peer(serial).await;
     }
-    harness
-        .connect(case.mobile_serial, case.server_serial)
-        .await;
-    harness
+
+    let bg_tasks = BackgroundTasks {
+        handles: vec![
+            spawn_rpc_router(
+                harness.peer(case.mobile_serial).coordinator.clone(),
+                harness.peer(case.mobile_serial).gate.clone(),
+                "mobile_half_open_router",
+            ),
+            spawn_rpc_router(
+                harness.peer(case.server_serial).coordinator.clone(),
+                harness.peer(case.server_serial).gate.clone(),
+                "server_half_open_router",
+            ),
+        ],
+    };
+
+    expect_request_ok_between(
+        &harness,
+        case.mobile_serial,
+        case.server_serial,
+        "mobile_half_open_setup",
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    (harness, bg_tasks)
 }
 
 fn server_id(harness: &TestHarness, case: RoleCase) -> ActrId {
@@ -136,27 +276,30 @@ async fn process_mobile_events(
     );
 }
 
-async fn expect_mobile_request_ok(
+async fn expect_request_ok_between(
     harness: &TestHarness,
-    case: RoleCase,
+    from_serial: u64,
+    to_serial: u64,
     request_id: &str,
 ) -> usize {
     let started = Instant::now();
     let mut attempts = 0u32;
     loop {
         attempts += 1;
-        let handle =
-            harness
-                .peer(case.mobile_serial)
-                .spawn_request(case.server_serial, request_id, 1000);
+        let attempt_id = format!("{request_id}_{attempts}");
+        let handle = harness
+            .peer(from_serial)
+            .spawn_request(to_serial, &attempt_id, 1000);
         match handle.await {
             Ok(Ok(response)) => {
                 tracing::info!(
                     request_id,
                     attempts,
                     elapsed_ms = started.elapsed().as_millis() as u64,
+                    from_serial,
+                    to_serial,
                     response_len = response.len(),
-                    "mobile request recovered"
+                    "request recovered"
                 );
                 return response.len();
             }
@@ -170,8 +313,10 @@ async fn expect_mobile_request_ok(
                 tracing::info!(
                     request_id,
                     attempts,
+                    from_serial,
+                    to_serial,
                     error = %err,
-                    "mobile request not ready yet; retrying"
+                    "request not ready yet; retrying"
                 );
             }
             Err(err) => {
@@ -182,6 +327,25 @@ async fn expect_mobile_request_ok(
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+}
+
+async fn expect_direction_requests_ok(
+    harness: &TestHarness,
+    case: RoleCase,
+    label: &str,
+) -> Vec<(&'static str, usize)> {
+    let mut responses = Vec::new();
+    for direction in case.directions() {
+        let response_len = expect_request_ok_between(
+            harness,
+            direction.from_serial,
+            direction.to_serial,
+            &format!("{label}_{}", direction.name),
+        )
+        .await;
+        responses.push((direction.name, response_len));
+    }
+    responses
 }
 
 async fn wait_for_mobile_recovery_cleared(harness: &TestHarness, case: RoleCase, label: &str) {
@@ -294,7 +458,7 @@ async fn test_mobile_half_open_15s_semantics_recovers_with_ice_restart() {
     for case in ROLE_CASES {
         let label = format!("{}_half_open_15s_ice_restart", case.name);
         let verify_id = format!("{label}_verify");
-        let harness = setup_mobile_server_harness(case).await;
+        let (harness, _bg_tasks) = setup_mobile_server_harness(case).await;
         harness.reset_counters();
 
         let old_session = mobile_peer_session_id(&harness, case)
@@ -316,7 +480,7 @@ async fn test_mobile_half_open_15s_semantics_recovers_with_ice_restart() {
 
         wait_for_mobile_recovery_cleared(&harness, case, &label).await;
 
-        let response_len = expect_mobile_request_ok(&harness, case, &verify_id).await;
+        let responses = expect_direction_requests_ok(&harness, case, &verify_id).await;
         let recovered_session = mobile_peer_session_id(&harness, case)
             .await
             .expect("mobile should still have a WebRTC session after ICE restart");
@@ -325,7 +489,10 @@ async fn test_mobile_half_open_15s_semantics_recovers_with_ice_restart() {
             recovered_session, old_session,
             "{label} should keep the existing WebRTC session"
         );
-        assert!(response_len > 0);
+        assert!(
+            responses.iter().all(|(_, response_len)| *response_len > 0),
+            "{label} should recover requests in both directions: {responses:?}"
+        );
     }
 }
 
@@ -336,7 +503,7 @@ async fn test_mobile_half_open_65s_semantics_rebuilds_webrtc() {
     for case in ROLE_CASES {
         let label = format!("{}_half_open_65s_rebuild", case.name);
         let verify_id = format!("{label}_verify");
-        let harness = setup_mobile_server_harness(case).await;
+        let (harness, _bg_tasks) = setup_mobile_server_harness(case).await;
         harness.reset_counters();
 
         let old_session = mobile_peer_session_id(&harness, case)
@@ -352,7 +519,7 @@ async fn test_mobile_half_open_65s_semantics_rebuilds_webrtc() {
                 .await;
             wait_for_mobile_recovery_cleared(&harness, case, &label).await;
 
-            let response_len = expect_mobile_request_ok(&harness, case, &verify_id).await;
+            let responses = expect_direction_requests_ok(&harness, case, &verify_id).await;
             let recovered_session = mobile_peer_session_id(&harness, case)
                 .await
                 .expect("mobile offerer should keep a WebRTC session after ICE restart");
@@ -361,7 +528,10 @@ async fn test_mobile_half_open_65s_semantics_rebuilds_webrtc() {
                 recovered_session, old_session,
                 "{label} should keep the offerer session and recover via ICE restart"
             );
-            assert!(response_len > 0);
+            assert!(
+                responses.iter().all(|(_, response_len)| *response_len > 0),
+                "{label} should recover requests in both directions: {responses:?}"
+            );
         } else {
             assert_eq!(
                 mobile_peer_session_id(&harness, case).await,
@@ -374,7 +544,7 @@ async fn test_mobile_half_open_65s_semantics_rebuilds_webrtc() {
                 "{label} should rebuild instead of requesting ICE restart"
             );
 
-            let response_len = expect_mobile_request_ok(&harness, case, &verify_id).await;
+            let responses = expect_direction_requests_ok(&harness, case, &verify_id).await;
             let rebuilt_session = mobile_peer_session_id(&harness, case)
                 .await
                 .expect("mobile answerer should rebuild a WebRTC session after the next RPC");
@@ -383,7 +553,10 @@ async fn test_mobile_half_open_65s_semantics_rebuilds_webrtc() {
                 rebuilt_session, old_session,
                 "{label} should rebuild with a new WebRTC session"
             );
-            assert!(response_len > 0);
+            assert!(
+                responses.iter().all(|(_, response_len)| *response_len > 0),
+                "{label} should recover requests in both directions: {responses:?}"
+            );
         }
     }
 }

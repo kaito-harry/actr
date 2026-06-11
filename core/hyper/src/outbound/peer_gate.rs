@@ -7,7 +7,9 @@
 //! - Block new requests to peers being cleaned up (closing_peers)
 
 use super::data_stream_activity::{DataStreamActivityTracker, DataStreamRecordState};
-use crate::transport::{ConnectionEvent, ConnectionState, Dest, PayloadTypeExt, PeerTransport};
+use crate::transport::{
+    ConnectionEvent, ConnectionState, Dest, PayloadTypeExt, PeerTransport, WireIdentity,
+};
 use crate::wire::webrtc::{NETWORK_RECOVERY_TIMEOUT, NetworkRecoveryStatus, WebRtcCoordinator};
 use actr_framework::{Bytes, MediaSample};
 use actr_protocol::prost::Message as ProstMessage;
@@ -17,7 +19,7 @@ use actr_protocol::{
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{RwLock, broadcast, oneshot};
+use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
 
 /// Pending requests map type: request_id -> (target_actor_id, oneshot response sender)
 type PendingRequestsMap =
@@ -758,6 +760,17 @@ impl PeerGate {
             .await
     }
 
+    async fn send_with_retry_record_identity(
+        &self,
+        dest: &Dest,
+        payload_type: PayloadType,
+        data: &[u8],
+    ) -> ActorResult<Option<WireIdentity>> {
+        let policy = payload_type.retry_policy();
+        self.send_with_retry_policy_record_identity(dest, payload_type, data, policy)
+            .await
+    }
+
     async fn send_with_retry_policy(
         &self,
         dest: &Dest,
@@ -765,12 +778,28 @@ impl PeerGate {
         data: &[u8],
         policy: crate::transport::RetryPolicy,
     ) -> ActorResult<()> {
+        self.send_with_retry_policy_record_identity(dest, payload_type, data, policy)
+            .await
+            .map(|_| ())
+    }
+
+    async fn send_with_retry_policy_record_identity(
+        &self,
+        dest: &Dest,
+        payload_type: PayloadType,
+        data: &[u8],
+        policy: crate::transport::RetryPolicy,
+    ) -> ActorResult<Option<WireIdentity>> {
         let mut delay = policy.initial_delay;
         let mut attempt = 0u32;
 
         loop {
-            match self.transport_manager.send(dest, payload_type, data).await {
-                Ok(()) => return Ok(()),
+            match self
+                .transport_manager
+                .send_with_identity(dest, payload_type, data)
+                .await
+            {
+                Ok(identity) => return Ok(identity),
                 Err(e) => {
                     attempt += 1;
                     let retryable = e.is_retryable();
@@ -798,6 +827,60 @@ impl PeerGate {
                         }
                         return Err(e.into());
                     }
+                }
+            }
+        }
+    }
+
+    async fn close_timed_out_request_transport(
+        transport_manager: Arc<PeerTransport>,
+        dest: Dest,
+        target: ActrId,
+        sent_identity: Option<WireIdentity>,
+    ) {
+        match sent_identity {
+            Some(WireIdentity::WebRtc {
+                peer_id,
+                session_id,
+            }) => {
+                tracing::warn!(
+                    peer = ?target,
+                    session_id,
+                    "Request timed out after send; closing stale transport if WebRTC session still matches"
+                );
+                match transport_manager
+                    .close_transport_if_webrtc_session(&dest, &peer_id, session_id)
+                    .await
+                {
+                    Ok(true) => tracing::debug!(
+                        peer = ?target,
+                        session_id,
+                        "Closed timed-out request transport for matching WebRTC session"
+                    ),
+                    Ok(false) => tracing::debug!(
+                        peer = ?target,
+                        session_id,
+                        "Skipped timed-out request transport close because WebRTC session was replaced"
+                    ),
+                    Err(e) => tracing::warn!(
+                        peer = ?target,
+                        session_id,
+                        "Failed to close stale transport after request timeout: {}",
+                        e
+                    ),
+                }
+            }
+            None => {
+                tracing::warn!(
+                    peer = ?target,
+                    "Request timed out before a WebRTC send identity was recorded; closing transport"
+                );
+                if let Err(e) = transport_manager.close_transport(&dest).await {
+                    tracing::warn!(
+                        peer = ?target,
+                        "Failed to close transport after request timeout: {}",
+                        e
+                    );
                 }
             }
         }
@@ -862,10 +945,15 @@ impl PeerGate {
         //    so the user-perceived latency never exceeds envelope.timeout_ms.
         let timeout = std::time::Duration::from_millis(envelope.timeout_ms as u64);
         let request_id = envelope.request_id.clone();
+        let sent_identity = Arc::new(Mutex::new(None));
+        let sent_identity_for_send = Arc::clone(&sent_identity);
 
         let result = tokio::time::timeout(timeout, async {
             // 5a. Send with per-PayloadType retry on transient failures
-            self.send_with_retry(&dest, payload_type, &data).await?;
+            let identity = self
+                .send_with_retry_record_identity(&dest, payload_type, &data)
+                .await?;
+            *sent_identity_for_send.lock().await = identity;
             tracing::debug!("Sent request to {:?}", target);
 
             // 5b. Wait for response
@@ -891,6 +979,19 @@ impl PeerGate {
             Err(_) => {
                 // Timeout — covers both send retry and response wait
                 self.pending_requests.write().await.remove(&request_id);
+                let transport_manager = self.transport_manager.clone();
+                let stale_dest = dest.clone();
+                let stale_target = target.clone();
+                let sent_identity = sent_identity.lock().await.clone();
+                tokio::spawn(async move {
+                    Self::close_timed_out_request_transport(
+                        transport_manager,
+                        stale_dest,
+                        stale_target,
+                        sent_identity,
+                    )
+                    .await;
+                });
                 Err(ActrError::Unavailable(format!(
                     "Request timeout: {}ms",
                     envelope.timeout_ms

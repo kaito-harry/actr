@@ -355,7 +355,7 @@ private func uniffiTraitInterfaceCallWithError<T, E>(
         callStatus.pointee.errorBuf = FfiConverterString.lower(String(describing: error))
     }
 }
-// Initial value and increment amount for handles. 
+// Initial value and increment amount for handles.
 // These ensure that SWIFT handles always have the lowest bit set
 fileprivate let UNIFFI_HANDLEMAP_INITIAL: UInt64 = 1
 fileprivate let UNIFFI_HANDLEMAP_DELTA: UInt64 = 2
@@ -611,19 +611,19 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
  * Wrapper for a package-backed runtime before startup.
  */
 public protocol ActrNodeProtocol: AnyObject, Sendable {
-    
+
     /**
      * Create a network event handle for platform callbacks.
      *
      * This must be called before `start()`.
      */
     func createNetworkEventHandle() throws  -> NetworkEventHandleWrapper
-    
+
     /**
      * Start the package-backed node and return a running actor reference.
      */
     func start() async throws  -> ActrRefWrapper
-    
+
 }
 /**
  * Wrapper for a package-backed runtime before startup.
@@ -678,7 +678,7 @@ open class ActrNode: ActrNodeProtocol, @unchecked Sendable {
         try! rustCall { uniffi_actr_fn_free_actrnode(handle, $0) }
     }
 
-    
+
     /**
      * Create a linked/static runtime from a foreign-language workload.
      */
@@ -696,7 +696,7 @@ public static func newFromLinkedWorkload(configPath: String, actorType: ActrType
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
+
     /**
      * Create a new runtime wrapper from config and a verified `.actr` package file.
      */
@@ -714,9 +714,9 @@ public static func newFromPackageFile(configPath: String, packagePath: String)as
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
 
-    
+
+
     /**
      * Create a network event handle for platform callbacks.
      *
@@ -729,7 +729,7 @@ open func createNetworkEventHandle()throws  -> NetworkEventHandleWrapper  {
     )
 })
 }
-    
+
     /**
      * Start the package-backed node and return a running actor reference.
      */
@@ -739,7 +739,7 @@ open func start()async throws  -> ActrRefWrapper  {
             rustFutureFunc: {
                 uniffi_actr_fn_method_actrnode_start(
                     self.uniffiCloneHandle()
-                    
+
                 )
             },
             pollFunc: ffi_actr_rust_future_poll_u64,
@@ -749,9 +749,9 @@ open func start()async throws  -> ActrRefWrapper  {
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
 
-    
+
+
 }
 
 
@@ -804,42 +804,42 @@ public func FfiConverterTypeActrNode_lower(_ value: ActrNode) -> UInt64 {
  * Wrapper for a running actor reference.
  */
 public protocol ActrRefWrapperProtocol: AnyObject, Sendable {
-    
+
     /**
      * Get the actor's ID.
      */
     func actorId()  -> ActrId
-    
+
     /**
      * Call the local guest workload via RPC.
      */
     func call(routeKey: String, payloadType: PayloadType, requestPayload: Data, timeoutMs: Int64) async throws  -> Data
-    
+
     /**
      * Discover actors of the specified type.
      */
     func discover(targetType: ActrType, count: UInt32) async throws  -> [ActrId]
-    
+
     /**
      * Check if shutdown is already in progress.
      */
     func isShuttingDown()  -> Bool
-    
+
     /**
      * Trigger shutdown.
      */
-    func shutdown() 
-    
+    func shutdown()
+
     /**
      * Send a one-way message to the local guest workload.
      */
-    func tell(routeKey: String, payloadType: PayloadType, messagePayload: Data) async throws 
-    
+    func tell(routeKey: String, payloadType: PayloadType, messagePayload: Data) async throws
+
     /**
      * Wait for shutdown to complete.
      */
-    func waitForShutdown() async 
-    
+    func waitForShutdown() async
+
 }
 /**
  * Wrapper for a running actor reference.
@@ -894,9 +894,9 @@ open class ActrRefWrapper: ActrRefWrapperProtocol, @unchecked Sendable {
         try! rustCall { uniffi_actr_fn_free_actrrefwrapper(handle, $0) }
     }
 
-    
 
-    
+
+
     /**
      * Get the actor's ID.
      */
@@ -907,7 +907,7 @@ open func actorId() -> ActrId  {
     )
 })
 }
-    
+
     /**
      * Call the local guest workload via RPC.
      */
@@ -927,7 +927,7 @@ open func call(routeKey: String, payloadType: PayloadType, requestPayload: Data,
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
+
     /**
      * Discover actors of the specified type.
      */
@@ -947,7 +947,7 @@ open func discover(targetType: ActrType, count: UInt32)async throws  -> [ActrId]
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
+
     /**
      * Check if shutdown is already in progress.
      */
@@ -958,7 +958,7 @@ open func isShuttingDown() -> Bool  {
     )
 })
 }
-    
+
     /**
      * Trigger shutdown.
      */
@@ -968,7 +968,7 @@ open func shutdown()  {try! rustCall() {
     )
 }
 }
-    
+
     /**
      * Send a one-way message to the local guest workload.
      */
@@ -988,7 +988,7 @@ open func tell(routeKey: String, payloadType: PayloadType, messagePayload: Data)
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
+
     /**
      * Wait for shutdown to complete.
      */
@@ -998,7 +998,7 @@ open func waitForShutdown()async   {
             rustFutureFunc: {
                 uniffi_actr_fn_method_actrrefwrapper_wait_for_shutdown(
                     self.uniffiCloneHandle()
-                    
+
                 )
             },
             pollFunc: ffi_actr_rust_future_poll_void,
@@ -1006,12 +1006,12 @@ open func waitForShutdown()async   {
             freeFunc: ffi_actr_rust_future_free_void,
             liftFunc: { $0 },
             errorHandler: nil
-            
+
         )
 }
-    
 
-    
+
+
 }
 
 
@@ -1064,12 +1064,12 @@ public func FfiConverterTypeActrRefWrapper_lower(_ value: ActrRefWrapper) -> UIn
  * Context provided to the workload
  */
 public protocol ContextBridgeProtocol: AnyObject, Sendable {
-    
+
     /**
      * Add a media track to the WebRTC connection with the target
      */
-    func addMediaTrack(target: ActrId, trackId: String, codec: String, mediaType: String) async throws 
-    
+    func addMediaTrack(target: ActrId, trackId: String, codec: String, mediaType: String) async throws
+
     /**
      * Call a remote actor via RPC (simplified for FFI)
      *
@@ -1084,7 +1084,7 @@ public protocol ContextBridgeProtocol: AnyObject, Sendable {
      * Response payload bytes (protobuf encoded)
      */
     func callRaw(target: ActrId, routeKey: String, payloadType: PayloadType, payload: Data, timeoutMs: Int64) async throws  -> Data
-    
+
     /**
      * Discover an actor of the specified type
      *
@@ -1095,22 +1095,22 @@ public protocol ContextBridgeProtocol: AnyObject, Sendable {
      * The ActrId of a discovered actor
      */
     func discover(targetType: ActrType) async throws  -> ActrId
-    
+
     /**
      * Register a callback for incoming media track samples
      */
-    func registerMediaTrack(trackId: String, callback: MediaTrackCallback) async throws 
-    
+    func registerMediaTrack(trackId: String, callback: MediaTrackCallback) async throws
+
     /**
      * Register a DataStream callback for a stream ID.
      */
-    func registerStream(streamId: String, callback: DataStreamCallback) async throws 
-    
+    func registerStream(streamId: String, callback: DataStreamCallback) async throws
+
     /**
      * Remove a media track from the WebRTC connection with the target.
      */
-    func removeMediaTrack(target: ActrId, trackId: String) async throws 
-    
+    func removeMediaTrack(target: ActrId, trackId: String) async throws
+
     /**
      * Send a DataStream to a remote actor (Fast Path)
      *
@@ -1119,13 +1119,13 @@ public protocol ContextBridgeProtocol: AnyObject, Sendable {
      * - `chunk`: DataStream containing stream_id, sequence, payload, etc.
      * - `payload_type`: Stream lane selection for delivery guarantees.
      */
-    func sendDataStream(target: ActrId, chunk: DataStream, payloadType: PayloadType) async throws 
-    
+    func sendDataStream(target: ActrId, chunk: DataStream, payloadType: PayloadType) async throws
+
     /**
      * Send a media sample via WebRTC native RTP track
      */
-    func sendMediaSample(target: ActrId, trackId: String, sample: MediaSample) async throws 
-    
+    func sendMediaSample(target: ActrId, trackId: String, sample: MediaSample) async throws
+
     /**
      * Send a one-way message to an actor (fire-and-forget)
      *
@@ -1135,18 +1135,18 @@ public protocol ContextBridgeProtocol: AnyObject, Sendable {
      * - `payload_type`: Payload transmission type (RpcReliable, RpcSignal, etc.)
      * - `payload`: Message payload bytes (protobuf encoded)
      */
-    func tellRaw(target: ActrId, routeKey: String, payloadType: PayloadType, payload: Data) async throws 
-    
+    func tellRaw(target: ActrId, routeKey: String, payloadType: PayloadType, payload: Data) async throws
+
     /**
      * Unregister a media track callback
      */
-    func unregisterMediaTrack(trackId: String) async throws 
-    
+    func unregisterMediaTrack(trackId: String) async throws
+
     /**
      * Unregister a DataStream callback for a stream ID.
      */
-    func unregisterStream(streamId: String) async throws 
-    
+    func unregisterStream(streamId: String) async throws
+
 }
 /**
  * Context provided to the workload
@@ -1201,9 +1201,9 @@ open class ContextBridge: ContextBridgeProtocol, @unchecked Sendable {
         try! rustCall { uniffi_actr_fn_free_contextbridge(handle, $0) }
     }
 
-    
 
-    
+
+
     /**
      * Add a media track to the WebRTC connection with the target
      */
@@ -1223,7 +1223,7 @@ open func addMediaTrack(target: ActrId, trackId: String, codec: String, mediaTyp
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
+
     /**
      * Call a remote actor via RPC (simplified for FFI)
      *
@@ -1253,7 +1253,7 @@ open func callRaw(target: ActrId, routeKey: String, payloadType: PayloadType, pa
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
+
     /**
      * Discover an actor of the specified type
      *
@@ -1279,7 +1279,7 @@ open func discover(targetType: ActrType)async throws  -> ActrId  {
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
+
     /**
      * Register a callback for incoming media track samples
      */
@@ -1299,7 +1299,7 @@ open func registerMediaTrack(trackId: String, callback: MediaTrackCallback)async
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
+
     /**
      * Register a DataStream callback for a stream ID.
      */
@@ -1319,7 +1319,7 @@ open func registerStream(streamId: String, callback: DataStreamCallback)async th
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
+
     /**
      * Remove a media track from the WebRTC connection with the target.
      */
@@ -1339,7 +1339,7 @@ open func removeMediaTrack(target: ActrId, trackId: String)async throws   {
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
+
     /**
      * Send a DataStream to a remote actor (Fast Path)
      *
@@ -1364,7 +1364,7 @@ open func sendDataStream(target: ActrId, chunk: DataStream, payloadType: Payload
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
+
     /**
      * Send a media sample via WebRTC native RTP track
      */
@@ -1384,7 +1384,7 @@ open func sendMediaSample(target: ActrId, trackId: String, sample: MediaSample)a
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
+
     /**
      * Send a one-way message to an actor (fire-and-forget)
      *
@@ -1410,7 +1410,7 @@ open func tellRaw(target: ActrId, routeKey: String, payloadType: PayloadType, pa
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
+
     /**
      * Unregister a media track callback
      */
@@ -1430,7 +1430,7 @@ open func unregisterMediaTrack(trackId: String)async throws   {
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
+
     /**
      * Unregister a DataStream callback for a stream ID.
      */
@@ -1450,9 +1450,9 @@ open func unregisterStream(streamId: String)async throws   {
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
 
-    
+
+
 }
 
 
@@ -1509,7 +1509,7 @@ public func FfiConverterTypeContextBridge_lower(_ value: ContextBridge) -> UInt6
  * defaults when the hook fires.
  */
 public protocol DynamicWorkloadProtocol: AnyObject, Sendable {
-    
+
 }
 /**
  * Dynamic workload composed of one mandatory [`WorkloadLifecycleBridge`]
@@ -1585,11 +1585,11 @@ public convenience init(lifecycle: WorkloadLifecycleBridge, signaling: Signaling
         try! rustCall { uniffi_actr_fn_free_dynamicworkload(handle, $0) }
     }
 
-    
 
-    
 
-    
+
+
+
 }
 
 
@@ -1642,27 +1642,27 @@ public func FfiConverterTypeDynamicWorkload_lower(_ value: DynamicWorkload) -> U
  * Wrapper for `NetworkEventHandle` - network lifecycle callbacks.
  */
 public protocol NetworkEventHandleWrapperProtocol: AnyObject, Sendable {
-    
+
     /**
      * Cleanup all connections without reconnecting.
      */
     func cleanupConnections(reason: CleanupReason) async throws  -> NetworkEventResult
-    
+
     /**
      * Force cleanup and reconnect.
      */
     func forceReconnect(reason: ReconnectReason) async throws  -> NetworkEventResult
-    
+
     /**
      * Handle an app lifecycle change.
      */
     func handleAppLifecycleChanged(state: AppLifecycleState) async throws  -> NetworkEventResult
-    
+
     /**
      * Handle a full network path change.
      */
     func handleNetworkPathChanged(snapshot: NetworkSnapshot) async throws  -> NetworkEventResult
-    
+
 }
 /**
  * Wrapper for `NetworkEventHandle` - network lifecycle callbacks.
@@ -1717,9 +1717,9 @@ open class NetworkEventHandleWrapper: NetworkEventHandleWrapperProtocol, @unchec
         try! rustCall { uniffi_actr_fn_free_networkeventhandlewrapper(handle, $0) }
     }
 
-    
 
-    
+
+
     /**
      * Cleanup all connections without reconnecting.
      */
@@ -1739,7 +1739,7 @@ open func cleanupConnections(reason: CleanupReason)async throws  -> NetworkEvent
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
+
     /**
      * Force cleanup and reconnect.
      */
@@ -1759,7 +1759,7 @@ open func forceReconnect(reason: ReconnectReason)async throws  -> NetworkEventRe
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
+
     /**
      * Handle an app lifecycle change.
      */
@@ -1779,7 +1779,7 @@ open func handleAppLifecycleChanged(state: AppLifecycleState)async throws  -> Ne
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
+
     /**
      * Handle a full network path change.
      */
@@ -1799,9 +1799,9 @@ open func handleNetworkPathChanged(snapshot: NetworkSnapshot)async throws  -> Ne
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
-    
 
-    
+
+
 }
 
 
@@ -1854,14 +1854,14 @@ public func FfiConverterTypeNetworkEventHandleWrapper_lower(_ value: NetworkEven
  * Reusable Opus encoder for Swift audio capture.
  */
 public protocol OpusEncoderProtocol: AnyObject, Sendable {
-    
+
     /**
      * Encode one PCM float frame into one Opus packet.
      */
     func encode(pcm: [Float]) throws  -> Data
-    
+
     func frameSize()  -> UInt16
-    
+
 }
 /**
  * Reusable Opus encoder for Swift audio capture.
@@ -1929,9 +1929,9 @@ public convenience init(sampleRate: UInt32, channels: UInt8, frameSize: UInt16)t
         try! rustCall { uniffi_actr_fn_free_opusencoder(handle, $0) }
     }
 
-    
 
-    
+
+
     /**
      * Encode one PCM float frame into one Opus packet.
      */
@@ -1943,7 +1943,7 @@ open func encode(pcm: [Float])throws  -> Data  {
     )
 })
 }
-    
+
 open func frameSize() -> UInt16  {
     return try!  FfiConverterUInt16.lift(try! rustCall() {
     uniffi_actr_fn_method_opusencoder_frame_size(
@@ -1951,9 +1951,9 @@ open func frameSize() -> UInt16  {
     )
 })
 }
-    
 
-    
+
+
 }
 
 
@@ -2016,9 +2016,9 @@ public struct ActrId: Equatable, Hashable {
         self.type = type
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2032,8 +2032,8 @@ public struct FfiConverterTypeActrId: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ActrId {
         return
             try ActrId(
-                realm: FfiConverterTypeRealm.read(from: &buf), 
-                serialNumber: FfiConverterUInt64.read(from: &buf), 
+                realm: FfiConverterTypeRealm.read(from: &buf),
+                serialNumber: FfiConverterUInt64.read(from: &buf),
                 type: FfiConverterTypeActrType.read(from: &buf)
         )
     }
@@ -2077,9 +2077,9 @@ public struct ActrType: Equatable, Hashable {
         self.version = version
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2093,8 +2093,8 @@ public struct FfiConverterTypeActrType: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ActrType {
         return
             try ActrType(
-                manufacturer: FfiConverterString.read(from: &buf), 
-                name: FfiConverterString.read(from: &buf), 
+                manufacturer: FfiConverterString.read(from: &buf),
+                name: FfiConverterString.read(from: &buf),
                 version: FfiConverterString.read(from: &buf)
         )
     }
@@ -2136,9 +2136,9 @@ public struct BackpressureEventBridge: Equatable, Hashable {
         self.threshold = threshold
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2152,7 +2152,7 @@ public struct FfiConverterTypeBackpressureEventBridge: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BackpressureEventBridge {
         return
             try BackpressureEventBridge(
-                queueLen: FfiConverterUInt64.read(from: &buf), 
+                queueLen: FfiConverterUInt64.read(from: &buf),
                 threshold: FfiConverterUInt64.read(from: &buf)
         )
     }
@@ -2197,9 +2197,9 @@ public struct CredentialEventBridge: Equatable, Hashable {
         self.newExpiryMs = newExpiryMs
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2273,16 +2273,16 @@ public struct DataStream: Equatable, Hashable {
     public init(
         /**
          * Stream identifier (globally unique)
-         */streamId: String, 
+         */streamId: String,
         /**
          * Sequence number for ordering
-         */sequence: UInt64, 
+         */sequence: UInt64,
         /**
          * Payload data
-         */payload: Data, 
+         */payload: Data,
         /**
          * Optional metadata
-         */metadata: [MetadataEntry], 
+         */metadata: [MetadataEntry],
         /**
          * Optional timestamp in milliseconds
          */timestampMs: Int64?) {
@@ -2293,9 +2293,9 @@ public struct DataStream: Equatable, Hashable {
         self.timestampMs = timestampMs
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2309,10 +2309,10 @@ public struct FfiConverterTypeDataStream: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DataStream {
         return
             try DataStream(
-                streamId: FfiConverterString.read(from: &buf), 
-                sequence: FfiConverterUInt64.read(from: &buf), 
-                payload: FfiConverterData.read(from: &buf), 
-                metadata: FfiConverterSequenceTypeMetadataEntry.read(from: &buf), 
+                streamId: FfiConverterString.read(from: &buf),
+                sequence: FfiConverterUInt64.read(from: &buf),
+                payload: FfiConverterData.read(from: &buf),
+                metadata: FfiConverterSequenceTypeMetadataEntry.read(from: &buf),
                 timestampMs: FfiConverterOptionInt64.read(from: &buf)
         )
     }
@@ -2372,13 +2372,13 @@ public struct ErrorEventBridge: Equatable, Hashable {
     public init(
         /**
          * Stringified underlying error (see [`actr_protocol::ActrError`]).
-         */source: String, 
+         */source: String,
         /**
          * Error-domain classification.
-         */category: ErrorCategoryBridge, 
+         */category: ErrorCategoryBridge,
         /**
          * Free-form context (route key, handler name, stage).
-         */context: String, 
+         */context: String,
         /**
          * Wall-clock timestamp (milliseconds since UNIX epoch).
          */timestampMs: Int64) {
@@ -2388,9 +2388,9 @@ public struct ErrorEventBridge: Equatable, Hashable {
         self.timestampMs = timestampMs
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2404,9 +2404,9 @@ public struct FfiConverterTypeErrorEventBridge: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ErrorEventBridge {
         return
             try ErrorEventBridge(
-                source: FfiConverterString.read(from: &buf), 
-                category: FfiConverterTypeErrorCategoryBridge.read(from: &buf), 
-                context: FfiConverterString.read(from: &buf), 
+                source: FfiConverterString.read(from: &buf),
+                category: FfiConverterTypeErrorCategoryBridge.read(from: &buf),
+                context: FfiConverterString.read(from: &buf),
                 timestampMs: FfiConverterInt64.read(from: &buf)
         )
     }
@@ -2453,9 +2453,9 @@ public struct MediaSample: Equatable, Hashable {
         self.mediaType = mediaType
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2469,9 +2469,9 @@ public struct FfiConverterTypeMediaSample: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MediaSample {
         return
             try MediaSample(
-                data: FfiConverterData.read(from: &buf), 
-                timestamp: FfiConverterUInt32.read(from: &buf), 
-                codec: FfiConverterString.read(from: &buf), 
+                data: FfiConverterData.read(from: &buf),
+                timestamp: FfiConverterUInt32.read(from: &buf),
+                codec: FfiConverterString.read(from: &buf),
                 mediaType: FfiConverterTypeMediaType.read(from: &buf)
         )
     }
@@ -2514,9 +2514,9 @@ public struct MetadataEntry: Equatable, Hashable {
         self.value = value
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2530,7 +2530,7 @@ public struct FfiConverterTypeMetadataEntry: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MetadataEntry {
         return
             try MetadataEntry(
-                key: FfiConverterString.read(from: &buf), 
+                key: FfiConverterString.read(from: &buf),
                 value: FfiConverterString.read(from: &buf)
         )
     }
@@ -2575,9 +2575,9 @@ public struct NetworkEventResult: Equatable, Hashable {
         self.durationMs = durationMs
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2591,9 +2591,9 @@ public struct FfiConverterTypeNetworkEventResult: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NetworkEventResult {
         return
             try NetworkEventResult(
-                event: FfiConverterTypeNetworkEvent.read(from: &buf), 
-                success: FfiConverterBool.read(from: &buf), 
-                error: FfiConverterOptionString.read(from: &buf), 
+                event: FfiConverterTypeNetworkEvent.read(from: &buf),
+                success: FfiConverterBool.read(from: &buf),
+                error: FfiConverterOptionString.read(from: &buf),
                 durationMs: FfiConverterUInt64.read(from: &buf)
         )
     }
@@ -2639,9 +2639,9 @@ public struct NetworkSnapshot: Equatable, Hashable {
         self.isConstrained = isConstrained
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2655,10 +2655,10 @@ public struct FfiConverterTypeNetworkSnapshot: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NetworkSnapshot {
         return
             try NetworkSnapshot(
-                sequence: FfiConverterUInt64.read(from: &buf), 
-                availability: FfiConverterTypeNetworkAvailability.read(from: &buf), 
-                transport: FfiConverterTypeNetworkTransportFlags.read(from: &buf), 
-                isExpensive: FfiConverterBool.read(from: &buf), 
+                sequence: FfiConverterUInt64.read(from: &buf),
+                availability: FfiConverterTypeNetworkAvailability.read(from: &buf),
+                transport: FfiConverterTypeNetworkTransportFlags.read(from: &buf),
+                isExpensive: FfiConverterBool.read(from: &buf),
                 isConstrained: FfiConverterBool.read(from: &buf)
         )
     }
@@ -2705,9 +2705,9 @@ public struct NetworkTransportFlags: Equatable, Hashable {
         self.other = other
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2721,10 +2721,10 @@ public struct FfiConverterTypeNetworkTransportFlags: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NetworkTransportFlags {
         return
             try NetworkTransportFlags(
-                wifi: FfiConverterBool.read(from: &buf), 
-                cellular: FfiConverterBool.read(from: &buf), 
-                ethernet: FfiConverterBool.read(from: &buf), 
-                vpn: FfiConverterBool.read(from: &buf), 
+                wifi: FfiConverterBool.read(from: &buf),
+                cellular: FfiConverterBool.read(from: &buf),
+                ethernet: FfiConverterBool.read(from: &buf),
+                vpn: FfiConverterBool.read(from: &buf),
                 other: FfiConverterBool.read(from: &buf)
         )
     }
@@ -2773,7 +2773,7 @@ public struct PeerEventBridge: Equatable, Hashable {
     public init(
         /**
          * Remote peer identity.
-         */peer: ActrId, 
+         */peer: ActrId,
         /**
          * `Some(true)` for WebRTC TURN-relayed, `Some(false)` for direct P2P,
          * `None` for WebSocket (not applicable).
@@ -2782,9 +2782,9 @@ public struct PeerEventBridge: Equatable, Hashable {
         self.relayed = relayed
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2798,7 +2798,7 @@ public struct FfiConverterTypePeerEventBridge: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PeerEventBridge {
         return
             try PeerEventBridge(
-                peer: FfiConverterTypeActrId.read(from: &buf), 
+                peer: FfiConverterTypeActrId.read(from: &buf),
                 relayed: FfiConverterOptionBool.read(from: &buf)
         )
     }
@@ -2837,9 +2837,9 @@ public struct Realm: Equatable, Hashable {
         self.realmId = realmId
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2902,10 +2902,10 @@ public struct RpcEnvelopeBridge: Equatable, Hashable {
     public init(
         /**
          * Route key for the RPC method (e.g., "echo.EchoService.Echo")
-         */routeKey: String, 
+         */routeKey: String,
         /**
          * Request payload bytes (protobuf encoded)
-         */payload: Data, 
+         */payload: Data,
         /**
          * Request ID for correlation
          */requestId: String) {
@@ -2914,9 +2914,9 @@ public struct RpcEnvelopeBridge: Equatable, Hashable {
         self.requestId = requestId
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -2930,8 +2930,8 @@ public struct FfiConverterTypeRpcEnvelopeBridge: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RpcEnvelopeBridge {
         return
             try RpcEnvelopeBridge(
-                routeKey: FfiConverterString.read(from: &buf), 
-                payload: FfiConverterData.read(from: &buf), 
+                routeKey: FfiConverterString.read(from: &buf),
+                payload: FfiConverterData.read(from: &buf),
                 requestId: FfiConverterString.read(from: &buf)
         )
     }
@@ -2968,8 +2968,8 @@ public func FfiConverterTypeRpcEnvelopeBridge_lower(_ value: RpcEnvelopeBridge) 
  */
 public enum ActrError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
-    
-    
+
+
     case Unavailable(msg: String
     )
     case TimedOut
@@ -2999,15 +2999,15 @@ public enum ActrError: Swift.Error, Equatable, Hashable, Foundation.LocalizedErr
     case Config(msg: String
     )
 
-    
 
-    
 
-    
+
+
+
     public var errorDescription: String? {
         String(reflecting: self)
     }
-    
+
 }
 
 #if compiler(>=6)
@@ -3024,9 +3024,9 @@ public struct FfiConverterTypeActrError: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        
 
-        
+
+
         case 1: return .Unavailable(
             msg: try FfiConverterString.read(from: &buf)
             )
@@ -3044,7 +3044,7 @@ public struct FfiConverterTypeActrError: FfiConverterRustBuffer {
             msg: try FfiConverterString.read(from: &buf)
             )
         case 7: return .DependencyNotFound(
-            serviceName: try FfiConverterString.read(from: &buf), 
+            serviceName: try FfiConverterString.read(from: &buf),
             detail: try FfiConverterString.read(from: &buf)
             )
         case 8: return .DecodeFailure(
@@ -3067,64 +3067,64 @@ public struct FfiConverterTypeActrError: FfiConverterRustBuffer {
     public static func write(_ value: ActrError, into buf: inout [UInt8]) {
         switch value {
 
-        
 
-        
-        
+
+
+
         case let .Unavailable(msg):
             writeInt(&buf, Int32(1))
             FfiConverterString.write(msg, into: &buf)
-            
-        
+
+
         case .TimedOut:
             writeInt(&buf, Int32(2))
-        
-        
+
+
         case let .NotFound(msg):
             writeInt(&buf, Int32(3))
             FfiConverterString.write(msg, into: &buf)
-            
-        
+
+
         case let .PermissionDenied(msg):
             writeInt(&buf, Int32(4))
             FfiConverterString.write(msg, into: &buf)
-            
-        
+
+
         case let .InvalidArgument(msg):
             writeInt(&buf, Int32(5))
             FfiConverterString.write(msg, into: &buf)
-            
-        
+
+
         case let .UnknownRoute(msg):
             writeInt(&buf, Int32(6))
             FfiConverterString.write(msg, into: &buf)
-            
-        
+
+
         case let .DependencyNotFound(serviceName,detail):
             writeInt(&buf, Int32(7))
             FfiConverterString.write(serviceName, into: &buf)
             FfiConverterString.write(detail, into: &buf)
-            
-        
+
+
         case let .DecodeFailure(msg):
             writeInt(&buf, Int32(8))
             FfiConverterString.write(msg, into: &buf)
-            
-        
+
+
         case let .NotImplemented(msg):
             writeInt(&buf, Int32(9))
             FfiConverterString.write(msg, into: &buf)
-            
-        
+
+
         case let .Internal(msg):
             writeInt(&buf, Int32(10))
             FfiConverterString.write(msg, into: &buf)
-            
-        
+
+
         case let .Config(msg):
             writeInt(&buf, Int32(11))
             FfiConverterString.write(msg, into: &buf)
-            
+
         }
     }
 }
@@ -3148,7 +3148,7 @@ public func FfiConverterTypeActrError_lower(_ value: ActrError) -> RustBuffer {
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
 public enum AppLifecycleState: Equatable, Hashable {
-    
+
     case background
     case foreground(backgroundDurationMs: UInt64
     )
@@ -3172,28 +3172,28 @@ public struct FfiConverterTypeAppLifecycleState: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AppLifecycleState {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .background
-        
+
         case 2: return .foreground(backgroundDurationMs: try FfiConverterUInt64.read(from: &buf)
         )
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: AppLifecycleState, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case .background:
             writeInt(&buf, Int32(1))
-        
-        
+
+
         case let .foreground(backgroundDurationMs):
             writeInt(&buf, Int32(2))
             FfiConverterUInt64.write(backgroundDurationMs, into: &buf)
-            
+
         }
     }
 }
@@ -3218,7 +3218,7 @@ public func FfiConverterTypeAppLifecycleState_lower(_ value: AppLifecycleState) 
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
 public enum CleanupReason: Equatable, Hashable {
-    
+
     case appTerminating
     case userLogout
     case staleConnectionSuspected
@@ -3243,38 +3243,38 @@ public struct FfiConverterTypeCleanupReason: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CleanupReason {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .appTerminating
-        
+
         case 2: return .userLogout
-        
+
         case 3: return .staleConnectionSuspected
-        
+
         case 4: return .manualReset
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: CleanupReason, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case .appTerminating:
             writeInt(&buf, Int32(1))
-        
-        
+
+
         case .userLogout:
             writeInt(&buf, Int32(2))
-        
-        
+
+
         case .staleConnectionSuspected:
             writeInt(&buf, Int32(3))
-        
-        
+
+
         case .manualReset:
             writeInt(&buf, Int32(4))
-        
+
         }
     }
 }
@@ -3303,7 +3303,7 @@ public func FfiConverterTypeCleanupReason_lower(_ value: CleanupReason) -> RustB
  */
 
 public enum ErrorCategoryBridge: Equatable, Hashable {
-    
+
     case handlerPanic
     case handlerError
     case signalingFailure
@@ -3329,44 +3329,44 @@ public struct FfiConverterTypeErrorCategoryBridge: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ErrorCategoryBridge {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .handlerPanic
-        
+
         case 2: return .handlerError
-        
+
         case 3: return .signalingFailure
-        
+
         case 4: return .transportFailure
-        
+
         case 5: return .dataStreamDeliveryUncertain
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: ErrorCategoryBridge, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case .handlerPanic:
             writeInt(&buf, Int32(1))
-        
-        
+
+
         case .handlerError:
             writeInt(&buf, Int32(2))
-        
-        
+
+
         case .signalingFailure:
             writeInt(&buf, Int32(3))
-        
-        
+
+
         case .transportFailure:
             writeInt(&buf, Int32(4))
-        
-        
+
+
         case .dataStreamDeliveryUncertain:
             writeInt(&buf, Int32(5))
-        
+
         }
     }
 }
@@ -3398,7 +3398,7 @@ public func FfiConverterTypeErrorCategoryBridge_lower(_ value: ErrorCategoryBrid
  */
 
 public enum ErrorKind: Equatable, Hashable {
-    
+
     /**
      * Environmental fluctuation — retry with exponential backoff.
      */
@@ -3435,38 +3435,38 @@ public struct FfiConverterTypeErrorKind: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ErrorKind {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .transient
-        
+
         case 2: return .client
-        
+
         case 3: return .`internal`
-        
+
         case 4: return .corrupt
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: ErrorKind, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case .transient:
             writeInt(&buf, Int32(1))
-        
-        
+
+
         case .client:
             writeInt(&buf, Int32(2))
-        
-        
+
+
         case .`internal`:
             writeInt(&buf, Int32(3))
-        
-        
+
+
         case .corrupt:
             writeInt(&buf, Int32(4))
-        
+
         }
     }
 }
@@ -3494,7 +3494,7 @@ public func FfiConverterTypeErrorKind_lower(_ value: ErrorKind) -> RustBuffer {
  */
 
 public enum MediaType: Equatable, Hashable {
-    
+
     case audio
     case video
 
@@ -3517,26 +3517,26 @@ public struct FfiConverterTypeMediaType: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MediaType {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .audio
-        
+
         case 2: return .video
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: MediaType, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case .audio:
             writeInt(&buf, Int32(1))
-        
-        
+
+
         case .video:
             writeInt(&buf, Int32(2))
-        
+
         }
     }
 }
@@ -3564,7 +3564,7 @@ public func FfiConverterTypeMediaType_lower(_ value: MediaType) -> RustBuffer {
  */
 
 public enum NetworkAvailability: Equatable, Hashable {
-    
+
     case unknown
     case available
     case unavailable
@@ -3588,32 +3588,32 @@ public struct FfiConverterTypeNetworkAvailability: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NetworkAvailability {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .unknown
-        
+
         case 2: return .available
-        
+
         case 3: return .unavailable
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: NetworkAvailability, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case .unknown:
             writeInt(&buf, Int32(1))
-        
-        
+
+
         case .available:
             writeInt(&buf, Int32(2))
-        
-        
+
+
         case .unavailable:
             writeInt(&buf, Int32(3))
-        
+
         }
     }
 }
@@ -3638,7 +3638,7 @@ public func FfiConverterTypeNetworkAvailability_lower(_ value: NetworkAvailabili
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
 public enum NetworkEvent: Equatable, Hashable {
-    
+
     case networkPathChanged(snapshot: NetworkSnapshot
     )
     case appLifecycleChanged(state: AppLifecycleState
@@ -3667,46 +3667,46 @@ public struct FfiConverterTypeNetworkEvent: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NetworkEvent {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .networkPathChanged(snapshot: try FfiConverterTypeNetworkSnapshot.read(from: &buf)
         )
-        
+
         case 2: return .appLifecycleChanged(state: try FfiConverterTypeAppLifecycleState.read(from: &buf)
         )
-        
+
         case 3: return .cleanupConnections(reason: try FfiConverterTypeCleanupReason.read(from: &buf)
         )
-        
+
         case 4: return .forceReconnect(reason: try FfiConverterTypeReconnectReason.read(from: &buf)
         )
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: NetworkEvent, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case let .networkPathChanged(snapshot):
             writeInt(&buf, Int32(1))
             FfiConverterTypeNetworkSnapshot.write(snapshot, into: &buf)
-            
-        
+
+
         case let .appLifecycleChanged(state):
             writeInt(&buf, Int32(2))
             FfiConverterTypeAppLifecycleState.write(state, into: &buf)
-            
-        
+
+
         case let .cleanupConnections(reason):
             writeInt(&buf, Int32(3))
             FfiConverterTypeCleanupReason.write(reason, into: &buf)
-            
-        
+
+
         case let .forceReconnect(reason):
             writeInt(&buf, Int32(4))
             FfiConverterTypeReconnectReason.write(reason, into: &buf)
-            
+
         }
     }
 }
@@ -3741,7 +3741,7 @@ public func FfiConverterTypeNetworkEvent_lower(_ value: NetworkEvent) -> RustBuf
  */
 
 public enum PayloadType: Equatable, Hashable {
-    
+
     case rpcReliable
     case rpcSignal
     case streamReliable
@@ -3767,44 +3767,44 @@ public struct FfiConverterTypePayloadType: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PayloadType {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .rpcReliable
-        
+
         case 2: return .rpcSignal
-        
+
         case 3: return .streamReliable
-        
+
         case 4: return .streamLatencyFirst
-        
+
         case 5: return .mediaRtp
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: PayloadType, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case .rpcReliable:
             writeInt(&buf, Int32(1))
-        
-        
+
+
         case .rpcSignal:
             writeInt(&buf, Int32(2))
-        
-        
+
+
         case .streamReliable:
             writeInt(&buf, Int32(3))
-        
-        
+
+
         case .streamLatencyFirst:
             writeInt(&buf, Int32(4))
-        
-        
+
+
         case .mediaRtp:
             writeInt(&buf, Int32(5))
-        
+
         }
     }
 }
@@ -3829,7 +3829,7 @@ public func FfiConverterTypePayloadType_lower(_ value: PayloadType) -> RustBuffe
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
 public enum ReconnectReason: Equatable, Hashable {
-    
+
     case networkPathChanged
     case longBackground
     case probeFailed
@@ -3855,44 +3855,44 @@ public struct FfiConverterTypeReconnectReason: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ReconnectReason {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .networkPathChanged
-        
+
         case 2: return .longBackground
-        
+
         case 3: return .probeFailed
-        
+
         case 4: return .manualReconnect
-        
+
         case 5: return .staleConnectionSuspected
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: ReconnectReason, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case .networkPathChanged:
             writeInt(&buf, Int32(1))
-        
-        
+
+
         case .longBackground:
             writeInt(&buf, Int32(2))
-        
-        
+
+
         case .probeFailed:
             writeInt(&buf, Int32(3))
-        
-        
+
+
         case .manualReconnect:
             writeInt(&buf, Int32(4))
-        
-        
+
+
         case .staleConnectionSuspected:
             writeInt(&buf, Int32(5))
-        
+
         }
     }
 }
@@ -3920,11 +3920,11 @@ public func FfiConverterTypeReconnectReason_lower(_ value: ReconnectReason) -> R
  * Optional observer for credential lifecycle events.
  */
 public protocol CredentialObserverBridge: AnyObject, Sendable {
-    
-    func onRenewed(ctx: ContextBridge, event: CredentialEventBridge) async 
-    
-    func onExpiring(ctx: ContextBridge, event: CredentialEventBridge) async 
-    
+
+    func onRenewed(ctx: ContextBridge, event: CredentialEventBridge) async
+
+    func onExpiring(ctx: ContextBridge, event: CredentialEventBridge) async
+
 }
 
 
@@ -4116,12 +4116,12 @@ public func FfiConverterCallbackInterfaceCredentialObserverBridge_lower(_ v: Cre
  * Callback interface for DataStream events.
  */
 public protocol DataStreamCallback: AnyObject, Sendable {
-    
+
     /**
      * Handle an incoming DataStream chunk.
      */
-    func onStream(chunk: DataStream, sender: ActrId) async throws 
-    
+    func onStream(chunk: DataStream, sender: ActrId) async throws
+
 }
 
 
@@ -4276,7 +4276,7 @@ public func FfiConverterCallbackInterfaceDataStreamCallback_lower(_ v: DataStrea
  * forwarded through this callback.
  */
 public protocol LogCallback: AnyObject, Sendable {
-    
+
     /**
      * Called for every tracing event emitted by the actr runtime.
      *
@@ -4286,8 +4286,8 @@ public protocol LogCallback: AnyObject, Sendable {
      * - `message`: field values formatted as `key=value` pairs.
      * - `timestamp_ms`: wall-clock milliseconds since UNIX epoch.
      */
-    func onLog(level: String, target: String, message: String, timestampMs: Int64) 
-    
+    func onLog(level: String, target: String, message: String, timestampMs: Int64)
+
 }
 
 
@@ -4335,7 +4335,7 @@ fileprivate struct UniffiCallbackInterfaceLogCallback {
                 )
             }
 
-            
+
             let writeReturn = { () }
             uniffiTraitInterfaceCall(
                 callStatus: uniffiCallStatus,
@@ -4425,9 +4425,9 @@ public func FfiConverterCallbackInterfaceLogCallback_lower(_ v: LogCallback) -> 
  * Optional observer for mailbox-backpressure events.
  */
 public protocol MailboxObserverBridge: AnyObject, Sendable {
-    
-    func onBackpressure(ctx: ContextBridge, event: BackpressureEventBridge) async 
-    
+
+    func onBackpressure(ctx: ContextBridge, event: BackpressureEventBridge) async
+
 }
 
 
@@ -4577,12 +4577,12 @@ public func FfiConverterCallbackInterfaceMailboxObserverBridge_lower(_ v: Mailbo
  * Callback interface for MediaTrack events.
  */
 public protocol MediaTrackCallback: AnyObject, Sendable {
-    
+
     /**
      * Handle an incoming media sample from a WebRTC native track.
      */
-    func onSample(sample: MediaSample, sender: ActrId) async throws 
-    
+    func onSample(sample: MediaSample, sender: ActrId) async throws
+
 }
 
 
@@ -4733,13 +4733,13 @@ public func FfiConverterCallbackInterfaceMediaTrackCallback_lower(_ v: MediaTrac
  * Optional observer for signaling-layer events.
  */
 public protocol SignalingObserverBridge: AnyObject, Sendable {
-    
-    func onConnecting(ctx: ContextBridge?) async 
-    
-    func onConnected(ctx: ContextBridge?) async 
-    
-    func onDisconnected(ctx: ContextBridge) async 
-    
+
+    func onConnecting(ctx: ContextBridge?) async
+
+    func onConnected(ctx: ContextBridge?) async
+
+    func onDisconnected(ctx: ContextBridge) async
+
 }
 
 
@@ -4967,13 +4967,13 @@ public func FfiConverterCallbackInterfaceSignalingObserverBridge_lower(_ v: Sign
  * Optional observer for WebRTC P2P peer events.
  */
 public protocol WebRtcObserverBridge: AnyObject, Sendable {
-    
-    func onConnecting(ctx: ContextBridge, event: PeerEventBridge) async 
-    
-    func onConnected(ctx: ContextBridge, event: PeerEventBridge) async 
-    
-    func onDisconnected(ctx: ContextBridge, event: PeerEventBridge) async 
-    
+
+    func onConnecting(ctx: ContextBridge, event: PeerEventBridge) async
+
+    func onConnected(ctx: ContextBridge, event: PeerEventBridge) async
+
+    func onDisconnected(ctx: ContextBridge, event: PeerEventBridge) async
+
 }
 
 
@@ -5207,13 +5207,13 @@ public func FfiConverterCallbackInterfaceWebRtcObserverBridge_lower(_ v: WebRtcO
  * Optional observer for WebSocket peer events.
  */
 public protocol WebSocketObserverBridge: AnyObject, Sendable {
-    
-    func onConnecting(ctx: ContextBridge, event: PeerEventBridge) async 
-    
-    func onConnected(ctx: ContextBridge, event: PeerEventBridge) async 
-    
-    func onDisconnected(ctx: ContextBridge, event: PeerEventBridge) async 
-    
+
+    func onConnecting(ctx: ContextBridge, event: PeerEventBridge) async
+
+    func onConnected(ctx: ContextBridge, event: PeerEventBridge) async
+
+    func onDisconnected(ctx: ContextBridge, event: PeerEventBridge) async
+
 }
 
 
@@ -5451,32 +5451,32 @@ public func FfiConverterCallbackInterfaceWebSocketObserverBridge_lower(_ v: WebS
  * `dispatch` entry point.
  */
 public protocol WorkloadLifecycleBridge: AnyObject, Sendable {
-    
+
     /**
      * Called when the node has started.
      */
-    func onStart(ctx: ContextBridge) async throws 
-    
+    func onStart(ctx: ContextBridge) async throws
+
     /**
      * Called when the node is ready to accept requests.
      */
-    func onReady(ctx: ContextBridge) async throws 
-    
+    func onReady(ctx: ContextBridge) async throws
+
     /**
      * Called when the node receives a shutdown signal.
      */
-    func onStop(ctx: ContextBridge) async throws 
-    
+    func onStop(ctx: ContextBridge) async throws
+
     /**
      * Called when the framework catches a runtime error.
      */
-    func onError(ctx: ContextBridge, event: ErrorEventBridge) async throws 
-    
+    func onError(ctx: ContextBridge, event: ErrorEventBridge) async throws
+
     /**
      * Dispatch an incoming RPC message and return the response bytes.
      */
     func dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge) async throws  -> Data
-    
+
 }
 
 

@@ -257,7 +257,7 @@ typedef void (*UniffiCallbackInterfaceMediaTrackCallbackMethod0)(uint64_t, RustB
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOG_CALLBACK_METHOD0
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOG_CALLBACK_METHOD0
-typedef void (*UniffiCallbackInterfaceLogCallbackMethod0)(uint64_t, RustBuffer, RustBuffer, RustBuffer, int64_t, void* _Nonnull, 
+typedef void (*UniffiCallbackInterfaceLogCallbackMethod0)(uint64_t, RustBuffer, RustBuffer, RustBuffer, int64_t, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
@@ -1009,349 +1009,348 @@ void ffi_actr_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnul
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_ACTR_ERROR_IS_RETRYABLE
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_ACTR_ERROR_IS_RETRYABLE
 uint16_t uniffi_actr_checksum_func_actr_error_is_retryable(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_ACTR_ERROR_KIND
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_ACTR_ERROR_KIND
 uint16_t uniffi_actr_checksum_func_actr_error_kind(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_ACTR_ERROR_REQUIRES_DLQ
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_ACTR_ERROR_REQUIRES_DLQ
 uint16_t uniffi_actr_checksum_func_actr_error_requires_dlq(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_SET_LOG_CALLBACK
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_SET_LOG_CALLBACK
 uint16_t uniffi_actr_checksum_func_set_log_callback(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_RESOLVE_MANIFEST_DEPENDENCY
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_RESOLVE_MANIFEST_DEPENDENCY
 uint16_t uniffi_actr_checksum_func_resolve_manifest_dependency(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_RESOLVE_MANIFEST_DEPENDENCY_ALIAS_LIST
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_RESOLVE_MANIFEST_DEPENDENCY_ALIAS_LIST
 uint16_t uniffi_actr_checksum_func_resolve_manifest_dependency_alias_list(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_RESOLVE_MANIFEST_PACKAGE_ACTR_TYPE
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_RESOLVE_MANIFEST_PACKAGE_ACTR_TYPE
 uint16_t uniffi_actr_checksum_func_resolve_manifest_package_actr_type(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_ADD_MEDIA_TRACK
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_ADD_MEDIA_TRACK
 uint16_t uniffi_actr_checksum_method_contextbridge_add_media_track(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_CALL_RAW
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_CALL_RAW
 uint16_t uniffi_actr_checksum_method_contextbridge_call_raw(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_DISCOVER
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_DISCOVER
 uint16_t uniffi_actr_checksum_method_contextbridge_discover(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_REGISTER_MEDIA_TRACK
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_REGISTER_MEDIA_TRACK
 uint16_t uniffi_actr_checksum_method_contextbridge_register_media_track(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_REGISTER_STREAM
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_REGISTER_STREAM
 uint16_t uniffi_actr_checksum_method_contextbridge_register_stream(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_REMOVE_MEDIA_TRACK
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_REMOVE_MEDIA_TRACK
 uint16_t uniffi_actr_checksum_method_contextbridge_remove_media_track(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_SEND_DATA_STREAM
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_SEND_DATA_STREAM
 uint16_t uniffi_actr_checksum_method_contextbridge_send_data_stream(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_SEND_MEDIA_SAMPLE
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_SEND_MEDIA_SAMPLE
 uint16_t uniffi_actr_checksum_method_contextbridge_send_media_sample(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_TELL_RAW
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_TELL_RAW
 uint16_t uniffi_actr_checksum_method_contextbridge_tell_raw(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_UNREGISTER_MEDIA_TRACK
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_UNREGISTER_MEDIA_TRACK
 uint16_t uniffi_actr_checksum_method_contextbridge_unregister_media_track(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_UNREGISTER_STREAM
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_UNREGISTER_STREAM
 uint16_t uniffi_actr_checksum_method_contextbridge_unregister_stream(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_OPUSENCODER_ENCODE
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_OPUSENCODER_ENCODE
 uint16_t uniffi_actr_checksum_method_opusencoder_encode(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_OPUSENCODER_FRAME_SIZE
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_OPUSENCODER_FRAME_SIZE
 uint16_t uniffi_actr_checksum_method_opusencoder_frame_size(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRNODE_CREATE_NETWORK_EVENT_HANDLE
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRNODE_CREATE_NETWORK_EVENT_HANDLE
 uint16_t uniffi_actr_checksum_method_actrnode_create_network_event_handle(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRNODE_START
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRNODE_START
 uint16_t uniffi_actr_checksum_method_actrnode_start(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_ACTOR_ID
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_ACTOR_ID
 uint16_t uniffi_actr_checksum_method_actrrefwrapper_actor_id(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_CALL
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_CALL
 uint16_t uniffi_actr_checksum_method_actrrefwrapper_call(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_DISCOVER
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_DISCOVER
 uint16_t uniffi_actr_checksum_method_actrrefwrapper_discover(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_IS_SHUTTING_DOWN
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_IS_SHUTTING_DOWN
 uint16_t uniffi_actr_checksum_method_actrrefwrapper_is_shutting_down(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_SHUTDOWN
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_SHUTDOWN
 uint16_t uniffi_actr_checksum_method_actrrefwrapper_shutdown(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_TELL
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_TELL
 uint16_t uniffi_actr_checksum_method_actrrefwrapper_tell(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_WAIT_FOR_SHUTDOWN
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_WAIT_FOR_SHUTDOWN
 uint16_t uniffi_actr_checksum_method_actrrefwrapper_wait_for_shutdown(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_NETWORKEVENTHANDLEWRAPPER_CLEANUP_CONNECTIONS
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_NETWORKEVENTHANDLEWRAPPER_CLEANUP_CONNECTIONS
 uint16_t uniffi_actr_checksum_method_networkeventhandlewrapper_cleanup_connections(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_NETWORKEVENTHANDLEWRAPPER_FORCE_RECONNECT
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_NETWORKEVENTHANDLEWRAPPER_FORCE_RECONNECT
 uint16_t uniffi_actr_checksum_method_networkeventhandlewrapper_force_reconnect(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_NETWORKEVENTHANDLEWRAPPER_HANDLE_APP_LIFECYCLE_CHANGED
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_NETWORKEVENTHANDLEWRAPPER_HANDLE_APP_LIFECYCLE_CHANGED
 uint16_t uniffi_actr_checksum_method_networkeventhandlewrapper_handle_app_lifecycle_changed(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_NETWORKEVENTHANDLEWRAPPER_HANDLE_NETWORK_PATH_CHANGED
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_NETWORKEVENTHANDLEWRAPPER_HANDLE_NETWORK_PATH_CHANGED
 uint16_t uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_path_changed(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_OPUSENCODER_NEW
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_OPUSENCODER_NEW
 uint16_t uniffi_actr_checksum_constructor_opusencoder_new(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_ACTRNODE_NEW_FROM_LINKED_WORKLOAD
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_ACTRNODE_NEW_FROM_LINKED_WORKLOAD
 uint16_t uniffi_actr_checksum_constructor_actrnode_new_from_linked_workload(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_ACTRNODE_NEW_FROM_PACKAGE_FILE
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_ACTRNODE_NEW_FROM_PACKAGE_FILE
 uint16_t uniffi_actr_checksum_constructor_actrnode_new_from_package_file(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_DYNAMICWORKLOAD_NEW
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_DYNAMICWORKLOAD_NEW
 uint16_t uniffi_actr_checksum_constructor_dynamicworkload_new(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_DATASTREAMCALLBACK_ON_STREAM
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_DATASTREAMCALLBACK_ON_STREAM
 uint16_t uniffi_actr_checksum_method_datastreamcallback_on_stream(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_MEDIATRACKCALLBACK_ON_SAMPLE
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_MEDIATRACKCALLBACK_ON_SAMPLE
 uint16_t uniffi_actr_checksum_method_mediatrackcallback_on_sample(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_LOGCALLBACK_ON_LOG
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_LOGCALLBACK_ON_LOG
 uint16_t uniffi_actr_checksum_method_logcallback_on_log(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CREDENTIALOBSERVERBRIDGE_ON_RENEWED
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CREDENTIALOBSERVERBRIDGE_ON_RENEWED
 uint16_t uniffi_actr_checksum_method_credentialobserverbridge_on_renewed(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CREDENTIALOBSERVERBRIDGE_ON_EXPIRING
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CREDENTIALOBSERVERBRIDGE_ON_EXPIRING
 uint16_t uniffi_actr_checksum_method_credentialobserverbridge_on_expiring(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_MAILBOXOBSERVERBRIDGE_ON_BACKPRESSURE
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_MAILBOXOBSERVERBRIDGE_ON_BACKPRESSURE
 uint16_t uniffi_actr_checksum_method_mailboxobserverbridge_on_backpressure(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_SIGNALINGOBSERVERBRIDGE_ON_CONNECTING
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_SIGNALINGOBSERVERBRIDGE_ON_CONNECTING
 uint16_t uniffi_actr_checksum_method_signalingobserverbridge_on_connecting(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_SIGNALINGOBSERVERBRIDGE_ON_CONNECTED
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_SIGNALINGOBSERVERBRIDGE_ON_CONNECTED
 uint16_t uniffi_actr_checksum_method_signalingobserverbridge_on_connected(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_SIGNALINGOBSERVERBRIDGE_ON_DISCONNECTED
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_SIGNALINGOBSERVERBRIDGE_ON_DISCONNECTED
 uint16_t uniffi_actr_checksum_method_signalingobserverbridge_on_disconnected(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WEBRTCOBSERVERBRIDGE_ON_CONNECTING
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WEBRTCOBSERVERBRIDGE_ON_CONNECTING
 uint16_t uniffi_actr_checksum_method_webrtcobserverbridge_on_connecting(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WEBRTCOBSERVERBRIDGE_ON_CONNECTED
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WEBRTCOBSERVERBRIDGE_ON_CONNECTED
 uint16_t uniffi_actr_checksum_method_webrtcobserverbridge_on_connected(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WEBRTCOBSERVERBRIDGE_ON_DISCONNECTED
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WEBRTCOBSERVERBRIDGE_ON_DISCONNECTED
 uint16_t uniffi_actr_checksum_method_webrtcobserverbridge_on_disconnected(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WEBSOCKETOBSERVERBRIDGE_ON_CONNECTING
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WEBSOCKETOBSERVERBRIDGE_ON_CONNECTING
 uint16_t uniffi_actr_checksum_method_websocketobserverbridge_on_connecting(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WEBSOCKETOBSERVERBRIDGE_ON_CONNECTED
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WEBSOCKETOBSERVERBRIDGE_ON_CONNECTED
 uint16_t uniffi_actr_checksum_method_websocketobserverbridge_on_connected(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WEBSOCKETOBSERVERBRIDGE_ON_DISCONNECTED
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WEBSOCKETOBSERVERBRIDGE_ON_DISCONNECTED
 uint16_t uniffi_actr_checksum_method_websocketobserverbridge_on_disconnected(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WORKLOADLIFECYCLEBRIDGE_ON_START
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WORKLOADLIFECYCLEBRIDGE_ON_START
 uint16_t uniffi_actr_checksum_method_workloadlifecyclebridge_on_start(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WORKLOADLIFECYCLEBRIDGE_ON_READY
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WORKLOADLIFECYCLEBRIDGE_ON_READY
 uint16_t uniffi_actr_checksum_method_workloadlifecyclebridge_on_ready(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WORKLOADLIFECYCLEBRIDGE_ON_STOP
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WORKLOADLIFECYCLEBRIDGE_ON_STOP
 uint16_t uniffi_actr_checksum_method_workloadlifecyclebridge_on_stop(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WORKLOADLIFECYCLEBRIDGE_ON_ERROR
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WORKLOADLIFECYCLEBRIDGE_ON_ERROR
 uint16_t uniffi_actr_checksum_method_workloadlifecyclebridge_on_error(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WORKLOADLIFECYCLEBRIDGE_DISPATCH
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_WORKLOADLIFECYCLEBRIDGE_DISPATCH
 uint16_t uniffi_actr_checksum_method_workloadlifecyclebridge_dispatch(void
-    
+
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_ACTR_UNIFFI_CONTRACT_VERSION
 #define UNIFFI_FFIDEF_FFI_ACTR_UNIFFI_CONTRACT_VERSION
 uint32_t ffi_actr_uniffi_contract_version(void
-    
+
 );
 #endif
-

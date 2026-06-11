@@ -356,11 +356,22 @@ impl PeerTransport {
         payload_type: PayloadType,
         data: &[u8],
     ) -> NetworkResult<()> {
+        self.send_with_identity(dest, payload_type, data)
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) async fn send_with_identity(
+        &self,
+        dest: &Dest,
+        payload_type: PayloadType,
+        data: &[u8],
+    ) -> NetworkResult<Option<super::wire_handle::WireIdentity>> {
         // Get or create DestTransport for this Dest
         let transport = self.get_or_create_transport(dest).await?;
 
         // Send through DestTransport
-        transport.send(payload_type, data).await
+        transport.send_with_identity(payload_type, data).await
     }
 
     /// Close DestTransport for specified Dest

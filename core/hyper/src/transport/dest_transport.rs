@@ -46,7 +46,7 @@ impl DestTransport {
         Ok(Self { conn_mgr })
     }
 
-    /// Send message
+    /// Send message and return the wire identity that accepted the payload.
     ///
     /// Core design: event-driven waiting
     /// - If connection available, send immediately
@@ -60,7 +60,11 @@ impl DestTransport {
         feature = "opentelemetry",
         tracing::instrument(skip_all, name = "DestTransport.send")
     )]
-    pub(crate) async fn send(&self, payload_type: PayloadType, data: &[u8]) -> NetworkResult<()> {
+    pub(crate) async fn send_with_identity(
+        &self,
+        payload_type: PayloadType,
+        data: &[u8],
+    ) -> NetworkResult<Option<WireIdentity>> {
         tracing::debug!(
             "📤 Sending message: type={:?}, size={}",
             payload_type,
@@ -105,6 +109,8 @@ impl DestTransport {
 
                 // Get connection and create/get Lane
                 if let Some(conn) = self.conn_mgr.get_connection(conn_type).await {
+                    let wire_identity = conn.identity();
+
                     // Use original payload_type to create DataLane
                     match conn.get_lane(payload_type).await {
                         Ok(lane) => {
@@ -127,12 +133,12 @@ impl DestTransport {
                                     );
                                     conn.invalidate_lane(payload_type).await;
                                     if let Ok(new_lane) = conn.get_lane(payload_type).await {
-                                        return new_lane.send(payload).await;
+                                        return new_lane.send(payload).await.map(|_| wire_identity);
                                     }
                                 }
                             }
 
-                            return result;
+                            return result.map(|_| wire_identity);
                         }
                         Err(e) => {
                             let is_closed_like =
@@ -487,7 +493,7 @@ mod tests {
 
         let err = timeout(
             Duration::from_secs(1),
-            transport.send(PayloadType::StreamReliable, b"payload"),
+            transport.send_with_identity(PayloadType::StreamReliable, b"payload"),
         )
         .await
         .expect("send should not hang")
@@ -512,7 +518,7 @@ mod tests {
 
         timeout(
             Duration::from_secs(1),
-            transport.send(PayloadType::StreamReliable, b"payload"),
+            transport.send_with_identity(PayloadType::StreamReliable, b"payload"),
         )
         .await
         .expect("send should not hang")
@@ -536,7 +542,7 @@ mod tests {
 
         let err = timeout(
             Duration::from_secs(1),
-            transport.send(PayloadType::StreamReliable, b"payload"),
+            transport.send_with_identity(PayloadType::StreamReliable, b"payload"),
         )
         .await
         .expect("send should not hang")

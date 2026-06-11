@@ -23,6 +23,7 @@ use actr_hyper::outbound::PeerGate;
 use actr_hyper::test_support::{TestDedupOutcome, TestDedupState, make_actor_id};
 use actr_hyper::transport::{
     ConnType, DataLane, Dest, NetworkError, NetworkResult, PeerTransport, WireBuilder, WireHandle,
+    WireIdentity,
 };
 use actr_protocol::prost::Message;
 
@@ -206,6 +207,7 @@ impl DataLane for ScriptedLane {
 struct StaticWire {
     lane: Arc<ScriptedLane>,
     connect_calls: AtomicUsize,
+    identity: Option<WireIdentity>,
 }
 
 impl StaticWire {
@@ -213,7 +215,13 @@ impl StaticWire {
         Self {
             lane,
             connect_calls: AtomicUsize::new(0),
+            identity: None,
         }
+    }
+
+    fn with_identity(mut self, identity: WireIdentity) -> Self {
+        self.identity = Some(identity);
+        self
     }
 }
 
@@ -249,6 +257,10 @@ impl WireHandle for StaticWire {
     async fn get_lane(&self, _payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
         Ok(self.lane.clone())
     }
+
+    fn identity(&self) -> Option<WireIdentity> {
+        self.identity.clone()
+    }
 }
 
 struct ScriptedWireBuilder {
@@ -267,6 +279,28 @@ impl WireBuilder for ScriptedWireBuilder {
         self.stats.end_create();
 
         let wire: Arc<dyn WireHandle> = self.wire.clone();
+        Ok(vec![wire])
+    }
+}
+
+struct SequencedIdentityWireBuilder {
+    lane: Arc<ScriptedLane>,
+    stats: Arc<BuilderStats>,
+    target: ActrId,
+}
+
+#[async_trait]
+impl WireBuilder for SequencedIdentityWireBuilder {
+    async fn create_connections(&self, _dest: &Dest) -> NetworkResult<Vec<Arc<dyn WireHandle>>> {
+        self.stats.begin_create();
+        let session_id = self.stats.create_calls.load(Ordering::SeqCst) as u64;
+        self.stats.end_create();
+
+        let wire = StaticWire::new(self.lane.clone()).with_identity(WireIdentity::WebRtc {
+            peer_id: self.target.clone(),
+            session_id,
+        });
+        let wire: Arc<dyn WireHandle> = Arc::new(wire);
         Ok(vec![wire])
     }
 }
@@ -1449,6 +1483,141 @@ async fn cleanup_during_inflight_rpc_is_bounded_and_next_rpc_is_clean() {
         gate.pending_count().await,
         0,
         "successful post-cleanup RPC should leave no pending state"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn request_timeout_does_not_close_replaced_webrtc_session() {
+    let target = make_actor_id(2);
+    let dest = Dest::actor(target.clone());
+    let lane = Arc::new(ScriptedLane::new(vec![Ok(()), Ok(()), Ok(())]));
+    let stats = Arc::new(BuilderStats::default());
+    let builder = Arc::new(SequencedIdentityWireBuilder {
+        lane: lane.clone(),
+        stats: stats.clone(),
+        target: target.clone(),
+    });
+    let transport = Arc::new(PeerTransport::new(make_actor_id(1), builder));
+    let gate = Arc::new(PeerGate::new(transport.clone(), None));
+
+    let stale_request = tokio::spawn({
+        let gate = gate.clone();
+        let target = target.clone();
+        async move {
+            gate.send_request(&target, envelope_with_timeout("stale-session-timeout", 150))
+                .await
+        }
+    });
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        if !lane.sent_payloads().is_empty() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "stale-session request was never sent"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    transport
+        .close_transport(&dest)
+        .await
+        .expect("test should replace the first WebRTC session");
+
+    let current_request = tokio::spawn({
+        let gate = gate.clone();
+        let target = target.clone();
+        async move {
+            gate.send_request(&target, envelope_with_timeout("current-session", 1_000))
+                .await
+        }
+    });
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        if lane.sent_payloads().len() >= 2 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "current-session request was never sent"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let err = tokio::time::timeout(Duration::from_secs(1), stale_request)
+        .await
+        .expect("stale-session request should time out promptly")
+        .expect("stale-session task should not panic")
+        .expect_err("stale-session request should time out");
+    assert!(
+        err.to_string().contains("Request timeout"),
+        "stale-session request should fail with timeout, got: {err}"
+    );
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        transport.dest_count().await,
+        1,
+        "timeout cleanup for session 1 must not close the replacement session"
+    );
+
+    assert!(
+        gate.handle_response("current-session", Ok(Bytes::from_static(b"current-ok")))
+            .await
+            .expect("current-session response injection should not fail"),
+        "current-session request should still be pending"
+    );
+    let current_response = tokio::time::timeout(Duration::from_secs(1), current_request)
+        .await
+        .expect("current-session request should complete")
+        .expect("current-session task should not panic")
+        .expect("current-session request should succeed");
+    assert_eq!(&current_response[..], b"current-ok");
+
+    let third_request = tokio::spawn({
+        let gate = gate.clone();
+        let target = target.clone();
+        async move {
+            gate.send_request(
+                &target,
+                envelope_with_timeout("same-session-after-timeout", 1_000),
+            )
+            .await
+        }
+    });
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        if gate
+            .handle_response(
+                "same-session-after-timeout",
+                Ok(Bytes::from_static(b"same-session-ok")),
+            )
+            .await
+            .expect("same-session response injection should not fail")
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "same-session-after-timeout request was never registered"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let third_response = tokio::time::timeout(Duration::from_secs(1), third_request)
+        .await
+        .expect("same-session request should complete")
+        .expect("same-session task should not panic")
+        .expect("same-session request should succeed");
+    assert_eq!(&third_response[..], b"same-session-ok");
+    assert_eq!(
+        stats.create_calls.load(Ordering::SeqCst),
+        2,
+        "replacement session should be reused after stale timeout cleanup is skipped"
     );
 }
 

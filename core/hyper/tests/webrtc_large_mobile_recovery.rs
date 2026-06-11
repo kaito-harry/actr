@@ -11,7 +11,7 @@ use actr_hyper::lifecycle::{
 use actr_hyper::outbound::PeerGate;
 use actr_hyper::test_support::{
     TestHarness, WebRtcFragmentSendEvent, WebRtcFragmentSendHook,
-    install_webrtc_fragment_send_hook_for_test, spawn_response_receiver,
+    install_webrtc_fragment_send_hook_for_test,
 };
 use actr_hyper::transport::{ConnectionEvent, ConnectionState};
 use actr_hyper::wire::webrtc::{HookCallback, HookEvent, WebRtcCoordinator};
@@ -31,6 +31,30 @@ struct RoleCase {
     name: &'static str,
     mobile_serial: u64,
     server_serial: u64,
+}
+
+#[derive(Clone, Copy)]
+struct DirectionCase {
+    name: &'static str,
+    from_serial: u64,
+    to_serial: u64,
+}
+
+impl RoleCase {
+    fn directions(self) -> [DirectionCase; 2] {
+        [
+            DirectionCase {
+                name: "mobile_to_server",
+                from_serial: self.mobile_serial,
+                to_serial: self.server_serial,
+            },
+            DirectionCase {
+                name: "server_to_mobile",
+                from_serial: self.server_serial,
+                to_serial: self.mobile_serial,
+            },
+        ]
+    }
 }
 
 const ROLE_CASES: [RoleCase; 2] = [
@@ -108,7 +132,7 @@ fn offline_event(sequence: u64) -> NetworkEvent {
     network_event(sequence, false, false, false)
 }
 
-fn spawn_data_echo_responder(
+fn spawn_rpc_router(
     coordinator: Arc<WebRtcCoordinator>,
     gate: Arc<PeerGate>,
     name: &str,
@@ -126,18 +150,43 @@ fn spawn_data_echo_responder(
                         }
                     };
 
-                    let request = match RpcEnvelope::decode(message_data.as_ref()) {
-                        Ok(request) => request,
+                    let envelope = match RpcEnvelope::decode(message_data.as_ref()) {
+                        Ok(envelope) => envelope,
                         Err(e) => {
                             tracing::error!("{} failed to decode RpcEnvelope: {}", name, e);
                             continue;
                         }
                     };
 
+                    if envelope.route_key == "response" {
+                        let result = if let Some(error) = envelope.error {
+                            Err(actr_protocol::ActrError::Unavailable(format!(
+                                "RPC error {}: {}",
+                                error.code, error.message
+                            )))
+                        } else if let Some(payload) = envelope.payload {
+                            Ok(payload)
+                        } else {
+                            Err(actr_protocol::ActrError::DecodeFailure(
+                                "Invalid response: no payload or error".to_string(),
+                            ))
+                        };
+
+                        if let Err(e) = gate.handle_response(&envelope.request_id, result).await {
+                            tracing::error!(
+                                "{} failed to handle response {}: {}",
+                                name,
+                                envelope.request_id,
+                                e
+                            );
+                        }
+                        continue;
+                    }
+
                     let response = RpcEnvelope {
-                        request_id: request.request_id.clone(),
+                        request_id: envelope.request_id.clone(),
                         route_key: "response".to_string(),
-                        payload: request.payload.clone(),
+                        payload: envelope.payload.clone(),
                         timeout_ms: 0,
                         ..Default::default()
                     };
@@ -146,7 +195,7 @@ fn spawn_data_echo_responder(
                         tracing::error!(
                             "{} failed to send echo response for {}: {}",
                             name,
-                            request.request_id,
+                            envelope.request_id,
                             e
                         );
                     }
@@ -175,15 +224,15 @@ async fn setup_mobile_to_server_with_serials(
 
     let bg_tasks = BackgroundTasks {
         handles: vec![
-            spawn_data_echo_responder(
-                harness.peer(server_serial).coordinator.clone(),
-                harness.peer(server_serial).gate.clone(),
-                "server_data_echo",
-            ),
-            spawn_response_receiver(
+            spawn_rpc_router(
                 harness.peer(mobile_serial).coordinator.clone(),
                 harness.peer(mobile_serial).gate.clone(),
-                "mobile_response_receiver",
+                "mobile_rpc_router",
+            ),
+            spawn_rpc_router(
+                harness.peer(server_serial).coordinator.clone(),
+                harness.peer(server_serial).gate.clone(),
+                "server_rpc_router",
             ),
         ],
     };
@@ -274,38 +323,18 @@ fn assert_payload_integrity(label: &str, response: &Bytes, data: &[u8], expected
     );
 }
 
-async fn expect_large_request_ok(
-    harness: &TestHarness,
-    case: RoleCase,
-    request_id: &str,
-    data: &[u8],
-    expected_hash: &[u8; 32],
-    timeout: Duration,
-) {
-    expect_large_request_ok_between(
-        harness,
-        case.mobile_serial,
-        case.server_serial,
-        request_id,
-        data,
-        expected_hash,
-        timeout,
-    )
-    .await;
-}
-
 async fn expect_large_request_ok_between(
     harness: &TestHarness,
-    mobile_serial: u64,
-    server_serial: u64,
+    from_serial: u64,
+    to_serial: u64,
     request_id: &str,
     data: &[u8],
     expected_hash: &[u8; 32],
     timeout: Duration,
 ) {
     let handle = spawn_large_request(
-        harness.peer(mobile_serial).gate.clone(),
-        harness.peer(server_serial).id.clone(),
+        harness.peer(from_serial).gate.clone(),
+        harness.peer(to_serial).id.clone(),
         request_id,
         data.to_vec(),
         timeout.as_millis() as i64,
@@ -319,37 +348,17 @@ async fn expect_large_request_ok_between(
 
     assert_payload_integrity(request_id, &response, data, expected_hash);
     assert_eq!(
-        harness.peer(mobile_serial).pending_count().await,
+        harness.peer(from_serial).pending_count().await,
         0,
         "{} should leave no pending request",
         request_id
     );
 }
 
-async fn expect_large_request_eventually_ok(
-    harness: &TestHarness,
-    case: RoleCase,
-    request_id: &str,
-    data: &[u8],
-    expected_hash: &[u8; 32],
-    deadline: Duration,
-) {
-    expect_large_request_eventually_ok_between(
-        harness,
-        case.mobile_serial,
-        case.server_serial,
-        request_id,
-        data,
-        expected_hash,
-        deadline,
-    )
-    .await;
-}
-
 async fn expect_large_request_eventually_ok_between(
     harness: &TestHarness,
-    mobile_serial: u64,
-    server_serial: u64,
+    from_serial: u64,
+    to_serial: u64,
     request_id: &str,
     data: &[u8],
     expected_hash: &[u8; 32],
@@ -362,8 +371,8 @@ async fn expect_large_request_eventually_ok_between(
         attempt += 1;
         let attempt_id = format!("{request_id}_{attempt}");
         let handle = spawn_large_request(
-            harness.peer(mobile_serial).gate.clone(),
-            harness.peer(server_serial).id.clone(),
+            harness.peer(from_serial).gate.clone(),
+            harness.peer(to_serial).id.clone(),
             &attempt_id,
             data.to_vec(),
             5_000,
@@ -373,7 +382,7 @@ async fn expect_large_request_eventually_ok_between(
             Ok(Ok(Ok(response))) => {
                 assert_payload_integrity(&attempt_id, &response, data, expected_hash);
                 assert_eq!(
-                    harness.peer(mobile_serial).pending_count().await,
+                    harness.peer(from_serial).pending_count().await,
                     0,
                     "{} should leave no pending request",
                     request_id
@@ -398,6 +407,14 @@ async fn expect_large_request_eventually_ok_between(
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+async fn assert_pending_empty(harness: &TestHarness, serial: u64, label: &str) {
+    assert_eq!(
+        harness.peer(serial).pending_count().await,
+        0,
+        "{label} should leave no pending request state"
+    );
 }
 
 fn is_expected_bounded_transport_failure(message: &str) -> bool {
@@ -609,440 +626,381 @@ async fn submit_mobile_event(
 }
 
 async fn inflight_short_offline_recovers_original_request(case: RoleCase) {
-    let (harness, _bg_tasks) =
-        setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
-    let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
-    let request_id = format!("{}_inflight_short_offline", case.name);
+    for direction in case.directions() {
+        let (harness, _bg_tasks) =
+            setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
+        let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
+        let request_id = format!("{}_{}_inflight_short_offline", case.name, direction.name);
 
-    let (hook_guard, event_rx, release_send) = pause_next_multifragment_send_after(1);
-    let request = spawn_large_request(
-        harness.peer(case.mobile_serial).gate.clone(),
-        harness.peer(case.server_serial).id.clone(),
-        &request_id,
-        data.clone(),
-        30_000,
-    );
+        let (hook_guard, event_rx, release_send) = pause_next_multifragment_send_after(1);
+        let request = spawn_large_request(
+            harness.peer(direction.from_serial).gate.clone(),
+            harness.peer(direction.to_serial).id.clone(),
+            &request_id,
+            data.clone(),
+            30_000,
+        );
 
-    let event = wait_for_send_to_pause(event_rx, &request_id).await;
-    tracing::info!(
-        "short offline paused msg_id={} fragment {}/{}",
-        event.msg_id,
-        event.frag_index + 1,
-        event.total_frags
-    );
+        let event = wait_for_send_to_pause(event_rx, &request_id).await;
+        tracing::info!(
+            "{} short offline paused msg_id={} fragment {}/{}",
+            direction.name,
+            event.msg_id,
+            event.frag_index + 1,
+            event.total_frags
+        );
 
-    harness.simulate_disconnect();
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    harness.simulate_reconnect();
-    release_send.notify_waiters();
-    drop(hook_guard);
+        harness.simulate_disconnect();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        harness.simulate_reconnect();
+        release_send.notify_waiters();
+        drop(hook_guard);
 
-    let response = tokio::time::timeout(Duration::from_secs(30), request)
-        .await
-        .expect("short offline request hung")
-        .expect("short offline request task panicked")
-        .expect("short offline request should recover");
+        let response = tokio::time::timeout(Duration::from_secs(30), request)
+            .await
+            .expect("short offline request hung")
+            .expect("short offline request task panicked")
+            .expect("short offline request should recover");
 
-    assert_payload_integrity(&request_id, &response, &data, &hash);
-    assert_eq!(harness.peer(case.mobile_serial).pending_count().await, 0);
+        assert_payload_integrity(&request_id, &response, &data, &hash);
+        assert_pending_empty(&harness, direction.from_serial, &request_id).await;
+    }
 }
 
 async fn inflight_network_type_switch_recovers_original_request(case: RoleCase) {
-    let (harness, _bg_tasks) =
-        setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
-    let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
-    let request_id = format!("{}_inflight_network_type_switch", case.name);
+    for direction in case.directions() {
+        let (harness, _bg_tasks) =
+            setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
+        let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
+        let request_id = format!(
+            "{}_{}_inflight_network_type_switch",
+            case.name, direction.name
+        );
 
-    let (hook_guard, event_rx, release_send) = pause_next_multifragment_send_after(1);
-    let request = spawn_large_request(
-        harness.peer(case.mobile_serial).gate.clone(),
-        harness.peer(case.server_serial).id.clone(),
-        &request_id,
-        data.clone(),
-        30_000,
-    );
+        let (hook_guard, event_rx, release_send) = pause_next_multifragment_send_after(1);
+        let request = spawn_large_request(
+            harness.peer(direction.from_serial).gate.clone(),
+            harness.peer(direction.to_serial).id.clone(),
+            &request_id,
+            data.clone(),
+            30_000,
+        );
 
-    let event = wait_for_send_to_pause(event_rx, &request_id).await;
-    tracing::info!(
-        "network type switch paused msg_id={} fragment {}/{}",
-        event.msg_id,
-        event.frag_index + 1,
-        event.total_frags
-    );
+        let event = wait_for_send_to_pause(event_rx, &request_id).await;
+        tracing::info!(
+            "{} network type switch paused msg_id={} fragment {}/{}",
+            direction.name,
+            event.msg_id,
+            event.frag_index + 1,
+            event.total_frags
+        );
 
-    let events = vec![cellular_event(1)];
-    assert_eq!(
-        select_network_recovery_action(&events),
-        NetworkRecoveryAction::Restore
-    );
-    process_mobile_events(&harness, case, events).await;
+        let events = vec![cellular_event(1)];
+        assert_eq!(
+            select_network_recovery_action(&events),
+            NetworkRecoveryAction::Restore
+        );
+        process_mobile_events(&harness, case, events).await;
 
-    release_send.notify_waiters();
-    drop(hook_guard);
+        release_send.notify_waiters();
+        drop(hook_guard);
 
-    let response = tokio::time::timeout(Duration::from_secs(30), request)
-        .await
-        .expect("network type switch request hung")
-        .expect("network type switch request task panicked")
-        .expect("network type switch request should recover");
+        let response = tokio::time::timeout(Duration::from_secs(30), request)
+            .await
+            .expect("network type switch request hung")
+            .expect("network type switch request task panicked")
+            .expect("network type switch request should recover");
 
-    assert_payload_integrity(&request_id, &response, &data, &hash);
-    assert_eq!(harness.peer(case.mobile_serial).pending_count().await, 0);
+        assert_payload_integrity(&request_id, &response, &data, &hash);
+        assert_pending_empty(&harness, direction.from_serial, &request_id).await;
+    }
 }
 
 async fn inflight_long_offline_fails_bounded_then_retries(case: RoleCase) {
-    let (harness, _bg_tasks) =
-        setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
-    let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
-    let request_id = format!("{}_inflight_long_offline", case.name);
-    let retry_id = format!("{}_long_offline_retry", case.name);
+    for direction in case.directions() {
+        let (harness, _bg_tasks) =
+            setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
+        let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
+        let request_id = format!("{}_{}_inflight_long_offline", case.name, direction.name);
+        let retry_id = format!("{}_{}_long_offline_retry", case.name, direction.name);
 
-    let (hook_guard, event_rx, _release_send) = pause_next_multifragment_send_after(1);
-    let request = spawn_large_request(
-        harness.peer(case.mobile_serial).gate.clone(),
-        harness.peer(case.server_serial).id.clone(),
-        &request_id,
-        data.clone(),
-        2_000,
-    );
+        let (hook_guard, event_rx, release_send) = pause_next_multifragment_send_after(1);
+        let request = spawn_large_request(
+            harness.peer(direction.from_serial).gate.clone(),
+            harness.peer(direction.to_serial).id.clone(),
+            &request_id,
+            data.clone(),
+            2_000,
+        );
 
-    let event = wait_for_send_to_pause(event_rx, &request_id).await;
-    tracing::info!(
-        "long offline paused msg_id={} fragment {}/{}",
-        event.msg_id,
-        event.frag_index + 1,
-        event.total_frags
-    );
+        let event = wait_for_send_to_pause(event_rx, &request_id).await;
+        tracing::info!(
+            "{} long offline paused msg_id={} fragment {}/{}",
+            direction.name,
+            event.msg_id,
+            event.frag_index + 1,
+            event.total_frags
+        );
 
-    harness.simulate_disconnect();
-    process_mobile_events(&harness, case, vec![offline_event(1)]).await;
+        harness.simulate_disconnect();
+        process_mobile_events(&harness, case, vec![offline_event(1)]).await;
 
-    let err = expect_bounded_failure(request, &request_id, Duration::from_secs(5)).await;
-    assert!(
-        err.contains("Request timeout"),
-        "long offline should time out the in-flight request, got: {err}"
-    );
-    assert_eq!(harness.peer(case.mobile_serial).pending_count().await, 0);
-    drop(hook_guard);
+        let err = expect_bounded_failure(request, &request_id, Duration::from_secs(5)).await;
+        assert!(
+            err.contains("Request timeout"),
+            "long offline should time out the in-flight request, got: {err}"
+        );
+        assert_pending_empty(&harness, direction.from_serial, &request_id).await;
+        drop(hook_guard);
 
-    harness.simulate_reconnect();
-    process_mobile_events(
-        &harness,
-        case,
-        vec![network_event(2, true, false, false), cellular_event(3)],
-    )
-    .await;
+        harness.simulate_reconnect();
+        let events = vec![
+            NetworkEvent::ForceReconnect {
+                reason: ReconnectReason::StaleConnectionSuspected,
+            },
+            network_event(2, true, false, false),
+            cellular_event(3),
+        ];
+        assert_eq!(
+            select_network_recovery_action(&events),
+            NetworkRecoveryAction::ForceReconnect
+        );
+        process_mobile_events(&harness, case, events).await;
 
-    expect_large_request_eventually_ok(
-        &harness,
-        case,
-        &retry_id,
-        &data,
-        &hash,
-        Duration::from_secs(25),
-    )
-    .await;
+        expect_large_request_eventually_ok_between(
+            &harness,
+            direction.from_serial,
+            direction.to_serial,
+            &retry_id,
+            &data,
+            &hash,
+            Duration::from_secs(25),
+        )
+        .await;
+        drop(release_send);
+    }
 }
 
 async fn inflight_short_background_survives_foreground_restore(case: RoleCase) {
-    let (harness, _bg_tasks) =
-        setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
-    let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
-    let request_id = format!("{}_inflight_short_background", case.name);
-    let retry_id = format!("{}_short_background_retry", case.name);
+    for direction in case.directions() {
+        let (harness, _bg_tasks) =
+            setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
+        let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
+        let request_id = format!("{}_{}_inflight_short_background", case.name, direction.name);
+        let retry_id = format!("{}_{}_short_background_retry", case.name, direction.name);
 
-    let (hook_guard, event_rx, release_send) = pause_next_multifragment_send_after(1);
-    let request = spawn_large_request(
-        harness.peer(case.mobile_serial).gate.clone(),
-        harness.peer(case.server_serial).id.clone(),
-        &request_id,
-        data.clone(),
-        5_000,
-    );
+        let (hook_guard, event_rx, release_send) = pause_next_multifragment_send_after(1);
+        let request = spawn_large_request(
+            harness.peer(direction.from_serial).gate.clone(),
+            harness.peer(direction.to_serial).id.clone(),
+            &request_id,
+            data.clone(),
+            5_000,
+        );
 
-    let event = wait_for_send_to_pause(event_rx, &request_id).await;
-    tracing::info!(
-        "short background paused msg_id={} fragment {}/{}",
-        event.msg_id,
-        event.frag_index + 1,
-        event.total_frags
-    );
+        let event = wait_for_send_to_pause(event_rx, &request_id).await;
+        tracing::info!(
+            "{} short background paused msg_id={} fragment {}/{}",
+            direction.name,
+            event.msg_id,
+            event.frag_index + 1,
+            event.total_frags
+        );
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let events = vec![network_event(1, true, false, false), wifi_event(2)];
-    assert_eq!(
-        select_network_recovery_action(&events),
-        NetworkRecoveryAction::Restore
-    );
-    process_mobile_events(&harness, case, events).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let events = vec![network_event(1, true, false, false), wifi_event(2)];
+        assert_eq!(
+            select_network_recovery_action(&events),
+            NetworkRecoveryAction::Restore
+        );
+        process_mobile_events(&harness, case, events).await;
 
-    release_send.notify_waiters();
-    drop(hook_guard);
+        release_send.notify_waiters();
+        drop(hook_guard);
 
-    // The original request may fail if the echo response hits the recovery guard
-    // (the guard clears in ~200ms but the response may already be dropped).
-    // Accept either success or a bounded transport failure.
-    expect_bounded_completion(request, &request_id, &data, &hash, Duration::from_secs(8)).await;
-    assert_eq!(harness.peer(case.mobile_serial).pending_count().await, 0);
+        expect_bounded_completion(request, &request_id, &data, &hash, Duration::from_secs(8)).await;
+        assert_pending_empty(&harness, direction.from_serial, &request_id).await;
 
-    // If the original request failed, the caller retries until the recovery
-    // guard clears. Fresh requests remain intentionally fail-fast.
-    expect_large_request_eventually_ok(
-        &harness,
-        case,
-        &retry_id,
-        &data,
-        &hash,
-        Duration::from_secs(30),
-    )
-    .await;
+        // If the original request failed, the caller retries until the recovery
+        // guard clears. Fresh requests remain intentionally fail-fast.
+        expect_large_request_eventually_ok_between(
+            &harness,
+            direction.from_serial,
+            direction.to_serial,
+            &retry_id,
+            &data,
+            &hash,
+            Duration::from_secs(30),
+        )
+        .await;
+    }
 }
 
 async fn inflight_long_background_is_bounded_and_retries(case: RoleCase) {
-    let (harness, _bg_tasks) =
-        setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
-    let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
-    let request_id = format!("{}_inflight_long_background", case.name);
-    let retry_id = format!("{}_long_background_retry", case.name);
+    for direction in case.directions() {
+        let (harness, _bg_tasks) =
+            setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
+        let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
+        let request_id = format!("{}_{}_inflight_long_background", case.name, direction.name);
+        let retry_id = format!("{}_{}_long_background_retry", case.name, direction.name);
 
-    let (hook_guard, event_rx, release_send) = pause_next_multifragment_send_after(1);
-    let request = spawn_large_request(
-        harness.peer(case.mobile_serial).gate.clone(),
-        harness.peer(case.server_serial).id.clone(),
-        &request_id,
-        data.clone(),
-        8_000,
-    );
+        let (hook_guard, event_rx, release_send) = pause_next_multifragment_send_after(1);
+        let request = spawn_large_request(
+            harness.peer(direction.from_serial).gate.clone(),
+            harness.peer(direction.to_serial).id.clone(),
+            &request_id,
+            data.clone(),
+            8_000,
+        );
 
-    let event = wait_for_send_to_pause(event_rx, &request_id).await;
-    tracing::info!(
-        "long background paused msg_id={} fragment {}/{}",
-        event.msg_id,
-        event.frag_index + 1,
-        event.total_frags
-    );
+        let event = wait_for_send_to_pause(event_rx, &request_id).await;
+        tracing::info!(
+            "{} long background paused msg_id={} fragment {}/{}",
+            direction.name,
+            event.msg_id,
+            event.frag_index + 1,
+            event.total_frags
+        );
 
-    let events = vec![
-        NetworkEvent::ForceReconnect {
-            reason: ReconnectReason::LongBackground,
-        },
-        network_event(1, true, false, false),
-        wifi_event(2),
-    ];
-    assert_eq!(
-        select_network_recovery_action(&events),
-        NetworkRecoveryAction::ForceReconnect
-    );
-    process_mobile_events(&harness, case, events).await;
+        let events = vec![
+            NetworkEvent::ForceReconnect {
+                reason: ReconnectReason::LongBackground,
+            },
+            network_event(1, true, false, false),
+            wifi_event(2),
+        ];
+        assert_eq!(
+            select_network_recovery_action(&events),
+            NetworkRecoveryAction::ForceReconnect
+        );
+        process_mobile_events(&harness, case, events).await;
 
-    release_send.notify_waiters();
-    drop(hook_guard);
+        release_send.notify_waiters();
+        drop(hook_guard);
 
-    expect_bounded_completion(request, &request_id, &data, &hash, Duration::from_secs(12)).await;
-    assert_eq!(harness.peer(case.mobile_serial).pending_count().await, 0);
+        expect_bounded_completion(request, &request_id, &data, &hash, Duration::from_secs(12))
+            .await;
+        assert_pending_empty(&harness, direction.from_serial, &request_id).await;
 
-    expect_large_request_eventually_ok(
-        &harness,
-        case,
-        &retry_id,
-        &data,
-        &hash,
-        Duration::from_secs(25),
-    )
-    .await;
+        expect_large_request_eventually_ok_between(
+            &harness,
+            direction.from_serial,
+            direction.to_serial,
+            &retry_id,
+            &data,
+            &hash,
+            Duration::from_secs(25),
+        )
+        .await;
+    }
 }
 
 async fn mobile_large_message_baseline_after_recovery(case: RoleCase) {
-    let (harness, _bg_tasks) =
-        setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
-    let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
-    let request_id = format!("{}_mobile_large_baseline", case.name);
+    for direction in case.directions() {
+        let (harness, _bg_tasks) =
+            setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
+        let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
+        let request_id = format!("{}_{}_mobile_large_baseline", case.name, direction.name);
 
-    expect_large_request_ok(
-        &harness,
-        case,
-        &request_id,
-        &data,
-        &hash,
-        Duration::from_secs(30),
-    )
-    .await;
+        expect_large_request_ok_between(
+            &harness,
+            direction.from_serial,
+            direction.to_serial,
+            &request_id,
+            &data,
+            &hash,
+            Duration::from_secs(30),
+        )
+        .await;
+    }
 }
 
 async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook(case: RoleCase) {
-    let (harness, _bg_tasks) =
-        setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
-    let server_id = harness.peer(case.server_serial).id.clone();
+    for direction in case.directions() {
+        let (harness, _bg_tasks) =
+            setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
+        let target_id = harness.peer(direction.to_serial).id.clone();
 
-    let (hook_tx, mut hook_rx) = mpsc::unbounded_channel::<HookEvent>();
-    let hook: HookCallback = Arc::new(move |event| {
-        let hook_tx = hook_tx.clone();
-        Box::pin(async move {
-            let _ = hook_tx.send(event);
-        })
-    });
-    harness
-        .peer(case.mobile_serial)
-        .coordinator
-        .set_hook_callback(hook);
-
-    let stream = DataStream {
-        stream_id: format!("{}-mobile-large-data-stream", case.name),
-        sequence: 7,
-        payload: Bytes::from(vec![0x5a; LARGE_PAYLOAD_SIZE]),
-        metadata: Vec::new(),
-        timestamp_ms: Some(0),
-    };
-    let payload = Bytes::from(stream.encode_to_vec());
-
-    harness
-        .peer(case.mobile_serial)
-        .gate
-        .send_data_stream(
-            &server_id,
-            PayloadType::StreamReliable,
-            &stream.stream_id,
-            payload,
-        )
-        .await
-        .expect("mobile data stream send should reach transport");
-
-    let session_id = harness
-        .peer(case.mobile_serial)
-        .coordinator
-        .get_peer_session_id(&server_id)
-        .await
-        .expect("mobile should have an active WebRTC session to server");
-
-    for state in [ConnectionState::Disconnected, ConnectionState::Failed] {
+        let (hook_tx, mut hook_rx) = mpsc::unbounded_channel::<HookEvent>();
+        let hook: HookCallback = Arc::new(move |event| {
+            let hook_tx = hook_tx.clone();
+            Box::pin(async move {
+                let _ = hook_tx.send(event);
+            })
+        });
         harness
-            .peer(case.mobile_serial)
-            .send_event(ConnectionEvent::StateChanged {
-                peer_id: server_id.clone(),
+            .peer(direction.from_serial)
+            .coordinator
+            .set_hook_callback(hook);
+
+        let stream = DataStream {
+            stream_id: format!("{}-{}-large-data-stream", case.name, direction.name),
+            sequence: 7,
+            payload: Bytes::from(vec![0x5a; LARGE_PAYLOAD_SIZE]),
+            metadata: Vec::new(),
+            timestamp_ms: Some(0),
+        };
+        let payload = Bytes::from(stream.encode_to_vec());
+
+        harness
+            .peer(direction.from_serial)
+            .gate
+            .send_data_stream(
+                &target_id,
+                PayloadType::StreamReliable,
+                &stream.stream_id,
+                payload,
+            )
+            .await
+            .expect("data stream send should reach transport");
+
+        let session_id = harness
+            .peer(direction.from_serial)
+            .coordinator
+            .get_peer_session_id(&target_id)
+            .await
+            .expect("source should have an active WebRTC session to target");
+
+        for state in [ConnectionState::Disconnected, ConnectionState::Failed] {
+            harness
+                .peer(direction.from_serial)
+                .send_event(ConnectionEvent::StateChanged {
+                    peer_id: target_id.clone(),
+                    session_id,
+                    state,
+                });
+        }
+        harness
+            .peer(direction.from_serial)
+            .send_event(ConnectionEvent::IceRestartStarted {
+                peer_id: target_id.clone(),
                 session_id,
-                state,
             });
-    }
-    harness
-        .peer(case.mobile_serial)
-        .send_event(ConnectionEvent::IceRestartStarted {
-            peer_id: server_id.clone(),
-            session_id,
-        });
 
-    let nonterminal_event = tokio::time::timeout(Duration::from_millis(250), async {
-        loop {
-            if let Some(event) = hook_rx.recv().await {
-                if matches!(event, HookEvent::DataStreamDeliveryUncertain { .. }) {
-                    return event;
+        let nonterminal_event = tokio::time::timeout(Duration::from_millis(250), async {
+            loop {
+                if let Some(event) = hook_rx.recv().await {
+                    if matches!(event, HookEvent::DataStreamDeliveryUncertain { .. }) {
+                        return event;
+                    }
                 }
             }
-        }
-    })
-    .await;
-    assert!(
-        nonterminal_event.is_err(),
-        "non-terminal recovery state should not emit delivery uncertainty: {nonterminal_event:?}"
-    );
-
-    harness
-        .peer(case.mobile_serial)
-        .send_event(ConnectionEvent::DataChannelClosed {
-            peer_id: server_id.clone(),
-            session_id,
-            payload_type: PayloadType::StreamReliable,
-        });
-
-    let event = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if let Some(event) = hook_rx.recv().await {
-                if matches!(event, HookEvent::DataStreamDeliveryUncertain { .. }) {
-                    return event;
-                }
-            }
-        }
-    })
-    .await
-    .expect("data stream delivery uncertain hook was not emitted");
-
-    match event {
-        HookEvent::DataStreamDeliveryUncertain {
-            stream_id,
-            session_id: got_session_id,
-            reason,
-        } => {
-            assert_eq!(stream_id, stream.stream_id);
-            assert_eq!(got_session_id, session_id);
-            assert_eq!(reason, "data channel closed");
-        }
-        other => panic!("unexpected hook event: {other:?}"),
-    }
-}
-
-async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain(case: RoleCase) {
-    let (harness, _bg_tasks) =
-        setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
-    let server_id = harness.peer(case.server_serial).id.clone();
-
-    let (hook_tx, mut hook_rx) = mpsc::unbounded_channel::<HookEvent>();
-    let hook: HookCallback = Arc::new(move |event| {
-        let hook_tx = hook_tx.clone();
-        Box::pin(async move {
-            let _ = hook_tx.send(event);
         })
-    });
-    harness
-        .peer(case.mobile_serial)
-        .coordinator
-        .set_hook_callback(hook);
-
-    let stream = DataStream {
-        stream_id: format!("{}-inflight-long-offline-stream", case.name),
-        sequence: 11,
-        payload: Bytes::from(vec![0x33; LARGE_PAYLOAD_SIZE]),
-        metadata: Vec::new(),
-        timestamp_ms: Some(0),
-    };
-    let payload = Bytes::from(stream.encode_to_vec());
-
-    let (hook_guard, event_rx, release_send) = pause_next_multifragment_send_after(1);
-    let send_task = {
-        let gate = harness.peer(case.mobile_serial).gate.clone();
-        let server_id = server_id.clone();
-        let stream_id = stream.stream_id.clone();
-        tokio::spawn(async move {
-            gate.send_data_stream(&server_id, PayloadType::StreamReliable, &stream_id, payload)
-                .await
-        })
-    };
-
-    let event = wait_for_send_to_pause(event_rx, "long offline data stream").await;
-    tracing::info!(
-        "long offline data stream paused msg_id={} fragment {}/{}",
-        event.msg_id,
-        event.frag_index + 1,
-        event.total_frags
-    );
-
-    harness.simulate_disconnect();
-    process_mobile_events(&harness, case, vec![offline_event(1)]).await;
-    release_send.notify_waiters();
-    drop(hook_guard);
-
-    // PeerGate bounds DataStream sends at 15s; the assertion window must allow
-    // the production timeout to fire instead of racing it with a shorter test timeout.
-    let send_result = tokio::time::timeout(Duration::from_secs(20), send_task)
-        .await
-        .expect("in-flight DataStream send should not hang after long offline")
-        .expect("in-flight DataStream task should not panic");
-
-    if let Err(err) = send_result {
-        let msg = err.to_string();
+        .await;
         assert!(
-            is_expected_bounded_transport_failure(&msg),
-            "unexpected in-flight DataStream failure: {msg}"
+            nonterminal_event.is_err(),
+            "{} non-terminal recovery state should not emit delivery uncertainty: {nonterminal_event:?}",
+            direction.name
         );
-    } else {
+
+        harness
+            .peer(direction.from_serial)
+            .send_event(ConnectionEvent::DataChannelClosed {
+                peer_id: target_id.clone(),
+                session_id,
+                payload_type: PayloadType::StreamReliable,
+            });
+
         let event = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if let Some(event) = hook_rx.recv().await {
@@ -1053,47 +1011,144 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain(case
             }
         })
         .await
-        .expect("successful in-flight DataStream during offline must emit delivery uncertainty");
+        .expect("data stream delivery uncertain hook was not emitted");
 
         match event {
-            HookEvent::DataStreamDeliveryUncertain { stream_id, .. } => {
+            HookEvent::DataStreamDeliveryUncertain {
+                stream_id,
+                session_id: got_session_id,
+                reason,
+            } => {
                 assert_eq!(stream_id, stream.stream_id);
+                assert_eq!(got_session_id, session_id);
+                assert_eq!(reason, "data channel closed");
             }
             other => panic!("unexpected hook event: {other:?}"),
         }
     }
+}
 
-    assert_eq!(
-        harness.peer(case.mobile_serial).pending_count().await,
-        0,
-        "in-flight DataStream offline path should not leak RPC pending state"
-    );
+async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain(case: RoleCase) {
+    for direction in case.directions() {
+        let (harness, _bg_tasks) =
+            setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
+        let target_id = harness.peer(direction.to_serial).id.clone();
 
-    harness.simulate_reconnect();
-    process_mobile_events(
-        &harness,
-        case,
-        vec![
-            NetworkEvent::ForceReconnect {
-                reason: ReconnectReason::StaleConnectionSuspected,
-            },
-            network_event(2, true, false, false),
-            wifi_event(3),
-        ],
-    )
-    .await;
+        let (hook_tx, mut hook_rx) = mpsc::unbounded_channel::<HookEvent>();
+        let hook: HookCallback = Arc::new(move |event| {
+            let hook_tx = hook_tx.clone();
+            Box::pin(async move {
+                let _ = hook_tx.send(event);
+            })
+        });
+        harness
+            .peer(direction.from_serial)
+            .coordinator
+            .set_hook_callback(hook);
 
-    let (retry_payload, retry_hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
-    let retry_id = format!("{}_after_data_stream_long_offline", case.name);
-    expect_large_request_eventually_ok(
-        &harness,
-        case,
-        &retry_id,
-        &retry_payload,
-        &retry_hash,
-        Duration::from_secs(25),
-    )
-    .await;
+        let stream = DataStream {
+            stream_id: format!(
+                "{}-{}-inflight-long-offline-stream",
+                case.name, direction.name
+            ),
+            sequence: 11,
+            payload: Bytes::from(vec![0x33; LARGE_PAYLOAD_SIZE]),
+            metadata: Vec::new(),
+            timestamp_ms: Some(0),
+        };
+        let payload = Bytes::from(stream.encode_to_vec());
+
+        let (hook_guard, event_rx, release_send) = pause_next_multifragment_send_after(1);
+        let send_task = {
+            let gate = harness.peer(direction.from_serial).gate.clone();
+            let target_id = target_id.clone();
+            let stream_id = stream.stream_id.clone();
+            tokio::spawn(async move {
+                gate.send_data_stream(&target_id, PayloadType::StreamReliable, &stream_id, payload)
+                    .await
+            })
+        };
+
+        let event = wait_for_send_to_pause(event_rx, "long offline data stream").await;
+        tracing::info!(
+            "{} long offline data stream paused msg_id={} fragment {}/{}",
+            direction.name,
+            event.msg_id,
+            event.frag_index + 1,
+            event.total_frags
+        );
+
+        harness.simulate_disconnect();
+        process_mobile_events(&harness, case, vec![offline_event(1)]).await;
+        release_send.notify_waiters();
+        drop(hook_guard);
+
+        let send_result = tokio::time::timeout(Duration::from_secs(20), send_task)
+            .await
+            .expect("in-flight DataStream send should not hang after long offline")
+            .expect("in-flight DataStream task should not panic");
+
+        if let Err(err) = send_result {
+            let msg = err.to_string();
+            assert!(
+                is_expected_bounded_transport_failure(&msg),
+                "unexpected in-flight DataStream failure: {msg}"
+            );
+        } else {
+            let event = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if let Some(event) = hook_rx.recv().await {
+                        if matches!(event, HookEvent::DataStreamDeliveryUncertain { .. }) {
+                            return event;
+                        }
+                    }
+                }
+            })
+            .await
+            .expect(
+                "successful in-flight DataStream during offline must emit delivery uncertainty",
+            );
+
+            match event {
+                HookEvent::DataStreamDeliveryUncertain { stream_id, .. } => {
+                    assert_eq!(stream_id, stream.stream_id);
+                }
+                other => panic!("unexpected hook event: {other:?}"),
+            }
+        }
+
+        assert_pending_empty(&harness, direction.from_serial, &stream.stream_id).await;
+
+        harness.simulate_reconnect();
+        process_mobile_events(
+            &harness,
+            case,
+            vec![
+                NetworkEvent::ForceReconnect {
+                    reason: ReconnectReason::StaleConnectionSuspected,
+                },
+                network_event(2, true, false, false),
+                wifi_event(3),
+            ],
+        )
+        .await;
+
+        let (retry_payload, retry_hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
+        let retry_id = format!(
+            "{}_{}_after_data_stream_long_offline",
+            case.name, direction.name
+        );
+        expect_large_request_eventually_ok_between(
+            &harness,
+            direction.from_serial,
+            direction.to_serial,
+            &retry_id,
+            &retry_payload,
+            &retry_hash,
+            Duration::from_secs(25),
+        )
+        .await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
