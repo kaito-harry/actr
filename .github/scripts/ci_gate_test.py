@@ -85,12 +85,12 @@ def test_release_train_has_valid_publish_steps() -> None:
         assert f"- name: Run {stage} stage" in workflow
 
 
-def test_release_train_waits_for_matching_ci_gate() -> None:
+def test_release_train_verifies_ci_gate_triggered() -> None:
     workflow = RELEASE_TRAIN_WORKFLOW.read_text(encoding="utf-8")
     gate_job = _job(workflow, "gate", "context")
 
     assert "actions: read" in workflow
-    assert "- name: Wait for CI Gate" in gate_job
+    assert "- name: Verify CI Gate is triggered" in gate_job
     assert "actions/workflows/ci-gate.yml/runs" in gate_job
     assert "head_sha=${RELEASE_SHA}" in gate_job
 
@@ -322,7 +322,7 @@ if __name__ == "__main__":
     test_scheduled_e2e_runs_root_level_browser_and_stream_e2e()
     test_pr_gate_swift_uses_macos_only_xcframework()
     test_release_train_has_valid_publish_steps()
-    test_release_train_waits_for_matching_ci_gate()
+    test_release_train_verifies_ci_gate_triggered()
     test_release_train_forwards_release_context()
     test_swift_echoapp_e2e_job_present()
     test_e2e_actrix_artifact_download_uses_shared_script()
