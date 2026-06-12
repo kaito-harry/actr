@@ -716,3 +716,36 @@ jobs:
             release/reports/release-train-v${{ steps.report_version.outputs.value }}.md
             release/reports/release-train-v${{ steps.report_version.outputs.value }}.json
           if-no-files-found: warn
+
+  # ── Notify WeChat ─────────────────────────────────────────────────────
+  notify-wechat:
+    name: Notify WeChat
+    needs:
+      - context
+      - collect-report
+    runs-on: ubuntu-latest
+    if: always()
+    env:
+      RELEASE_WEBHOOK_URL: ${{ secrets.RELEASE_WEBHOOK_URL }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Download consolidated report
+        uses: actions/download-artifact@v4
+        with:
+          name: release-train-report-${{ needs.context.outputs.version }}
+          path: release/reports
+
+      - name: Run notify-wechat stage
+        run: |
+          args=(--stage notify-wechat --version "${{ needs.context.outputs.version }}")
+          if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          if [[ "${{ needs.context.outputs.pre_release }}" == "true" ]]; then
+            args+=(--pre-release)
+          fi
+          scripts/release-train.sh "${args[@]}"

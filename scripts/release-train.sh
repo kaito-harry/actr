@@ -49,6 +49,7 @@ readonly VALID_STAGES=(
   "publish-typescript-workload"
   "publish-typescript"
   "report"
+  "notify-wechat"
 )
 
 readonly OPTIONAL_SKIPPED_COMPONENTS=(
@@ -102,7 +103,7 @@ Options:
                      Stages: create-tag, publish-rust, publish-python,
                      publish-swift, publish-kotlin, publish-web,
                      build-typescript-native, publish-typescript-workload,
-                     publish-typescript, report.
+                     publish-typescript, report, notify-wechat.
                      Default: all (runs full pipeline sequentially).
   --help             Show this help message.
 EOF
@@ -1740,6 +1741,142 @@ stage_report() {
   done
 
   log_info "Stage report complete"
+}
+
+stage_notify_wechat() {
+  # This stage reads the consolidated report JSON directly instead of
+  # requiring the release context file (which may not be available in
+  # post-report CI jobs). All necessary flags come from CLI args.
+
+  local report_json="$REPORT_DIR/release-train-v${VERSION}.json"
+
+  if [[ ! -f "$report_json" ]]; then
+    log_warn "Report JSON not found at ${report_json}; skipping WeChat notification"
+    return
+  fi
+
+  local webhook_url="${RELEASE_WEBHOOK_URL:?RELEASE_WEBHOOK_URL must be set for WeChat notification}"
+
+  python3 - "$report_json" "$webhook_url" "$VERSION" "$DRY_RUN" "$PRE_RELEASE" <<'PY'
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+report_path = Path(sys.argv[1])
+webhook_url = sys.argv[2]
+version = sys.argv[3]
+is_dry_run = sys.argv[4] == "true"
+is_pre_release = sys.argv[5] == "true"
+
+with report_path.open() as f:
+    report = json.load(f)
+
+components = report.get("components", [])
+overall_status = report.get("overall_status", "unknown")
+
+# Filter successful and failed components.
+successful = [c for c in components if c["status"] == "success"]
+failed = [c for c in components if c["status"] == "failure"]
+skipped = [c for c in components if c["status"] == "skipped"]
+
+# Build WeChat Work markdown message.
+if is_dry_run:
+    mode_label = '<font color="comment">Dry Run</font>'
+elif is_pre_release:
+    mode_label = '<font color="warning">Pre-release</font>'
+else:
+    mode_label = '<font color="info">Release</font>'
+
+if overall_status == "success":
+    status_icon = "✅"
+    status_color = "info"
+else:
+    status_icon = "❌"
+    status_color = "warning"
+
+total = len(components)
+success_count = len(successful)
+
+lines = [
+    f'{status_icon} Actr Release Train <font color="{status_color}">{overall_status}</font>',
+    f"> Version: <font color=\"info\">v{version}</font>",
+    f"> Mode: {mode_label}",
+    f"> Published: <font color=\"info\">{success_count}</font> / {total}",
+]
+
+if failed:
+    lines.append(f"> Failed: <font color=\"warning\">{len(failed)}</font>")
+if skipped:
+    lines.append(f"> Skipped: <font color=\"comment\">{len(skipped)}</font>")
+
+lines.append("")
+
+# Group successful components by kind for a readable summary.
+kind_order = [
+    ("crate", "Rust Crates"),
+    ("python", "Python"),
+    ("npm", "npm Packages"),
+    ("package_sync", "Package Sync"),
+]
+
+by_kind = {}
+for c in successful:
+    kind = c["kind"]
+    by_kind.setdefault(kind, []).append(c)
+
+for kind_key, kind_label in kind_order:
+    items = by_kind.get(kind_key)
+    if not items:
+        continue
+    lines.append(f"**{kind_label}**")
+    for item in items:
+        url = item.get("registry_url", "")
+        if url and url != "-":
+            lines.append(f"> [{item['name']}]({url}) `v{version}`")
+        else:
+            lines.append(f"> {item['name']} `v{version}`")
+    lines.append("")
+
+# List failures if any.
+if failed:
+    lines.append("**Failed**")
+    for item in failed:
+        reason = item.get("mode", "unknown")
+        lines.append(f"> {item['name']}: <font color=\"warning\">{reason}</font>")
+    lines.append("")
+
+content = "\n".join(lines)
+
+payload = {
+    "msgtype": "markdown",
+    "markdown": {
+        "content": content,
+    },
+}
+
+result = subprocess.run(
+    [
+        "curl",
+        "-s",
+        "-X", "POST",
+        webhook_url,
+        "-H", "Content-Type: application/json",
+        "-d", json.dumps(payload, ensure_ascii=False),
+    ],
+    capture_output=True,
+    text=True,
+)
+
+print(f"WeChat webhook response: {result.stdout}")
+if result.returncode != 0:
+    print(f"WeChat webhook error: {result.stderr}", file=sys.stderr)
+    sys.exit(1)
+PY
+
+  log_info "Stage notify-wechat complete"
 }
 
 # ---------------------------------------------------------------------------
