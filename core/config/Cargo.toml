@@ -4,7 +4,7 @@ opentelemetry = []
 
 [package]
 name = "actr-config"
-version = "0.3.8"
+version = "0.3.9"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
