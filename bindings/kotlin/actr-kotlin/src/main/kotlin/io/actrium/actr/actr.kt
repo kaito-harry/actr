@@ -620,20 +620,23 @@ internal open class UniffiForeignFutureResultVoid(
 internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
     fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultVoid.UniffiByValue,)
 }
+internal interface UniffiCallbackInterfaceDataStreamCallbackMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`chunk`: RustBuffer.ByValue,`sender`: RustBuffer.ByValue,`uniffiFutureCallback`: UniffiForeignFutureCompleteVoid,`uniffiCallbackData`: Long,`uniffiOutDroppedCallback`: UniffiForeignFutureDroppedCallbackStruct,)
+}
+internal interface UniffiCallbackInterfaceMediaTrackCallbackMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`sample`: RustBuffer.ByValue,`sender`: RustBuffer.ByValue,`uniffiFutureCallback`: UniffiForeignFutureCompleteVoid,`uniffiCallbackData`: Long,`uniffiOutDroppedCallback`: UniffiForeignFutureDroppedCallbackStruct,)
+}
+internal interface UniffiCallbackInterfaceLogCallbackMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`level`: RustBuffer.ByValue,`target`: RustBuffer.ByValue,`message`: RustBuffer.ByValue,`timestampMs`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
 internal interface UniffiCallbackInterfaceCredentialObserverBridgeMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`ctx`: Long,`event`: RustBuffer.ByValue,`uniffiFutureCallback`: UniffiForeignFutureCompleteVoid,`uniffiCallbackData`: Long,`uniffiOutDroppedCallback`: UniffiForeignFutureDroppedCallbackStruct,)
 }
 internal interface UniffiCallbackInterfaceCredentialObserverBridgeMethod1 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`ctx`: Long,`event`: RustBuffer.ByValue,`uniffiFutureCallback`: UniffiForeignFutureCompleteVoid,`uniffiCallbackData`: Long,`uniffiOutDroppedCallback`: UniffiForeignFutureDroppedCallbackStruct,)
 }
-internal interface UniffiCallbackInterfaceDataStreamCallbackMethod0 : com.sun.jna.Callback {
-    fun callback(`uniffiHandle`: Long,`chunk`: RustBuffer.ByValue,`sender`: RustBuffer.ByValue,`uniffiFutureCallback`: UniffiForeignFutureCompleteVoid,`uniffiCallbackData`: Long,`uniffiOutDroppedCallback`: UniffiForeignFutureDroppedCallbackStruct,)
-}
 internal interface UniffiCallbackInterfaceMailboxObserverBridgeMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`ctx`: Long,`event`: RustBuffer.ByValue,`uniffiFutureCallback`: UniffiForeignFutureCompleteVoid,`uniffiCallbackData`: Long,`uniffiOutDroppedCallback`: UniffiForeignFutureDroppedCallbackStruct,)
-}
-internal interface UniffiCallbackInterfaceMediaTrackCallbackMethod0 : com.sun.jna.Callback {
-    fun callback(`uniffiHandle`: Long,`sample`: RustBuffer.ByValue,`sender`: RustBuffer.ByValue,`uniffiFutureCallback`: UniffiForeignFutureCompleteVoid,`uniffiCallbackData`: Long,`uniffiOutDroppedCallback`: UniffiForeignFutureDroppedCallbackStruct,)
 }
 internal interface UniffiCallbackInterfaceSignalingObserverBridgeMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`ctx`: RustBuffer.ByValue,`uniffiFutureCallback`: UniffiForeignFutureCompleteVoid,`uniffiCallbackData`: Long,`uniffiOutDroppedCallback`: UniffiForeignFutureDroppedCallbackStruct,)
@@ -677,6 +680,63 @@ internal interface UniffiCallbackInterfaceWorkloadLifecycleBridgeMethod3 : com.s
 internal interface UniffiCallbackInterfaceWorkloadLifecycleBridgeMethod4 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`ctx`: Long,`envelope`: RustBuffer.ByValue,`uniffiFutureCallback`: UniffiForeignFutureCompleteRustBuffer,`uniffiCallbackData`: Long,`uniffiOutDroppedCallback`: UniffiForeignFutureDroppedCallbackStruct,)
 }
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "onStream")
+internal open class UniffiVTableCallbackInterfaceDataStreamCallback(
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+    @JvmField internal var `onStream`: UniffiCallbackInterfaceDataStreamCallbackMethod0? = null,
+) : Structure() {
+    class UniffiByValue(
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+        `onStream`: UniffiCallbackInterfaceDataStreamCallbackMethod0? = null,
+    ): UniffiVTableCallbackInterfaceDataStreamCallback(`uniffiFree`,`uniffiClone`,`onStream`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceDataStreamCallback) {
+        `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
+        `onStream` = other.`onStream`
+    }
+
+}
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "onSample")
+internal open class UniffiVTableCallbackInterfaceMediaTrackCallback(
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+    @JvmField internal var `onSample`: UniffiCallbackInterfaceMediaTrackCallbackMethod0? = null,
+) : Structure() {
+    class UniffiByValue(
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+        `onSample`: UniffiCallbackInterfaceMediaTrackCallbackMethod0? = null,
+    ): UniffiVTableCallbackInterfaceMediaTrackCallback(`uniffiFree`,`uniffiClone`,`onSample`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceMediaTrackCallback) {
+        `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
+        `onSample` = other.`onSample`
+    }
+
+}
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "onLog")
+internal open class UniffiVTableCallbackInterfaceLogCallback(
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+    @JvmField internal var `onLog`: UniffiCallbackInterfaceLogCallbackMethod0? = null,
+) : Structure() {
+    class UniffiByValue(
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+        `onLog`: UniffiCallbackInterfaceLogCallbackMethod0? = null,
+    ): UniffiVTableCallbackInterfaceLogCallback(`uniffiFree`,`uniffiClone`,`onLog`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceLogCallback) {
+        `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
+        `onLog` = other.`onLog`
+    }
+
+}
 @Structure.FieldOrder("uniffiFree", "uniffiClone", "onRenewed", "onExpiring")
 internal open class UniffiVTableCallbackInterfaceCredentialObserverBridge(
     @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
@@ -699,25 +759,6 @@ internal open class UniffiVTableCallbackInterfaceCredentialObserverBridge(
     }
 
 }
-@Structure.FieldOrder("uniffiFree", "uniffiClone", "onStream")
-internal open class UniffiVTableCallbackInterfaceDataStreamCallback(
-    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
-    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
-    @JvmField internal var `onStream`: UniffiCallbackInterfaceDataStreamCallbackMethod0? = null,
-) : Structure() {
-    class UniffiByValue(
-        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
-        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
-        `onStream`: UniffiCallbackInterfaceDataStreamCallbackMethod0? = null,
-    ): UniffiVTableCallbackInterfaceDataStreamCallback(`uniffiFree`,`uniffiClone`,`onStream`,), Structure.ByValue
-
-   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceDataStreamCallback) {
-        `uniffiFree` = other.`uniffiFree`
-        `uniffiClone` = other.`uniffiClone`
-        `onStream` = other.`onStream`
-    }
-
-}
 @Structure.FieldOrder("uniffiFree", "uniffiClone", "onBackpressure")
 internal open class UniffiVTableCallbackInterfaceMailboxObserverBridge(
     @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
@@ -734,25 +775,6 @@ internal open class UniffiVTableCallbackInterfaceMailboxObserverBridge(
         `uniffiFree` = other.`uniffiFree`
         `uniffiClone` = other.`uniffiClone`
         `onBackpressure` = other.`onBackpressure`
-    }
-
-}
-@Structure.FieldOrder("uniffiFree", "uniffiClone", "onSample")
-internal open class UniffiVTableCallbackInterfaceMediaTrackCallback(
-    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
-    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
-    @JvmField internal var `onSample`: UniffiCallbackInterfaceMediaTrackCallbackMethod0? = null,
-) : Structure() {
-    class UniffiByValue(
-        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
-        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
-        `onSample`: UniffiCallbackInterfaceMediaTrackCallbackMethod0? = null,
-    ): UniffiVTableCallbackInterfaceMediaTrackCallback(`uniffiFree`,`uniffiClone`,`onSample`,), Structure.ByValue
-
-   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceMediaTrackCallback) {
-        `uniffiFree` = other.`uniffiFree`
-        `uniffiClone` = other.`uniffiClone`
-        `onSample` = other.`onSample`
     }
 
 }
@@ -891,23 +913,13 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun uniffi_actr_checksum_func_actr_error_requires_dlq(
     ): Short
-    external fun uniffi_actr_checksum_method_actrnode_create_network_event_handle(
+    external fun uniffi_actr_checksum_func_set_log_callback(
     ): Short
-    external fun uniffi_actr_checksum_method_actrnode_start(
+    external fun uniffi_actr_checksum_func_resolve_manifest_dependency(
     ): Short
-    external fun uniffi_actr_checksum_method_actrrefwrapper_actor_id(
+    external fun uniffi_actr_checksum_func_resolve_manifest_dependency_alias_list(
     ): Short
-    external fun uniffi_actr_checksum_method_actrrefwrapper_call(
-    ): Short
-    external fun uniffi_actr_checksum_method_actrrefwrapper_discover(
-    ): Short
-    external fun uniffi_actr_checksum_method_actrrefwrapper_is_shutting_down(
-    ): Short
-    external fun uniffi_actr_checksum_method_actrrefwrapper_shutdown(
-    ): Short
-    external fun uniffi_actr_checksum_method_actrrefwrapper_tell(
-    ): Short
-    external fun uniffi_actr_checksum_method_actrrefwrapper_wait_for_shutdown(
+    external fun uniffi_actr_checksum_func_resolve_manifest_package_actr_type(
     ): Short
     external fun uniffi_actr_checksum_method_contextbridge_add_media_track(
     ): Short
@@ -931,6 +943,28 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun uniffi_actr_checksum_method_contextbridge_unregister_stream(
     ): Short
+    external fun uniffi_actr_checksum_method_opusencoder_encode(
+    ): Short
+    external fun uniffi_actr_checksum_method_opusencoder_frame_size(
+    ): Short
+    external fun uniffi_actr_checksum_method_actrnode_create_network_event_handle(
+    ): Short
+    external fun uniffi_actr_checksum_method_actrnode_start(
+    ): Short
+    external fun uniffi_actr_checksum_method_actrrefwrapper_actor_id(
+    ): Short
+    external fun uniffi_actr_checksum_method_actrrefwrapper_call(
+    ): Short
+    external fun uniffi_actr_checksum_method_actrrefwrapper_discover(
+    ): Short
+    external fun uniffi_actr_checksum_method_actrrefwrapper_is_shutting_down(
+    ): Short
+    external fun uniffi_actr_checksum_method_actrrefwrapper_shutdown(
+    ): Short
+    external fun uniffi_actr_checksum_method_actrrefwrapper_tell(
+    ): Short
+    external fun uniffi_actr_checksum_method_actrrefwrapper_wait_for_shutdown(
+    ): Short
     external fun uniffi_actr_checksum_method_networkeventhandlewrapper_cleanup_connections(
     ): Short
     external fun uniffi_actr_checksum_method_networkeventhandlewrapper_force_reconnect(
@@ -939,9 +973,7 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_path_changed(
     ): Short
-    external fun uniffi_actr_checksum_method_opusencoder_encode(
-    ): Short
-    external fun uniffi_actr_checksum_method_opusencoder_frame_size(
+    external fun uniffi_actr_checksum_constructor_opusencoder_new(
     ): Short
     external fun uniffi_actr_checksum_constructor_actrnode_new_from_linked_workload(
     ): Short
@@ -949,17 +981,17 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun uniffi_actr_checksum_constructor_dynamicworkload_new(
     ): Short
-    external fun uniffi_actr_checksum_constructor_opusencoder_new(
+    external fun uniffi_actr_checksum_method_datastreamcallback_on_stream(
+    ): Short
+    external fun uniffi_actr_checksum_method_mediatrackcallback_on_sample(
+    ): Short
+    external fun uniffi_actr_checksum_method_logcallback_on_log(
     ): Short
     external fun uniffi_actr_checksum_method_credentialobserverbridge_on_renewed(
     ): Short
     external fun uniffi_actr_checksum_method_credentialobserverbridge_on_expiring(
     ): Short
-    external fun uniffi_actr_checksum_method_datastreamcallback_on_stream(
-    ): Short
     external fun uniffi_actr_checksum_method_mailboxobserverbridge_on_backpressure(
-    ): Short
-    external fun uniffi_actr_checksum_method_mediatrackcallback_on_sample(
     ): Short
     external fun uniffi_actr_checksum_method_signalingobserverbridge_on_connecting(
     ): Short
@@ -1007,6 +1039,7 @@ internal object UniffiLib {
         Native.register(UniffiLib::class.java, findLibraryName(componentName = "actr"))
         uniffiCallbackInterfaceCredentialObserverBridge.register(this)
         uniffiCallbackInterfaceDataStreamCallback.register(this)
+        uniffiCallbackInterfaceLogCallback.register(this)
         uniffiCallbackInterfaceMailboxObserverBridge.register(this)
         uniffiCallbackInterfaceMediaTrackCallback.register(this)
         uniffiCallbackInterfaceSignalingObserverBridge.register(this)
@@ -1015,7 +1048,43 @@ internal object UniffiLib {
         uniffiCallbackInterfaceWorkloadLifecycleBridge.register(this)
         
     }
-    external fun uniffi_actr_fn_clone_actrnode(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_actr_fn_clone_contextbridge(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_actr_fn_free_contextbridge(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_actr_fn_method_contextbridge_add_media_track(`ptr`: Long,`target`: RustBuffer.ByValue,`trackId`: RustBuffer.ByValue,`codec`: RustBuffer.ByValue,`mediaType`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_call_raw(`ptr`: Long,`target`: RustBuffer.ByValue,`routeKey`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,`payload`: RustBuffer.ByValue,`timeoutMs`: Long,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_discover(`ptr`: Long,`targetType`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_register_media_track(`ptr`: Long,`trackId`: RustBuffer.ByValue,`callback`: Long,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_register_stream(`ptr`: Long,`streamId`: RustBuffer.ByValue,`callback`: Long,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_remove_media_track(`ptr`: Long,`target`: RustBuffer.ByValue,`trackId`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_send_data_stream(`ptr`: Long,`target`: RustBuffer.ByValue,`chunk`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_send_media_sample(`ptr`: Long,`target`: RustBuffer.ByValue,`trackId`: RustBuffer.ByValue,`sample`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_tell_raw(`ptr`: Long,`target`: RustBuffer.ByValue,`routeKey`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,`payload`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_unregister_media_track(`ptr`: Long,`trackId`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_unregister_stream(`ptr`: Long,`streamId`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_clone_opusencoder(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_actr_fn_free_opusencoder(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_actr_fn_constructor_opusencoder_new(`sampleRate`: Int,`channels`: Byte,`frameSize`: Short,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_actr_fn_method_opusencoder_encode(`ptr`: Long,`pcm`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_actr_fn_method_opusencoder_frame_size(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Short
+external fun uniffi_actr_fn_clone_actrnode(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
 external fun uniffi_actr_fn_free_actrnode(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
@@ -1045,38 +1114,6 @@ external fun uniffi_actr_fn_method_actrrefwrapper_tell(`ptr`: Long,`routeKey`: R
 ): Long
 external fun uniffi_actr_fn_method_actrrefwrapper_wait_for_shutdown(`ptr`: Long,
 ): Long
-external fun uniffi_actr_fn_clone_contextbridge(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Long
-external fun uniffi_actr_fn_free_contextbridge(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-external fun uniffi_actr_fn_method_contextbridge_add_media_track(`ptr`: Long,`target`: RustBuffer.ByValue,`trackId`: RustBuffer.ByValue,`codec`: RustBuffer.ByValue,`mediaType`: RustBuffer.ByValue,
-): Long
-external fun uniffi_actr_fn_method_contextbridge_call_raw(`ptr`: Long,`target`: RustBuffer.ByValue,`routeKey`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,`payload`: RustBuffer.ByValue,`timeoutMs`: Long,
-): Long
-external fun uniffi_actr_fn_method_contextbridge_discover(`ptr`: Long,`targetType`: RustBuffer.ByValue,
-): Long
-external fun uniffi_actr_fn_method_contextbridge_register_media_track(`ptr`: Long,`trackId`: RustBuffer.ByValue,`callback`: Long,
-): Long
-external fun uniffi_actr_fn_method_contextbridge_register_stream(`ptr`: Long,`streamId`: RustBuffer.ByValue,`callback`: Long,
-): Long
-external fun uniffi_actr_fn_method_contextbridge_remove_media_track(`ptr`: Long,`target`: RustBuffer.ByValue,`trackId`: RustBuffer.ByValue,
-): Long
-external fun uniffi_actr_fn_method_contextbridge_send_data_stream(`ptr`: Long,`target`: RustBuffer.ByValue,`chunk`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,
-): Long
-external fun uniffi_actr_fn_method_contextbridge_send_media_sample(`ptr`: Long,`target`: RustBuffer.ByValue,`trackId`: RustBuffer.ByValue,`sample`: RustBuffer.ByValue,
-): Long
-external fun uniffi_actr_fn_method_contextbridge_tell_raw(`ptr`: Long,`target`: RustBuffer.ByValue,`routeKey`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,`payload`: RustBuffer.ByValue,
-): Long
-external fun uniffi_actr_fn_method_contextbridge_unregister_media_track(`ptr`: Long,`trackId`: RustBuffer.ByValue,
-): Long
-external fun uniffi_actr_fn_method_contextbridge_unregister_stream(`ptr`: Long,`streamId`: RustBuffer.ByValue,
-): Long
-external fun uniffi_actr_fn_clone_dynamicworkload(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Long
-external fun uniffi_actr_fn_free_dynamicworkload(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Unit
-external fun uniffi_actr_fn_constructor_dynamicworkload_new(`lifecycle`: Long,`signaling`: RustBuffer.ByValue,`websocket`: RustBuffer.ByValue,`webrtc`: RustBuffer.ByValue,`credential`: RustBuffer.ByValue,`mailbox`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): Long
 external fun uniffi_actr_fn_clone_networkeventhandlewrapper(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
 external fun uniffi_actr_fn_free_networkeventhandlewrapper(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -1089,23 +1126,21 @@ external fun uniffi_actr_fn_method_networkeventhandlewrapper_handle_app_lifecycl
 ): Long
 external fun uniffi_actr_fn_method_networkeventhandlewrapper_handle_network_path_changed(`ptr`: Long,`snapshot`: RustBuffer.ByValue,
 ): Long
-external fun uniffi_actr_fn_clone_opusencoder(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+external fun uniffi_actr_fn_clone_dynamicworkload(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
-external fun uniffi_actr_fn_free_opusencoder(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+external fun uniffi_actr_fn_free_dynamicworkload(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
-external fun uniffi_actr_fn_constructor_opusencoder_new(`sampleRate`: Int,`channels`: Byte,`frameSize`: Short,uniffi_out_err: UniffiRustCallStatus, 
+external fun uniffi_actr_fn_constructor_dynamicworkload_new(`lifecycle`: Long,`signaling`: RustBuffer.ByValue,`websocket`: RustBuffer.ByValue,`webrtc`: RustBuffer.ByValue,`credential`: RustBuffer.ByValue,`mailbox`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
-external fun uniffi_actr_fn_method_opusencoder_encode(`ptr`: Long,`pcm`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
-external fun uniffi_actr_fn_method_opusencoder_frame_size(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
-): Short
-external fun uniffi_actr_fn_init_callback_vtable_credentialobserverbridge(`vtable`: UniffiVTableCallbackInterfaceCredentialObserverBridge,
-): Unit
 external fun uniffi_actr_fn_init_callback_vtable_datastreamcallback(`vtable`: UniffiVTableCallbackInterfaceDataStreamCallback,
 ): Unit
-external fun uniffi_actr_fn_init_callback_vtable_mailboxobserverbridge(`vtable`: UniffiVTableCallbackInterfaceMailboxObserverBridge,
-): Unit
 external fun uniffi_actr_fn_init_callback_vtable_mediatrackcallback(`vtable`: UniffiVTableCallbackInterfaceMediaTrackCallback,
+): Unit
+external fun uniffi_actr_fn_init_callback_vtable_logcallback(`vtable`: UniffiVTableCallbackInterfaceLogCallback,
+): Unit
+external fun uniffi_actr_fn_init_callback_vtable_credentialobserverbridge(`vtable`: UniffiVTableCallbackInterfaceCredentialObserverBridge,
+): Unit
+external fun uniffi_actr_fn_init_callback_vtable_mailboxobserverbridge(`vtable`: UniffiVTableCallbackInterfaceMailboxObserverBridge,
 ): Unit
 external fun uniffi_actr_fn_init_callback_vtable_signalingobserverbridge(`vtable`: UniffiVTableCallbackInterfaceSignalingObserverBridge,
 ): Unit
@@ -1121,6 +1156,14 @@ external fun uniffi_actr_fn_func_actr_error_kind(`err`: RustBuffer.ByValue,uniff
 ): RustBuffer.ByValue
 external fun uniffi_actr_fn_func_actr_error_requires_dlq(`err`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
+external fun uniffi_actr_fn_func_set_log_callback(`callback`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_actr_fn_func_resolve_manifest_dependency(`manifestPath`: RustBuffer.ByValue,`dependencyAlias`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_actr_fn_func_resolve_manifest_dependency_alias_list(`manifestPath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_actr_fn_func_resolve_manifest_package_actr_type(`manifestPath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 external fun ffi_actr_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun ffi_actr_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1240,160 +1283,175 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
-    if (lib.uniffi_actr_checksum_func_actr_error_is_retryable() != 53552.toShort()) {
+    if (lib.uniffi_actr_checksum_func_actr_error_is_retryable() != 34175.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_func_actr_error_kind() != 63189.toShort()) {
+    if (lib.uniffi_actr_checksum_func_actr_error_kind() != 40651.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_func_actr_error_requires_dlq() != 47593.toShort()) {
+    if (lib.uniffi_actr_checksum_func_actr_error_requires_dlq() != 62057.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrnode_create_network_event_handle() != 48586.toShort()) {
+    if (lib.uniffi_actr_checksum_func_set_log_callback() != 22627.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrnode_start() != 52376.toShort()) {
+    if (lib.uniffi_actr_checksum_func_resolve_manifest_dependency() != 20704.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrrefwrapper_actor_id() != 17890.toShort()) {
+    if (lib.uniffi_actr_checksum_func_resolve_manifest_dependency_alias_list() != 45756.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrrefwrapper_call() != 32518.toShort()) {
+    if (lib.uniffi_actr_checksum_func_resolve_manifest_package_actr_type() != 16114.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrrefwrapper_discover() != 47615.toShort()) {
+    if (lib.uniffi_actr_checksum_method_contextbridge_add_media_track() != 37665.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrrefwrapper_is_shutting_down() != 13002.toShort()) {
+    if (lib.uniffi_actr_checksum_method_contextbridge_call_raw() != 51062.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrrefwrapper_shutdown() != 48752.toShort()) {
+    if (lib.uniffi_actr_checksum_method_contextbridge_discover() != 38410.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrrefwrapper_tell() != 54497.toShort()) {
+    if (lib.uniffi_actr_checksum_method_contextbridge_register_media_track() != 43039.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrrefwrapper_wait_for_shutdown() != 46357.toShort()) {
+    if (lib.uniffi_actr_checksum_method_contextbridge_register_stream() != 21623.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_contextbridge_add_media_track() != 62400.toShort()) {
+    if (lib.uniffi_actr_checksum_method_contextbridge_remove_media_track() != 43937.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_contextbridge_call_raw() != 32688.toShort()) {
+    if (lib.uniffi_actr_checksum_method_contextbridge_send_data_stream() != 33554.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_contextbridge_discover() != 16612.toShort()) {
+    if (lib.uniffi_actr_checksum_method_contextbridge_send_media_sample() != 63657.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_contextbridge_register_media_track() != 44495.toShort()) {
+    if (lib.uniffi_actr_checksum_method_contextbridge_tell_raw() != 46175.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_contextbridge_register_stream() != 17477.toShort()) {
+    if (lib.uniffi_actr_checksum_method_contextbridge_unregister_media_track() != 52187.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_contextbridge_remove_media_track() != 23065.toShort()) {
+    if (lib.uniffi_actr_checksum_method_contextbridge_unregister_stream() != 65290.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_contextbridge_send_data_stream() != 17067.toShort()) {
+    if (lib.uniffi_actr_checksum_method_opusencoder_encode() != 35920.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_contextbridge_send_media_sample() != 49083.toShort()) {
+    if (lib.uniffi_actr_checksum_method_opusencoder_frame_size() != 18284.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_contextbridge_tell_raw() != 35223.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrnode_create_network_event_handle() != 24690.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_contextbridge_unregister_media_track() != 6533.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrnode_start() != 22494.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_contextbridge_unregister_stream() != 34010.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrrefwrapper_actor_id() != 23881.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_networkeventhandlewrapper_cleanup_connections() != 47196.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrrefwrapper_call() != 24018.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_networkeventhandlewrapper_force_reconnect() != 3807.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrrefwrapper_discover() != 21192.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_networkeventhandlewrapper_handle_app_lifecycle_changed() != 8993.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrrefwrapper_is_shutting_down() != 50332.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_path_changed() != 13252.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrrefwrapper_shutdown() != 60173.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_opusencoder_encode() != 30032.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrrefwrapper_tell() != 38430.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_opusencoder_frame_size() != 61591.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrrefwrapper_wait_for_shutdown() != 12482.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_constructor_actrnode_new_from_linked_workload() != 52954.toShort()) {
+    if (lib.uniffi_actr_checksum_method_networkeventhandlewrapper_cleanup_connections() != 10838.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_constructor_actrnode_new_from_package_file() != 23972.toShort()) {
+    if (lib.uniffi_actr_checksum_method_networkeventhandlewrapper_force_reconnect() != 14546.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_constructor_dynamicworkload_new() != 7106.toShort()) {
+    if (lib.uniffi_actr_checksum_method_networkeventhandlewrapper_handle_app_lifecycle_changed() != 7773.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_constructor_opusencoder_new() != 55174.toShort()) {
+    if (lib.uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_path_changed() != 24952.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_credentialobserverbridge_on_renewed() != 61692.toShort()) {
+    if (lib.uniffi_actr_checksum_constructor_opusencoder_new() != 34824.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_credentialobserverbridge_on_expiring() != 27892.toShort()) {
+    if (lib.uniffi_actr_checksum_constructor_actrnode_new_from_linked_workload() != 10568.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_datastreamcallback_on_stream() != 55109.toShort()) {
+    if (lib.uniffi_actr_checksum_constructor_actrnode_new_from_package_file() != 59585.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_mailboxobserverbridge_on_backpressure() != 10936.toShort()) {
+    if (lib.uniffi_actr_checksum_constructor_dynamicworkload_new() != 1634.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_mediatrackcallback_on_sample() != 21659.toShort()) {
+    if (lib.uniffi_actr_checksum_method_datastreamcallback_on_stream() != 53144.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_signalingobserverbridge_on_connecting() != 34166.toShort()) {
+    if (lib.uniffi_actr_checksum_method_mediatrackcallback_on_sample() != 56040.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_signalingobserverbridge_on_connected() != 28379.toShort()) {
+    if (lib.uniffi_actr_checksum_method_logcallback_on_log() != 3599.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_signalingobserverbridge_on_disconnected() != 51944.toShort()) {
+    if (lib.uniffi_actr_checksum_method_credentialobserverbridge_on_renewed() != 1839.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_webrtcobserverbridge_on_connecting() != 22166.toShort()) {
+    if (lib.uniffi_actr_checksum_method_credentialobserverbridge_on_expiring() != 44972.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_webrtcobserverbridge_on_connected() != 48349.toShort()) {
+    if (lib.uniffi_actr_checksum_method_mailboxobserverbridge_on_backpressure() != 54800.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_webrtcobserverbridge_on_disconnected() != 30516.toShort()) {
+    if (lib.uniffi_actr_checksum_method_signalingobserverbridge_on_connecting() != 19209.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_websocketobserverbridge_on_connecting() != 42497.toShort()) {
+    if (lib.uniffi_actr_checksum_method_signalingobserverbridge_on_connected() != 4846.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_websocketobserverbridge_on_connected() != 55245.toShort()) {
+    if (lib.uniffi_actr_checksum_method_signalingobserverbridge_on_disconnected() != 42197.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_websocketobserverbridge_on_disconnected() != 32252.toShort()) {
+    if (lib.uniffi_actr_checksum_method_webrtcobserverbridge_on_connecting() != 29294.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_workloadlifecyclebridge_on_start() != 1932.toShort()) {
+    if (lib.uniffi_actr_checksum_method_webrtcobserverbridge_on_connected() != 40934.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_workloadlifecyclebridge_on_ready() != 16230.toShort()) {
+    if (lib.uniffi_actr_checksum_method_webrtcobserverbridge_on_disconnected() != 44359.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_workloadlifecyclebridge_on_stop() != 46214.toShort()) {
+    if (lib.uniffi_actr_checksum_method_websocketobserverbridge_on_connecting() != 31917.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_workloadlifecyclebridge_on_error() != 48035.toShort()) {
+    if (lib.uniffi_actr_checksum_method_websocketobserverbridge_on_connected() != 11292.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_workloadlifecyclebridge_dispatch() != 17123.toShort()) {
+    if (lib.uniffi_actr_checksum_method_websocketobserverbridge_on_disconnected() != 4256.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_actr_checksum_method_workloadlifecyclebridge_on_start() != 17867.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_actr_checksum_method_workloadlifecyclebridge_on_ready() != 46460.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_actr_checksum_method_workloadlifecyclebridge_on_stop() != 64064.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_actr_checksum_method_workloadlifecyclebridge_on_error() != 55342.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_actr_checksum_method_workloadlifecyclebridge_dispatch() != 33960.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
 }
@@ -4368,6 +4426,42 @@ public object FfiConverterTypeBackpressureEventBridge: FfiConverterRustBuffer<Ba
 
 
 /**
+ * Public payload for send preflight failures.
+ */
+data class ConnectionNotReadyInfo (
+    var `retryAfterMs`: kotlin.ULong?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeConnectionNotReadyInfo: FfiConverterRustBuffer<ConnectionNotReadyInfo> {
+    override fun read(buf: ByteBuffer): ConnectionNotReadyInfo {
+        return ConnectionNotReadyInfo(
+            FfiConverterOptionalULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: ConnectionNotReadyInfo) = (
+            FfiConverterOptionalULong.allocationSize(value.`retryAfterMs`)
+    )
+
+    override fun write(value: ConnectionNotReadyInfo, buf: ByteBuffer) {
+            FfiConverterOptionalULong.write(value.`retryAfterMs`, buf)
+    }
+}
+
+
+
+/**
  * Credential renewal / warning event.
  */
 data class CredentialEventBridge (
@@ -4958,6 +5052,14 @@ sealed class ActrException: kotlin.Exception() {
             get() = "msg=${ `msg` }"
     }
     
+    class ConnectionNotReady(
+        
+        val `info`: ConnectionNotReadyInfo
+        ) : ActrException() {
+        override val message
+            get() = "info=${ `info` }"
+    }
+    
     class TimedOut(
         ) : ActrException() {
         override val message
@@ -5067,33 +5169,36 @@ public object FfiConverterTypeActrError : FfiConverterRustBuffer<ActrException> 
             1 -> ActrException.Unavailable(
                 FfiConverterString.read(buf),
                 )
-            2 -> ActrException.TimedOut()
-            3 -> ActrException.NotFound(
+            2 -> ActrException.ConnectionNotReady(
+                FfiConverterTypeConnectionNotReadyInfo.read(buf),
+                )
+            3 -> ActrException.TimedOut()
+            4 -> ActrException.NotFound(
                 FfiConverterString.read(buf),
                 )
-            4 -> ActrException.PermissionDenied(
+            5 -> ActrException.PermissionDenied(
                 FfiConverterString.read(buf),
                 )
-            5 -> ActrException.InvalidArgument(
+            6 -> ActrException.InvalidArgument(
                 FfiConverterString.read(buf),
                 )
-            6 -> ActrException.UnknownRoute(
+            7 -> ActrException.UnknownRoute(
                 FfiConverterString.read(buf),
                 )
-            7 -> ActrException.DependencyNotFound(
+            8 -> ActrException.DependencyNotFound(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            8 -> ActrException.DecodeFailure(
+            9 -> ActrException.DecodeFailure(
                 FfiConverterString.read(buf),
                 )
-            9 -> ActrException.NotImplemented(
+            10 -> ActrException.NotImplemented(
                 FfiConverterString.read(buf),
                 )
-            10 -> ActrException.Internal(
+            11 -> ActrException.Internal(
                 FfiConverterString.read(buf),
                 )
-            11 -> ActrException.Config(
+            12 -> ActrException.Config(
                 FfiConverterString.read(buf),
                 )
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
@@ -5106,6 +5211,11 @@ public object FfiConverterTypeActrError : FfiConverterRustBuffer<ActrException> 
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
                 + FfiConverterString.allocationSize(value.`msg`)
+            )
+            is ActrException.ConnectionNotReady -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterTypeConnectionNotReadyInfo.allocationSize(value.`info`)
             )
             is ActrException.TimedOut -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
@@ -5167,53 +5277,58 @@ public object FfiConverterTypeActrError : FfiConverterRustBuffer<ActrException> 
                 FfiConverterString.write(value.`msg`, buf)
                 Unit
             }
-            is ActrException.TimedOut -> {
+            is ActrException.ConnectionNotReady -> {
                 buf.putInt(2)
+                FfiConverterTypeConnectionNotReadyInfo.write(value.`info`, buf)
+                Unit
+            }
+            is ActrException.TimedOut -> {
+                buf.putInt(3)
                 Unit
             }
             is ActrException.NotFound -> {
-                buf.putInt(3)
-                FfiConverterString.write(value.`msg`, buf)
-                Unit
-            }
-            is ActrException.PermissionDenied -> {
                 buf.putInt(4)
                 FfiConverterString.write(value.`msg`, buf)
                 Unit
             }
-            is ActrException.InvalidArgument -> {
+            is ActrException.PermissionDenied -> {
                 buf.putInt(5)
                 FfiConverterString.write(value.`msg`, buf)
                 Unit
             }
-            is ActrException.UnknownRoute -> {
+            is ActrException.InvalidArgument -> {
                 buf.putInt(6)
                 FfiConverterString.write(value.`msg`, buf)
                 Unit
             }
-            is ActrException.DependencyNotFound -> {
+            is ActrException.UnknownRoute -> {
                 buf.putInt(7)
+                FfiConverterString.write(value.`msg`, buf)
+                Unit
+            }
+            is ActrException.DependencyNotFound -> {
+                buf.putInt(8)
                 FfiConverterString.write(value.`serviceName`, buf)
                 FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is ActrException.DecodeFailure -> {
-                buf.putInt(8)
-                FfiConverterString.write(value.`msg`, buf)
-                Unit
-            }
-            is ActrException.NotImplemented -> {
                 buf.putInt(9)
                 FfiConverterString.write(value.`msg`, buf)
                 Unit
             }
-            is ActrException.Internal -> {
+            is ActrException.NotImplemented -> {
                 buf.putInt(10)
                 FfiConverterString.write(value.`msg`, buf)
                 Unit
             }
-            is ActrException.Config -> {
+            is ActrException.Internal -> {
                 buf.putInt(11)
+                FfiConverterString.write(value.`msg`, buf)
+                Unit
+            }
+            is ActrException.Config -> {
+                buf.putInt(12)
                 FfiConverterString.write(value.`msg`, buf)
                 Unit
             }
@@ -5921,6 +6036,85 @@ internal object uniffiCallbackInterfaceDataStreamCallback {
  * @suppress
  */
 public object FfiConverterTypeDataStreamCallback: FfiConverterCallbackInterface<DataStreamCallback>()
+
+
+
+
+
+/**
+ * Callback interface for forwarding tracing log events to the host.
+ *
+ * Register via `set_log_callback()` before starting the actr node.
+ * Once set, every tracing event emitted by the runtime will be
+ * forwarded through this callback.
+ */
+public interface LogCallback {
+    
+    /**
+     * Called for every tracing event emitted by the actr runtime.
+     *
+     * Parameters:
+     * - `level`: tracing level (TRACE, DEBUG, INFO, WARN, ERROR).
+     * - `target`: module path of the log source.
+     * - `message`: field values formatted as `key=value` pairs.
+     * - `timestamp_ms`: wall-clock milliseconds since UNIX epoch.
+     */
+    fun `onLog`(`level`: kotlin.String, `target`: kotlin.String, `message`: kotlin.String, `timestampMs`: kotlin.Long)
+    
+    companion object
+}
+
+
+
+// Put the implementation in an object so we don't pollute the top-level namespace
+internal object uniffiCallbackInterfaceLogCallback {
+    internal object `onLog`: UniffiCallbackInterfaceLogCallbackMethod0 {
+        override fun callback(`uniffiHandle`: Long,`level`: RustBuffer.ByValue,`target`: RustBuffer.ByValue,`message`: RustBuffer.ByValue,`timestampMs`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeLogCallback.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`onLog`(
+                    FfiConverterString.lift(`level`),
+                    FfiConverterString.lift(`target`),
+                    FfiConverterString.lift(`message`),
+                    FfiConverterLong.lift(`timestampMs`),
+                )
+            }
+            val writeReturn = { _: Unit -> Unit }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
+
+    internal object uniffiFree: UniffiCallbackInterfaceFree {
+        override fun callback(handle: Long) {
+            FfiConverterTypeLogCallback.handleMap.remove(handle)
+        }
+    }
+
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypeLogCallback.handleMap.clone(handle)
+        }
+    }
+
+    internal var vtable = UniffiVTableCallbackInterfaceLogCallback.UniffiByValue(
+        uniffiFree,
+        uniffiClone,
+        `onLog`,
+    )
+
+    // Registers the foreign callback with the Rust side.
+    // This method is generated for each callback interface.
+    internal fun register(lib: UniffiLib) {
+        lib.uniffi_actr_fn_init_callback_vtable_logcallback(vtable)
+    }
+}
+
+/**
+ * The ffiConverter which transforms the Callbacks in to handles to pass to Rust.
+ *
+ * @suppress
+ */
+public object FfiConverterTypeLogCallback: FfiConverterCallbackInterface<LogCallback>()
 
 
 
@@ -6800,6 +6994,38 @@ public object FfiConverterTypeWorkloadLifecycleBridge: FfiConverterCallbackInter
 /**
  * @suppress
  */
+public object FfiConverterOptionalULong: FfiConverterRustBuffer<kotlin.ULong?> {
+    override fun read(buf: ByteBuffer): kotlin.ULong? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterULong.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.ULong?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterULong.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.ULong?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterULong.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalLong: FfiConverterRustBuffer<kotlin.Long?> {
     override fun read(buf: ByteBuffer): kotlin.Long? {
         if (buf.get().toInt() == 0) {
@@ -6950,6 +7176,38 @@ public object FfiConverterOptionalTypeCredentialObserverBridge: FfiConverterRust
         } else {
             buf.put(1)
             FfiConverterTypeCredentialObserverBridge.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeLogCallback: FfiConverterRustBuffer<LogCallback?> {
+    override fun read(buf: ByteBuffer): LogCallback? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeLogCallback.read(buf)
+    }
+
+    override fun allocationSize(value: LogCallback?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeLogCallback.allocationSize(value)
+        }
+    }
+
+    override fun write(value: LogCallback?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeLogCallback.write(value, buf)
         }
     }
 }
@@ -7116,6 +7374,34 @@ public object FfiConverterSequenceFloat: FfiConverterRustBuffer<List<kotlin.Floa
 /**
  * @suppress
  */
+public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.String>> {
+    override fun read(buf: ByteBuffer): List<kotlin.String> {
+        val len = buf.getInt()
+        return List<kotlin.String>(len) {
+            FfiConverterString.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<kotlin.String>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterString.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<kotlin.String>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterString.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceTypeActrId: FfiConverterRustBuffer<List<ActrId>> {
     override fun read(buf: ByteBuffer): List<ActrId> {
         val len = buf.getInt()
@@ -7207,6 +7493,79 @@ public object FfiConverterSequenceTypeMetadataEntry: FfiConverterRustBuffer<List
     UniffiLib.uniffi_actr_fn_func_actr_error_requires_dlq(
     
         FfiConverterTypeActrError.lower(`err`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Set or clear the global log callback.
+         *
+         * Must be called **before** the actr node is created. The tracing subscriber
+         * is locked during node initialization; calls after that point are ignored.
+         * Pass `None` to disable forwarding.
+         */ fun `setLogCallback`(`callback`: LogCallback?)
+        = 
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_actr_fn_func_set_log_callback(
+    
+        FfiConverterOptionalTypeLogCallback.lower(`callback`),_status)
+}
+    
+    
+
+        /**
+         * Resolve a dependency's ActrType from a manifest.toml file.
+         *
+         * Parses the manifest, looks up the dependency by alias, and returns its
+         * `actr_type` field as a structured `ActrType` record. This is the canonical
+         * way for linked-runtime hosts (iOS, Android) to discover which remote actor
+         * type a dependency resolves to, without hardcoding `"manufacturer:name:version"`
+         * strings in application code.
+         */
+    @Throws(ActrException::class) fun `resolveManifestDependency`(`manifestPath`: kotlin.String, `dependencyAlias`: kotlin.String): ActrType {
+            return FfiConverterTypeActrType.lift(
+    uniffiRustCallWithError(ActrException) { _status ->
+    UniffiLib.uniffi_actr_fn_func_resolve_manifest_dependency(
+    
+        FfiConverterString.lower(`manifestPath`),FfiConverterString.lower(`dependencyAlias`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * List all dependency aliases from a manifest.toml file.
+         *
+         * Parses the manifest and returns the alias of every `[[dependency]]` entry.
+         * Linked-runtime hosts (iOS, Android) use this to discover which dependencies
+         * are declared in the manifest without hardcoding alias strings.
+         */
+    @Throws(ActrException::class) fun `resolveManifestDependencyAliasList`(`manifestPath`: kotlin.String): List<kotlin.String> {
+            return FfiConverterSequenceString.lift(
+    uniffiRustCallWithError(ActrException) { _status ->
+    UniffiLib.uniffi_actr_fn_func_resolve_manifest_dependency_alias_list(
+    
+        FfiConverterString.lower(`manifestPath`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Resolve the package's own ActrType from a manifest.toml file.
+         *
+         * Parses the manifest and returns the `[package]` block's actr_type fields
+         * as a structured `ActrType` record. Linked-runtime hosts (iOS, Android) use
+         * this to determine their own actor type without hardcoding
+         * `"manufacturer:name:version"` strings.
+         */
+    @Throws(ActrException::class) fun `resolveManifestPackageActrType`(`manifestPath`: kotlin.String): ActrType {
+            return FfiConverterTypeActrType.lift(
+    uniffiRustCallWithError(ActrException) { _status ->
+    UniffiLib.uniffi_actr_fn_func_resolve_manifest_package_actr_type(
+    
+        FfiConverterString.lower(`manifestPath`),_status)
 }
     )
     }

@@ -206,6 +206,10 @@ val ActrException.userMessage: String
     get() =
         when (this) {
             is ActrException.Unavailable -> "Peer unavailable: $msg"
+            is ActrException.ConnectionNotReady -> {
+                val retryMsg = info.retryAfterMs?.let { " Retry after ${it}ms." } ?: ""
+                "Connection not ready.$retryMsg"
+            }
             is ActrException.TimedOut -> "Request timed out"
             is ActrException.NotFound -> "Not found: $msg"
             is ActrException.PermissionDenied -> "Permission denied: $msg"
