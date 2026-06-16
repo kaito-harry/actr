@@ -52,8 +52,8 @@ type WsSink = Arc<
 // Constants
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Default timeout in seconds for waiting for signaling response
-const RESPONSE_TIMEOUT_SECS: u64 = 15;
+/// Default timeout in seconds for waiting for signaling request/response RPCs.
+const RESPONSE_TIMEOUT_SECS: u64 = 5;
 // WebSocket-level keepalive to detect silent half-open connections
 const PING_INTERVAL_SECS: u64 = 5;
 const PONG_TIMEOUT_SECS: u64 = 10;

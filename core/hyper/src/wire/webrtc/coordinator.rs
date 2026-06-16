@@ -57,18 +57,22 @@ use webrtc::peer_connection::{RTCPeerConnection, peer_connection_state::RTCPeerC
 use webrtc::track::track_local::TrackLocalWriter;
 
 const ICE_RESTART_MAX_RETRIES: u32 = 10;
-const ICE_RESTART_TIMEOUT: Duration = Duration::from_secs(5);
-const ICE_RESTART_INITIAL_BACKOFF_MS: u64 = 5000; // 5s initial
-const ICE_RESTART_MAX_BACKOFF_MS: u64 = 10000; // 10s max (5s -> 10s -> 10s -> ...)
+const ICE_RESTART_TIMEOUT: Duration = Duration::from_secs(6);
+const ICE_RESTART_INITIAL_BACKOFF_MS: u64 = 1000; // 1s initial
+const ICE_RESTART_MAX_BACKOFF_MS: u64 = 5000; // 5s max (1s -> 2s -> 4s -> 5s -> ...)
 const ICE_RESTART_MIN_OFFER_INTERVAL: Duration = Duration::from_secs(2);
 const ICE_GATHERING_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 const ICE_RESTART_MAX_TOTAL_DURATION: Duration = Duration::from_secs(60);
 const ICE_GATHERING_TIMEOUT: Duration = Duration::from_secs(10);
+const ICE_CONNECTED_TIMEOUT: Duration = Duration::from_secs(10);
+const DATA_CHANNEL_AFTER_ICE_TIMEOUT: Duration = Duration::from_secs(2);
+const ROLE_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(5);
 const ROLE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
-const DATA_CHANNEL_READY_TIMEOUT: Duration = INITIAL_CONNECTION_TIMEOUT;
 pub const NETWORK_RECOVERY_TIMEOUT: Duration = Duration::from_secs(6);
 const CLEANUP_BARRIER_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const ANSWERER_RECOVERY_STALE_TIMEOUT: Duration = ICE_RESTART_MAX_TOTAL_DURATION;
+const CONNECTION_FACTORY_INITIAL_RETRY_DELAY: Duration = Duration::from_secs(1);
+const CONNECTION_FACTORY_MAX_RETRY_DELAY: Duration = Duration::from_secs(10);
 
 // Health check constants
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
@@ -1538,30 +1542,30 @@ impl WebRtcCoordinator {
         })
     }
 
-    /// Wait for at least one DataChannel to be in Open state (Event-driven version)
-    ///
-    /// This prevents SCTP write failures by ensuring the DataChannel is fully ready
-    /// before marking the connection as established.
-    ///
-    /// Instead of polling, this method subscribes to DataChannelOpened events for
-    /// immediate notification when a DataChannel becomes ready.
-    ///
-    /// # Arguments
-    /// - `peer_id`: The peer ID to wait for
-    /// - `expected_session_id`: The WebRTC session that is allowed to satisfy readiness
-    /// - `event_broadcaster`: Event broadcaster to subscribe to
-    /// - `webrtc_conn`: The WebRTC connection to check (for quick check)
-    /// - `timeout`: Maximum time to wait for DataChannel to open
-    ///
-    /// # Returns
-    /// - `true` if at least one DataChannel is Open within timeout
-    /// - `false` if timeout expires without any DataChannel opening
-    async fn wait_for_data_channel_open_event(
+    async fn is_peer_session_connected(
         peer_id: &ActrId,
         expected_session_id: u64,
+        peers: &Arc<RwLock<HashMap<ActrId, PeerState>>>,
+    ) -> bool {
+        let peers = peers.read().await;
+        peers.get(peer_id).is_some_and(|state| {
+            state.session_id == expected_session_id
+                && matches!(state.current_state, RTCPeerConnectionState::Connected)
+        })
+    }
+
+    /// Wait for a new connection to become fully ready in two stages.
+    ///
+    /// Stage 1 waits for ICE/DTLS to reach Connected. Stage 2 then gives SCTP/DataChannel
+    /// a shorter budget to open before the connection is reported ready.
+    async fn wait_for_connection_ready_event(
+        peer_id: &ActrId,
+        expected_session_id: u64,
+        peers: &Arc<RwLock<HashMap<ActrId, PeerState>>>,
         event_broadcaster: &ConnectionEventBroadcaster,
         webrtc_conn: &super::connection::WebRtcConnection,
-        timeout: Duration,
+        ice_connected_timeout: Duration,
+        data_channel_after_ice_timeout: Duration,
     ) -> bool {
         // Quick check: if DataChannel is already open, return immediately
         if webrtc_conn.has_open_data_channel().await {
@@ -1572,17 +1576,43 @@ impl WebRtcCoordinator {
         // Subscribe to events
         let mut event_rx = event_broadcaster.subscribe();
         let target_peer = peer_id.clone();
+        let mut ice_connected =
+            Self::is_peer_session_connected(peer_id, expected_session_id, peers).await;
 
-        // Create a pinned sleep future for the timeout
-        let sleep = tokio::time::sleep(timeout);
+        if ice_connected {
+            tracing::debug!(
+                "✅ ICE already connected for peer {}, waiting for DataChannel",
+                target_peer
+            );
+        }
+
+        // Create a pinned sleep future for the current stage timeout.
+        let sleep = tokio::time::sleep(if ice_connected {
+            data_channel_after_ice_timeout
+        } else {
+            ice_connected_timeout
+        });
         tokio::pin!(sleep);
 
-        // Wait for DataChannelOpened event or timeout
         loop {
             tokio::select! {
                 _ = &mut sleep => {
-                    // Timeout reached
-                    break;
+                    if ice_connected {
+                        tracing::warn!(
+                            "⚠️ Timeout waiting for DataChannel to open after ICE connected for peer {} (session_id={}, {:?})",
+                            target_peer,
+                            expected_session_id,
+                            data_channel_after_ice_timeout
+                        );
+                    } else {
+                        tracing::warn!(
+                            "⚠️ Timeout waiting for ICE connected for peer {} (session_id={}, {:?})",
+                            target_peer,
+                            expected_session_id,
+                            ice_connected_timeout
+                        );
+                    }
+                    return false;
                 }
                 res = event_rx.recv() => {
                     match res {
@@ -1600,29 +1630,99 @@ impl WebRtcCoordinator {
                             );
                             return true;
                         }
+                        Ok(ConnectionEvent::StateChanged {
+                            peer_id,
+                            session_id,
+                            state: ConnectionState::Connected,
+                        }) if peer_id == target_peer && session_id == expected_session_id => {
+                            if webrtc_conn.has_open_data_channel().await {
+                                tracing::info!(
+                                    "✅ DataChannel already open when ICE connected for peer {} (session_id={})",
+                                    peer_id,
+                                    session_id
+                                );
+                                return true;
+                            }
+
+                            if !ice_connected {
+                                ice_connected = true;
+                                sleep.as_mut().reset(
+                                    tokio::time::Instant::now() + data_channel_after_ice_timeout
+                                );
+                                tracing::info!(
+                                    "✅ ICE connected for peer {} (session_id={}); waiting {:?} for DataChannel",
+                                    peer_id,
+                                    session_id,
+                                    data_channel_after_ice_timeout
+                                );
+                            }
+                        }
+                        Ok(ConnectionEvent::StateChanged {
+                            peer_id,
+                            session_id,
+                            state: ConnectionState::Failed | ConnectionState::Closed,
+                        }) if peer_id == target_peer && session_id == expected_session_id => {
+                            tracing::warn!(
+                                "⚠️ Connection entered terminal state before DataChannel ready for peer {} (session_id={})",
+                                peer_id,
+                                session_id
+                            );
+                            return false;
+                        }
+                        Ok(ConnectionEvent::ConnectionClosed {
+                            peer_id,
+                            session_id,
+                        }) if peer_id == target_peer && session_id == expected_session_id => {
+                            tracing::warn!(
+                                "⚠️ Connection closed before DataChannel ready for peer {} (session_id={})",
+                                peer_id,
+                                session_id
+                            );
+                            return false;
+                        }
                         Ok(_) => {
                             // Other events, continue waiting
                             continue;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                             tracing::warn!("⚠️ Event stream lagged by {} events, continuing...", n);
+                            if webrtc_conn.has_open_data_channel().await {
+                                tracing::info!(
+                                    "✅ DataChannel open after event lag for peer {} (session_id={})",
+                                    target_peer,
+                                    expected_session_id
+                                );
+                                return true;
+                            }
+                            if !ice_connected
+                                && Self::is_peer_session_connected(
+                                    &target_peer,
+                                    expected_session_id,
+                                    peers,
+                                )
+                                .await
+                            {
+                                ice_connected = true;
+                                sleep.as_mut().reset(
+                                    tokio::time::Instant::now() + data_channel_after_ice_timeout
+                                );
+                                tracing::info!(
+                                    "✅ ICE connected after event lag for peer {} (session_id={}); waiting {:?} for DataChannel",
+                                    target_peer,
+                                    expected_session_id,
+                                    data_channel_after_ice_timeout
+                                );
+                            }
                             continue;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            tracing::warn!("⚠️ Event channel closed while waiting for DataChannel");
+                            tracing::warn!("⚠️ Event channel closed while waiting for connection ready");
                             return false;
                         }
                     }
                 }
             }
         }
-
-        tracing::warn!(
-            "⚠️ Timeout waiting for DataChannel to open for peer {} ({:?})",
-            target_peer,
-            timeout
-        );
-        false
     }
 
     pub(crate) async fn is_active_session(&self, peer_id: &ActrId, session_id: u64) -> bool {
@@ -2071,7 +2171,7 @@ impl WebRtcCoordinator {
 
         // Role negotiation: determine if we should be offerer or answerer
         let role_result =
-            tokio::time::timeout(Duration::from_secs(15), self.negotiate_role(target)).await;
+            tokio::time::timeout(ROLE_NEGOTIATION_TIMEOUT, self.negotiate_role(target)).await;
 
         let is_offerer = match role_result {
             Ok(Ok(v)) => v,
@@ -2116,7 +2216,7 @@ impl WebRtcCoordinator {
     ) -> ActorResult<oneshot::Receiver<()>> {
         if !skip_negotiation {
             let role_result =
-                tokio::time::timeout(Duration::from_secs(15), self.negotiate_role(target)).await;
+                tokio::time::timeout(ROLE_NEGOTIATION_TIMEOUT, self.negotiate_role(target)).await;
 
             let role_result = match role_result {
                 Ok(Ok(v)) => v,
@@ -3128,7 +3228,7 @@ impl WebRtcCoordinator {
 
         tracing::info!("✅ WebRTC connection negotiation completed: {}", from);
 
-        // Wait for DataChannel to be ready using the same window as initial connection setup.
+        // Wait for ICE and DataChannel to be ready before reporting the connection ready.
         let peers = Arc::clone(&self.peers);
         let from_id = from.clone();
         let webrtc_conn_for_wait = webrtc_conn.clone();
@@ -3136,19 +3236,18 @@ impl WebRtcCoordinator {
         let event_broadcaster = self.event_broadcaster.clone();
 
         tokio::spawn(async move {
-            // FIX: Wait for at least one DataChannel to be Open before marking ready
-            // This prevents SCTP write failures due to race condition
-            // Using event-driven approach for instant notification
-            // DataChannel can only open after ICE is Connected, so no need to poll ICE state separately
-            if Self::wait_for_data_channel_open_event(
+            let opened = Self::wait_for_connection_ready_event(
                 &from_id,
                 wait_session_id,
+                &peers,
                 &event_broadcaster,
                 &webrtc_conn_for_wait,
-                DATA_CHANNEL_READY_TIMEOUT,
+                ICE_CONNECTED_TIMEOUT,
+                DATA_CHANNEL_AFTER_ICE_TIMEOUT,
             )
-            .await
-            {
+            .await;
+
+            if opened {
                 tracing::info!("✅ DataChannel verified open, connection fully ready");
 
                 // Mark ICE restart attempt complete
@@ -3177,8 +3276,9 @@ impl WebRtcCoordinator {
                 }
             } else {
                 tracing::warn!(
-                    "⚠️ DataChannel failed to open within {:?}",
-                    DATA_CHANNEL_READY_TIMEOUT
+                    "⚠️ Connection did not become ready within staged timeout for peer {}, session_id={}",
+                    from_id,
+                    wait_session_id
                 );
             }
         });
@@ -3582,8 +3682,8 @@ impl WebRtcCoordinator {
             let ready_rx = self.initiate_connection(target).await?;
             tracing::debug!(?ready_rx, "ready_rx");
 
-            // Wait for connection to be ready (10s timeout for single attempt)
-            match tokio::time::timeout(Duration::from_secs(10), ready_rx).await {
+            // Wait for connection to be ready within the per-attempt initial connection budget.
+            match tokio::time::timeout(INITIAL_CONNECTION_TIMEOUT, ready_rx).await {
                 Ok(Ok(())) => {
                     tracing::info!("✅ WebRTC connection ready: {}", target);
                 }
@@ -3700,9 +3800,9 @@ impl WebRtcCoordinator {
         // 3. Retry loop with exponential backoff (max 3 retries)
         const MAX_RETRIES: u32 = 3;
         let mut backoff = ExponentialBackoff::new(
-            Duration::from_secs(5),  // initial delay
-            Duration::from_secs(15), // max delay
-            None,                    // no limit (we control manually)
+            CONNECTION_FACTORY_INITIAL_RETRY_DELAY,
+            CONNECTION_FACTORY_MAX_RETRY_DELAY,
+            None, // no limit (we control manually)
         );
 
         let mut last_error = None;
@@ -3719,7 +3819,7 @@ impl WebRtcCoordinator {
 
             // Wait before retry (skip first attempt)
             if attempt > 0 {
-                let delay = backoff.next().unwrap_or(Duration::from_secs(10));
+                let delay = backoff.next().unwrap_or(CONNECTION_FACTORY_MAX_RETRY_DELAY);
                 tracing::info!(
                     "🔄 [Factory] Retrying connection to {} (attempt {}/{}, delay {:?})",
                     target_id,
@@ -3815,8 +3915,8 @@ impl WebRtcCoordinator {
             }
         }
 
-        // Wait for connection to be ready (10s timeout) with cancellation support
-        let timeout_duration = std::time::Duration::from_secs(10);
+        // Wait for connection to be ready with cancellation support.
+        let timeout_duration = INITIAL_CONNECTION_TIMEOUT;
 
         let wait_result = if let Some(token) = cancel_token {
             tokio::select! {
@@ -5899,8 +5999,8 @@ mod tests {
     }
 
     #[test]
-    fn test_exponential_backoff_sequence_5_10_10() {
-        // Test the exact sequence: 5s -> 10s -> 10s -> 10s...
+    fn test_exponential_backoff_sequence_1_2_4_5() {
+        // Test the exact ICE restart sequence: 1s -> 2s -> 4s -> 5s...
         let mut backoff = ExponentialBackoff::new(
             Duration::from_millis(ICE_RESTART_INITIAL_BACKOFF_MS),
             Duration::from_millis(ICE_RESTART_MAX_BACKOFF_MS),
@@ -5909,12 +6009,12 @@ mod tests {
 
         let delays: Vec<Duration> = backoff.by_ref().take(6).collect();
 
-        assert_eq!(delays[0], Duration::from_secs(5)); // 5s
-        assert_eq!(delays[1], Duration::from_secs(10)); // 10s (5*2, capped)
-        assert_eq!(delays[2], Duration::from_secs(10)); // 10s
-        assert_eq!(delays[3], Duration::from_secs(10)); // 10s
-        assert_eq!(delays[4], Duration::from_secs(10)); // 10s
-        assert_eq!(delays[5], Duration::from_secs(10)); // 10s
+        assert_eq!(delays[0], Duration::from_secs(1)); // 1s
+        assert_eq!(delays[1], Duration::from_secs(2)); // 2s
+        assert_eq!(delays[2], Duration::from_secs(4)); // 4s
+        assert_eq!(delays[3], Duration::from_secs(5)); // 5s (capped)
+        assert_eq!(delays[4], Duration::from_secs(5)); // 5s
+        assert_eq!(delays[5], Duration::from_secs(5)); // 5s
     }
 
     #[test]

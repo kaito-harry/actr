@@ -7,7 +7,7 @@ use actr_hyper::wire::webrtc::{
 use actr_protocol::{ActrType, RouteCandidatesRequest, route_candidates_request};
 use futures_util::StreamExt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio_tungstenite::accept_async;
@@ -78,6 +78,66 @@ fn route_candidates_request() -> RouteCandidatesRequest {
         client_location: None,
         client_fingerprint: "service_semantic:test".to_string(),
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_route_candidates_waiter_uses_short_response_timeout() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_test_writer()
+        .try_init()
+        .ok();
+
+    let (server_url, first_message_rx, server_task) = start_silent_signaling_server().await;
+    let client = Arc::new(WebSocketSignalingClient::new(test_signaling_config(
+        &server_url,
+    )));
+    client
+        .connect_once()
+        .await
+        .expect("connect signaling client");
+
+    let started = Instant::now();
+    let request_task = {
+        let client = client.clone();
+        let actor_id = make_actor_id(43);
+        let credential = dummy_credential();
+        let request = route_candidates_request();
+
+        tokio::spawn(async move {
+            client
+                .send_route_candidates_request(actor_id, credential, request)
+                .await
+        })
+    };
+
+    first_message_rx
+        .await
+        .expect("server should receive route candidates request");
+
+    let result = tokio::time::timeout(Duration::from_secs(7), request_task)
+        .await
+        .expect("pending route candidates request should use the short response timeout")
+        .expect("request task should not panic");
+    let elapsed = started.elapsed();
+
+    let err = result.expect_err("request should fail when signaling server stays silent");
+    assert!(
+        err.to_string()
+            .contains("Timed out waiting for signaling response"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        elapsed >= Duration::from_secs(4),
+        "request should wait for its response budget; elapsed={elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(7),
+        "request/response timeout must not use the old 15s window; elapsed={elapsed:?}"
+    );
+
+    let _ = client.disconnect().await;
+    server_task.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
