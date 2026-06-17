@@ -15,22 +15,21 @@ scripts/build-release.sh
 ```
 
 Outputs:
+
 - `dist/protoc-gen-actrframework-swift-macos-arm64.zip`
 - `dist/protoc-gen-actrframework-swift-macos-arm64.zip.sha256`
 
 ## Publish
 
-1. Create and push a tag:
-   ```bash
-   git tag vX.Y.Z
-   git push origin vX.Y.Z
-   ```
-2. GitHub Actions builds and uploads the release assets.
-3. Confirm the release page contains the zip and checksum assets.
+Releases are published from the repository-root workflow `.github/workflows/publish-protoc-plugins.yml`, triggered manually against an existing `Actrium/actr` release tag. All six protoc plugins (Rust, Swift, Kotlin, TypeScript, Python, Web) are built and published together every run.
+
+1. Ensure the release tag already exists (created by the release train).
+2. In GitHub Actions, run the **Publish Protoc Plugins** workflow with `tag` set to the release tag, e.g. `v0.3.11`.
+3. The workflow validates the release exists, builds all six plugins in parallel, then uploads (or overwrites) the zip and checksum assets. It does **not** create tags or releases.
 
 ## Verification
 
-1. Download the zip and checksum:
+1. Download the zip and checksum, then verify:
    ```bash
    shasum -a 256 -c protoc-gen-actrframework-swift-macos-arm64.zip.sha256
    unzip protoc-gen-actrframework-swift-macos-arm64.zip

@@ -38,7 +38,7 @@ rm -f "$ZIP_PATH"
 (cd "$DIST_DIR" && zip -q "$ZIP_NAME" "$PRODUCT_NAME")
 
 CHECKSUM_PATH="${ZIP_PATH}.sha256"
-shasum -a 256 "$ZIP_PATH" | awk '{print $1}' > "$CHECKSUM_PATH"
+( cd "$DIST_DIR" && shasum -a 256 "$ZIP_NAME" ) > "$CHECKSUM_PATH"
 
 echo "Release artifact: $ZIP_PATH"
 echo "SHA256 file: $CHECKSUM_PATH"

@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "bundle": "esbuild src/main.ts --bundle --platform=node --target=node20 --external:typescript --outfile=dist/bundle.js",
+    "bundle": "esbuild src/main.ts --bundle --platform=node --target=node20 --outfile=dist/bundle.js",
     "check": "tsc --noEmit"
   },
   "engines": {

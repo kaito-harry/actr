@@ -1,0 +1,262 @@
+name: Publish Protoc Plugins
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "已存在的 release tag，例如 v0.3.11"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-protoc-plugins-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate-release:
+    name: Ensure release exists
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if gh release view "$TAG" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            echo "Release $TAG exists"
+          else
+            echo "::error::Release $TAG does not exist in ${{ github.repository }}. Create it first (e.g. via the release train)."
+            exit 1
+          fi
+
+  build-rust:
+    name: Build Rust plugin (macOS arm64)
+    needs: validate-release
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release -p actr-framework-protoc-codegen --bin protoc-gen-actrframework --target aarch64-apple-darwin --locked
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/aarch64-apple-darwin/release/protoc-gen-actrframework dist/protoc-gen-actrframework
+          chmod +x dist/protoc-gen-actrframework
+          ZIP_NAME="protoc-gen-actrframework-macos-arm64.zip"
+          ( cd dist && zip -q "$ZIP_NAME" protoc-gen-actrframework )
+          ( cd dist && shasum -a 256 "$ZIP_NAME" > "$ZIP_NAME.sha256" )
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: protoc-gen-actrframework-rust
+          path: |
+            dist/protoc-gen-actrframework-macos-arm64.zip
+            dist/protoc-gen-actrframework-macos-arm64.zip.sha256
+          if-no-files-found: error
+
+  build-swift:
+    name: Build Swift plugin (macOS arm64)
+    needs: validate-release
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Build release artifact
+        run: bash tools/protoc-gen/swift/scripts/build-release.sh
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: protoc-gen-actrframework-swift
+          path: |
+            tools/protoc-gen/swift/dist/protoc-gen-actrframework-swift-macos-arm64.zip
+            tools/protoc-gen/swift/dist/protoc-gen-actrframework-swift-macos-arm64.zip.sha256
+          if-no-files-found: error
+
+  build-web:
+    name: Build Web plugin (macOS arm64)
+    needs: validate-release
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release -p actr-web-protoc-codegen --bin protoc-gen-actr-web --target aarch64-apple-darwin --locked
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/aarch64-apple-darwin/release/protoc-gen-actr-web dist/protoc-gen-actr-web
+          chmod +x dist/protoc-gen-actr-web
+          ZIP_NAME="protoc-gen-actr-web-macos-arm64.zip"
+          ( cd dist && zip -q "$ZIP_NAME" protoc-gen-actr-web )
+          ( cd dist && shasum -a 256 "$ZIP_NAME" > "$ZIP_NAME.sha256" )
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: protoc-gen-actr-web
+          path: |
+            dist/protoc-gen-actr-web-macos-arm64.zip
+            dist/protoc-gen-actr-web-macos-arm64.zip.sha256
+          if-no-files-found: error
+
+  build-kotlin:
+    name: Build Kotlin plugin
+    needs: validate-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Build fat JAR
+        run: (cd tools/protoc-gen/kotlin && ./gradlew protocPluginJar --no-daemon)
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p dist/build/libs
+          cp tools/protoc-gen/kotlin/protoc-gen-actrframework-kotlin dist/protoc-gen-actrframework-kotlin
+          cp tools/protoc-gen/kotlin/build/libs/protoc-gen-actrframework-kotlin-0.1.0.jar dist/build/libs/protoc-gen-actrframework-kotlin-0.1.0.jar
+          chmod +x dist/protoc-gen-actrframework-kotlin
+          ZIP_NAME="protoc-gen-actrframework-kotlin.zip"
+          ( cd dist && zip -q "$ZIP_NAME" protoc-gen-actrframework-kotlin build/libs/protoc-gen-actrframework-kotlin-0.1.0.jar )
+          ( cd dist && shasum -a 256 "$ZIP_NAME" > "$ZIP_NAME.sha256" )
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: protoc-gen-actrframework-kotlin
+          path: |
+            dist/protoc-gen-actrframework-kotlin.zip
+            dist/protoc-gen-actrframework-kotlin.zip.sha256
+          if-no-files-found: error
+
+  build-typescript:
+    name: Build TypeScript plugin
+    needs: validate-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tools/protoc-gen/typescript/package-lock.json
+      - name: Build
+        run: (cd tools/protoc-gen/typescript && npm ci && npm run bundle)
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p dist/scripts dist/dist
+          cp tools/protoc-gen/typescript/scripts/protoc-gen-actrframework-typescript dist/scripts/protoc-gen-actrframework-typescript
+          cp tools/protoc-gen/typescript/dist/bundle.js dist/dist/bundle.js
+          cp tools/protoc-gen/typescript/package.json dist/package.json
+          chmod +x dist/scripts/protoc-gen-actrframework-typescript
+          ZIP_NAME="protoc-gen-actrframework-typescript.zip"
+          ( cd dist && zip -q "$ZIP_NAME" scripts/protoc-gen-actrframework-typescript dist/bundle.js package.json )
+          ( cd dist && shasum -a 256 "$ZIP_NAME" > "$ZIP_NAME.sha256" )
+      - name: Verify self-contained bundle
+        run: |
+          set -euo pipefail
+          TMPDIR="$(mktemp -d)"
+          ( cd dist && unzip -q protoc-gen-actrframework-typescript.zip -d "$TMPDIR" )
+          echo "Extracted contents:"
+          find "$TMPDIR" -type f | sort
+          "$TMPDIR/scripts/protoc-gen-actrframework-typescript" --version
+          echo "Bundle is self-contained ✓"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: protoc-gen-actrframework-typescript
+          path: |
+            dist/protoc-gen-actrframework-typescript.zip
+            dist/protoc-gen-actrframework-typescript.zip.sha256
+          if-no-files-found: error
+
+  build-python:
+    name: Build Python plugin
+    needs: validate-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.11
+      - name: Install build tool
+        run: python -m pip install -U build
+      - name: Build
+        run: (cd tools/protoc-gen/python && python -m build)
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp tools/protoc-gen/python/dist/* dist/
+          ( cd dist && for f in *.whl *.tar.gz; do shasum -a 256 "$f" > "$f.sha256"; done )
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: framework_codegen_python
+          path: |
+            dist/*.whl
+            dist/*.whl.sha256
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Upload to release
+    needs: [build-rust, build-swift, build-web, build-kotlin, build-typescript, build-python]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Upload assets to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          echo "Uploading assets:"
+          find dist -type f \( -name '*.zip' -o -name '*.whl' -o -name '*.tar.gz' -o -name '*.sha256' \) | sort
+          find dist -type f \( -name '*.zip' -o -name '*.whl' -o -name '*.tar.gz' -o -name '*.sha256' \) -print0 \
+            | sort -z \
+            | xargs -0 -r gh release upload "$TAG" --repo "${{ github.repository }}" --clobber

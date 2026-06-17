@@ -867,7 +867,7 @@ impl {handler_interface} for {handler_impl} {{
     fn install_plugin_from_github_source(&self) -> Result<PathBuf> {
         const PACKAGE_NAME: &str = "actr-framework-protoc-codegen";
         const PLUGIN_NAME: &str = "protoc-gen-actrframework";
-        const REPOSITORY_URL: &str = "https://github.com/actor-rtc/actr.git";
+        const REPOSITORY_URL: &str = "https://github.com/Actrium/actr.git";
 
         let mut install_cmd = StdCommand::new("cargo");
         install_cmd

@@ -123,7 +123,7 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             "--help" | "-h" => {
-                println!("protoc-gen-actrframework - Protobuf plugin for Actor-RTC framework");
+                println!("protoc-gen-actrframework - Protobuf plugin for Actrium ACTR framework");
                 println!();
                 println!("USAGE:");
                 println!(
