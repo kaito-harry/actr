@@ -119,6 +119,7 @@ pub use admin::v1::{
     ListConfigOverridesResponse,
     ListRealmsRequest,
     ListRealmsResponse,
+    ManagedRealmState,
     SetConfigOverrideRequest,
     SetConfigOverrideResponse,
     ShutdownRequest,

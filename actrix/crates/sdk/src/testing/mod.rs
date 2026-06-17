@@ -6,7 +6,7 @@
 
 pub use admin::nonce_auth;
 pub use admin::{
-    ConfigType, CreateRealmRequest, DeleteRealmRequest, GetConfigRequest, GetNodeInfoRequest,
-    GetRealmRequest, ListRealmsRequest, NodeAdminServiceClient, NonceCredential, ResourceType,
-    ShutdownRequest, UpdateConfigRequest, UpdateRealmRequest,
+    ConfigType, CreateRealmRequest, CredentialPayload, DeleteRealmRequest, GetConfigRequest,
+    GetNodeInfoRequest, GetRealmRequest, ListRealmsRequest, NodeAdminServiceClient,
+    NonceCredential, ResourceType, ShutdownRequest, UpdateConfigRequest, UpdateRealmRequest,
 };

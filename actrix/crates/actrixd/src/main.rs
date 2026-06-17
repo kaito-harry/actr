@@ -13,7 +13,7 @@ mod service;
 use anyhow::Context;
 use clap::Parser;
 use futures::stream::{FuturesUnordered, StreamExt};
-use platform::config::{ActrixConfig, ControlHead};
+use platform::config::ActrixConfig;
 use recording_pipeline::init_recording_pipeline;
 use service::{
     AisService, ServiceContainer, ServiceManager, SignalingService, StunService, TurnService,
@@ -366,8 +366,9 @@ impl ApplicationLauncher {
         }
 
         platform::recording::info!(
-            "  - Control Service (/admin, head={:?})",
-            config.control_head()
+            "  - Control Service (admin_ui={}, grpc_api={})",
+            config.admin_ui_enabled(),
+            config.grpc_api_enabled()
         );
 
         Ok(service_manager)
@@ -407,18 +408,15 @@ impl ApplicationLauncher {
                     platform::recording::info!("  - {}/ais/health", http_url);
                     platform::recording::info!("  - {}/ais/register (POST protobuf)", http_url);
                 }
-                match config.control_head() {
-                    ControlHead::AdminUi => {
-                        platform::recording::info!("  - {}/admin", http_url);
-                        platform::recording::info!("  - {}/admin/health", http_url);
-                    }
-                    ControlHead::GrpcApi => {
-                        platform::recording::info!(
-                            "  - {}/admin.v1.NodeAdminService/<Method>",
-                            http_url
-                        );
-                        platform::recording::info!("  - {}/admin/health", http_url);
-                    }
+                if config.admin_ui_enabled() {
+                    platform::recording::info!("  - {}/admin", http_url);
+                    platform::recording::info!("  - {}/admin/health", http_url);
+                }
+                if config.grpc_api_enabled() {
+                    platform::recording::info!(
+                        "  - {}/admin.v1.NodeAdminService/<Method>",
+                        http_url
+                    );
                 }
             }
         } else {

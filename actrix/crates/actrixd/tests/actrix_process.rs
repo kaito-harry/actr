@@ -1,4 +1,7 @@
-use actrix_sdk::testing::{self, GetNodeInfoRequest, NodeAdminServiceClient, ShutdownRequest};
+use actrix_sdk::testing::{
+    self, CreateRealmRequest, CredentialPayload, DeleteRealmRequest, GetNodeInfoRequest,
+    ListRealmsRequest, NodeAdminServiceClient, ShutdownRequest, UpdateRealmRequest,
+};
 use nonce_auth::CredentialBuilder;
 use platform::storage::db::Database;
 use serde_json::Value;
@@ -670,6 +673,66 @@ max_clock_skew_secs = 300
     config_path
 }
 
+fn write_config_with_admin_and_control_grpc(dir: &Path, port: u16) -> PathBuf {
+    let data_dir = dir.join("data");
+    fs::create_dir_all(&data_dir).expect("create data dir");
+    let config_path = dir.join("config.toml");
+    let mut f = fs::File::create(&config_path).expect("create config file");
+    writeln!(
+        f,
+        r#"
+name = "actrix-test-all-in-one"
+enable = 16  # ENABLE_SIGNER
+env = "dev"
+sqlite_path = "{sqlite}"
+actrix_shared_key = "0123456789abcdef0123456789abcdef"
+location_tag = "local,test,all-in-one"
+pid = "{pid}"
+
+[bind]
+[bind.http]
+domain_name = "localhost"
+advertised_ip = "127.0.0.1"
+ip = "127.0.0.1"
+port = {port}
+
+[bind.ice]
+advertised_ip = "127.0.0.1"
+advertised_port = 3478
+ip = "127.0.0.1"
+port = 0
+
+[turn]
+relay_port_range = "49152-65535"
+realm = "actrix.local"
+
+[services.signer]
+# defaults
+
+[control.admin_ui]
+enabled = true
+password = "testpassword123"
+
+[control.grpc_api]
+enabled = true
+node_id = "{node_id}"
+node_name = "actrix-test-node"
+shared_secret = "{shared_secret}"
+max_clock_skew_secs = 300
+
+[recording]
+
+"#,
+        sqlite = data_dir.display(),
+        port = port,
+        node_id = TEST_CONTROL_NODE_ID,
+        shared_secret = TEST_CONTROL_SHARED_SECRET,
+        pid = dir.join("actrix.pid").display()
+    )
+    .expect("write config");
+    config_path
+}
+
 fn write_ice_only_config(dir: &Path, enable: u8, ice_port: u16, http_port: u16) -> PathBuf {
     let data_dir = dir.join("data");
     fs::create_dir_all(&data_dir).expect("create data dir");
@@ -1224,11 +1287,48 @@ fn build_node_info_credential_with_timestamp(
     testing::nonce_auth::to_proto_credential(credential)
 }
 
-fn build_shutdown_credential(shared_secret: &[u8]) -> testing::NonceCredential {
-    let payload = format!("shutdown:{TEST_CONTROL_NODE_ID}");
+fn dummy_credential() -> testing::NonceCredential {
+    testing::NonceCredential {
+        timestamp: 0,
+        nonce: String::new(),
+        signature: String::new(),
+    }
+}
+
+/// Build a nonce-auth credential by signing the canonical payload derived from
+/// the request itself (`auth_payload` + `body_digest`), mirroring the server's
+/// `AuthService::verify_body`. Reusing the `CredentialPayload` trait keeps the
+/// test (acting as the superv client) in lockstep with the server's
+/// canonicalization instead of duplicating the digest string.
+fn build_signed_credential<T: CredentialPayload>(
+    shared_secret: &[u8],
+    req: &T,
+) -> testing::NonceCredential {
+    let mut payload = req.auth_payload(TEST_CONTROL_NODE_ID);
+    let digest = req.body_digest();
+    if !digest.is_empty() {
+        payload.push(':');
+        payload.push_str(&digest);
+    }
     let credential = CredentialBuilder::new(shared_secret)
         .sign(payload.as_bytes())
-        .expect("build shutdown credential");
+        .expect("build signed credential");
+    testing::nonce_auth::to_proto_credential(credential)
+}
+
+fn build_list_realms_credential(shared_secret: &[u8]) -> testing::NonceCredential {
+    let payload = format!("list_realms:{TEST_CONTROL_NODE_ID}");
+    let credential = CredentialBuilder::new(shared_secret)
+        .sign(payload.as_bytes())
+        .expect("build list realms credential");
+    testing::nonce_auth::to_proto_credential(credential)
+}
+
+fn build_delete_realm_credential(shared_secret: &[u8], realm_id: u32) -> testing::NonceCredential {
+    let payload = format!("delete_realm:{TEST_CONTROL_NODE_ID}:{realm_id}");
+    let credential = CredentialBuilder::new(shared_secret)
+        .sign(payload.as_bytes())
+        .expect("build delete realm credential");
     testing::nonce_auth::to_proto_credential(credential)
 }
 
@@ -2389,6 +2489,160 @@ async fn actrix_control_grpc_serves_node_info_and_rejects_bad_signature() {
 
 #[tokio::test]
 #[serial]
+async fn actrix_admin_ui_and_control_grpc_can_run_together_with_ui_realm_writes_disabled() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let port = choose_port();
+    let config_path = write_config_with_admin_and_control_grpc(tmp.path(), port);
+    let log_path = tmp.path().join("actrix-all-in-one-control.log");
+    let mut child = spawn_actrix(&config_path, &log_path);
+
+    let admin_health_url = format!("http://127.0.0.1:{port}/admin/health");
+    wait_for_health(&admin_health_url, &mut child, &log_path).await;
+
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let mut grpc_client = wait_for_control_grpc(&endpoint, &mut child, &log_path).await;
+    let shared_secret = hex::decode(TEST_CONTROL_SHARED_SECRET).expect("decode shared secret");
+    let node_info = grpc_client
+        .get_node_info(GetNodeInfoRequest {
+            credential: build_node_info_credential(&shared_secret),
+        })
+        .await
+        .expect("get node info through grpc")
+        .into_inner();
+    assert!(node_info.success);
+    assert_eq!(node_info.node_id, TEST_CONTROL_NODE_ID);
+
+    let http_client = reqwest::Client::new();
+    let login_resp: Value = http_client
+        .post(format!("http://127.0.0.1:{port}/admin/api/auth/login"))
+        .json(&serde_json::json!({ "password": "testpassword123" }))
+        .send()
+        .await
+        .expect("login request")
+        .json()
+        .await
+        .expect("login response json");
+    let token = login_resp["token"]
+        .as_str()
+        .expect("login response should include token");
+
+    let create_resp = http_client
+        .post(format!("http://127.0.0.1:{port}/admin/api/realms"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({
+            "name": "ui-created-while-managed",
+            "enabled": true
+        }))
+        .send()
+        .await
+        .expect("admin ui create realm request");
+    assert_eq!(create_resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+    graceful_shutdown(child);
+}
+
+#[tokio::test]
+#[serial]
+async fn actrix_control_grpc_managed_realm_crud_uses_external_id_and_soft_delete() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let port = choose_port();
+    let config_path = write_config_with_control_grpc(tmp.path(), port);
+    let log_path = tmp.path().join("actrix-control-grpc-realm-crud.log");
+    let mut child = spawn_actrix(&config_path, &log_path);
+
+    let health_url = format!("http://127.0.0.1:{port}/metrics");
+    wait_for_health(&health_url, &mut child, &log_path).await;
+
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let mut client = wait_for_control_grpc(&endpoint, &mut child, &log_path).await;
+    let shared_secret = hex::decode(TEST_CONTROL_SHARED_SECRET).expect("decode shared secret");
+    let realm_id = 42_424;
+
+    let mut create_req = CreateRealmRequest {
+        realm_id: Some(realm_id),
+        name: "managed-crud".to_string(),
+        enabled: true,
+        credential: dummy_credential(),
+        expires_at: 1_900_000_000,
+        status: Some("Active".to_string()),
+        secret_current_hash: Some("hash-v1".to_string()),
+        secret_previous_hash: None,
+        secret_previous_valid_until: None,
+    };
+    create_req.credential = build_signed_credential(&shared_secret, &create_req);
+    let created = client
+        .create_realm(create_req)
+        .await
+        .expect("managed CreateRealm")
+        .into_inner();
+    assert!(created.success, "{:?}", created.error_message);
+    let created_realm = created.realm.expect("created realm info");
+    assert_eq!(created_realm.realm_id, realm_id);
+    assert_eq!(created_realm.name, "managed-crud");
+    assert_eq!(
+        created_realm
+            .secret_rotation_state
+            .unwrap()
+            .current_hash_preview,
+        "hash-v1"
+    );
+
+    let mut update_req = UpdateRealmRequest {
+        realm_id,
+        name: Some("managed-crud-updated".to_string()),
+        enabled: Some(false),
+        credential: dummy_credential(),
+        status: Some("Suspended".to_string()),
+        expires_at: Some(1_900_000_001),
+        secret_current_hash: Some("hash-v2".to_string()),
+        secret_previous_hash: Some("hash-v1".to_string()),
+        secret_previous_valid_until: Some(1_800_000_000),
+    };
+    update_req.credential = build_signed_credential(&shared_secret, &update_req);
+    let updated = client
+        .update_realm(update_req)
+        .await
+        .expect("managed UpdateRealm")
+        .into_inner();
+    assert!(updated.success, "{:?}", updated.error_message);
+    let updated_realm = updated.realm.expect("updated realm info");
+    assert_eq!(updated_realm.realm_id, realm_id);
+    assert_eq!(updated_realm.name, "managed-crud-updated");
+    assert!(!updated_realm.enabled);
+    assert_eq!(updated_realm.status, "Suspended");
+
+    let deleted = client
+        .delete_realm(DeleteRealmRequest {
+            realm_id,
+            credential: build_delete_realm_credential(&shared_secret, realm_id),
+        })
+        .await
+        .expect("managed DeleteRealm")
+        .into_inner();
+    assert!(deleted.success, "{:?}", deleted.error_message);
+
+    let listed = client
+        .list_realms(ListRealmsRequest {
+            page_size: None,
+            page_token: None,
+            credential: build_list_realms_credential(&shared_secret),
+        })
+        .await
+        .expect("ListRealms after soft delete")
+        .into_inner();
+    let realm = listed
+        .realms
+        .iter()
+        .find(|realm| realm.realm_id == realm_id)
+        .expect("soft-deleted realm should remain listed");
+    assert!(!realm.enabled);
+    assert_eq!(realm.status, "Inactive");
+
+    graceful_shutdown(child);
+}
+
+#[tokio::test]
+#[serial]
 async fn actrix_control_grpc_shutdown_rpc_stops_process() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
@@ -2403,13 +2657,15 @@ async fn actrix_control_grpc_shutdown_rpc_stops_process() {
     let mut client = wait_for_control_grpc(&endpoint, &mut child, &log_path).await;
     let shared_secret = hex::decode(TEST_CONTROL_SHARED_SECRET).expect("decode shared secret");
 
+    let mut shutdown_req = ShutdownRequest {
+        graceful: true,
+        timeout_secs: Some(2),
+        reason: Some("integration requested shutdown".to_string()),
+        credential: dummy_credential(),
+    };
+    shutdown_req.credential = build_signed_credential(&shared_secret, &shutdown_req);
     let resp = client
-        .shutdown(ShutdownRequest {
-            graceful: true,
-            timeout_secs: Some(2),
-            reason: Some("integration requested shutdown".to_string()),
-            credential: build_shutdown_credential(&shared_secret),
-        })
+        .shutdown(shutdown_req)
         .await
         .expect("shutdown rpc should succeed")
         .into_inner();
@@ -2450,16 +2706,18 @@ async fn actrix_control_grpc_rejects_bad_shutdown_signature_and_keeps_running() 
     let endpoint = format!("http://127.0.0.1:{port}");
     let mut client = wait_for_control_grpc(&endpoint, &mut child, &log_path).await;
     let shared_secret = hex::decode(TEST_CONTROL_SHARED_SECRET).expect("decode shared secret");
-    let mut bad_credential = build_shutdown_credential(&shared_secret);
+    let mut shutdown_req = ShutdownRequest {
+        graceful: true,
+        timeout_secs: Some(1),
+        reason: Some("bad signature".to_string()),
+        credential: dummy_credential(),
+    };
+    let mut bad_credential = build_signed_credential(&shared_secret, &shutdown_req);
     bad_credential.signature.push('x');
+    shutdown_req.credential = bad_credential;
 
     let err = client
-        .shutdown(ShutdownRequest {
-            graceful: true,
-            timeout_secs: Some(1),
-            reason: Some("bad signature".to_string()),
-            credential: bad_credential,
-        })
+        .shutdown(shutdown_req)
         .await
         .expect_err("bad shutdown signature should be rejected");
     assert_eq!(err.code(), Code::Unauthenticated);

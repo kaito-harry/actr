@@ -4,6 +4,7 @@ import { KeyRound, Pencil, Trash2, Clock } from "lucide-react";
 
 interface RealmTableProps {
   realms: RealmInfo[];
+  writesEnabled: boolean;
   onToggleEnabled: (realm: RealmInfo) => void;
   onEdit: (realm: RealmInfo) => void;
   onRotateSecret: (realmId: number) => void;
@@ -12,6 +13,7 @@ interface RealmTableProps {
 
 export function RealmTable({
   realms,
+  writesEnabled,
   onToggleEnabled,
   onEdit,
   onRotateSecret,
@@ -20,7 +22,9 @@ export function RealmTable({
   if (realms.length === 0) {
     return (
       <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm text-gray-500">
-        No realms yet. Create one to get started.
+        {writesEnabled
+          ? "No realms yet. Create one to get started."
+          : "No realms have been synced from superv yet."}
       </div>
     );
   }
@@ -49,9 +53,10 @@ export function RealmTable({
               <td className="px-4 py-3">
                 <button
                   onClick={() => onToggleEnabled(realm)}
-                  title={realm.enabled ? "Deactivate" : "Activate"}
+                  disabled={!writesEnabled}
+                  title={writesEnabled ? (realm.enabled ? "Deactivate" : "Activate") : "Managed by superv"}
                   className={cn(
-                    "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+                    "relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50",
                     realm.enabled ? "bg-blue-600" : "bg-gray-300",
                   )}
                 >
@@ -78,22 +83,25 @@ export function RealmTable({
                 <div className="flex items-center justify-end gap-1">
                   <button
                     onClick={() => onEdit(realm)}
-                    className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
-                    title="Edit"
+                    disabled={!writesEnabled}
+                    className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-gray-400"
+                    title={writesEnabled ? "Edit" : "Managed by superv"}
                   >
                     <Pencil className="h-4 w-4" />
                   </button>
                   <button
                     onClick={() => onRotateSecret(realm.realm_id)}
-                    className="rounded-lg p-1.5 text-gray-400 hover:bg-amber-50 hover:text-amber-600 transition-colors"
-                    title="Rotate secret"
+                    disabled={!writesEnabled}
+                    className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-amber-50 hover:text-amber-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-gray-400"
+                    title={writesEnabled ? "Rotate secret" : "Managed by superv"}
                   >
                     <KeyRound className="h-4 w-4" />
                   </button>
                   <button
                     onClick={() => onDelete(realm.realm_id)}
-                    className="rounded-lg p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600 transition-colors"
-                    title="Delete"
+                    disabled={!writesEnabled}
+                    className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-gray-400"
+                    title={writesEnabled ? "Delete" : "Managed by superv"}
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>

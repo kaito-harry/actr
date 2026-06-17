@@ -16,6 +16,38 @@ use tonic::{Request, Response, Status};
 pub trait CredentialPayload {
     fn credential(&self) -> &NonceCredential;
     fn auth_payload(&self, node_id: &str) -> String;
+    /// Digest of the request body (excluding the `credential` field) for mutable
+    /// operations. Appended to `auth_payload` as `{op}:{node_id}:{subject}:{digest}`
+    /// so the signature binds the security-critical body fields (e.g. realm secret
+    /// hashes) against in-transit tampering. Returns empty for read-only ops, which
+    /// have no mutable body beyond what `auth_payload` already binds.
+    fn body_digest(&self) -> String {
+        String::new()
+    }
+}
+
+/// SHA-256 hex digest of a canonical string.
+fn sha256_hex(s: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(s.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+fn opt_str(v: Option<&str>) -> &str {
+    v.unwrap_or("")
+}
+
+fn opt_u64(v: Option<u64>) -> String {
+    v.map(|x| x.to_string()).unwrap_or_default()
+}
+
+fn opt_i32(v: Option<i32>) -> String {
+    v.map(|x| x.to_string()).unwrap_or_default()
+}
+
+fn opt_bool(v: Option<bool>) -> String {
+    v.map(|b| b.to_string()).unwrap_or_default()
 }
 
 #[derive(Clone)]
@@ -79,7 +111,12 @@ impl<S> AuthService<S> {
     }
 
     async fn verify_body<T: CredentialPayload>(&self, body: &T) -> Result<(), Status> {
-        let payload = body.auth_payload(&self.verifier.node_id);
+        let mut payload = body.auth_payload(&self.verifier.node_id);
+        let digest = body.body_digest();
+        if !digest.is_empty() {
+            payload.push(':');
+            payload.push_str(&digest);
+        }
         self.verifier.verify(body.credential(), payload).await
     }
 }
@@ -220,7 +257,22 @@ impl CredentialPayload for CreateRealmRequest {
     }
 
     fn auth_payload(&self, node_id: &str) -> String {
-        format!("create_realm:{node_id}:{}", self.name)
+        format!("create_realm:{node_id}:{}", self.realm_id.unwrap_or(0))
+    }
+
+    fn body_digest(&self) -> String {
+        let canon = format!(
+            "realm_id={}&name={}&enabled={}&status={}&expires_at={}&secret_current_hash={}&secret_previous_hash={}&secret_previous_valid_until={}",
+            self.realm_id.unwrap_or(0),
+            self.name,
+            self.enabled,
+            opt_str(self.status.as_deref()),
+            self.expires_at,
+            opt_str(self.secret_current_hash.as_deref()),
+            opt_str(self.secret_previous_hash.as_deref()),
+            opt_u64(self.secret_previous_valid_until),
+        );
+        sha256_hex(&canon)
     }
 }
 
@@ -241,6 +293,21 @@ impl CredentialPayload for UpdateRealmRequest {
 
     fn auth_payload(&self, node_id: &str) -> String {
         format!("update_realm:{node_id}:{}", self.realm_id)
+    }
+
+    fn body_digest(&self) -> String {
+        let canon = format!(
+            "realm_id={}&name={}&enabled={}&status={}&expires_at={}&secret_current_hash={}&secret_previous_hash={}&secret_previous_valid_until={}",
+            self.realm_id,
+            opt_str(self.name.as_deref()),
+            opt_bool(self.enabled),
+            opt_str(self.status.as_deref()),
+            opt_u64(self.expires_at),
+            opt_str(self.secret_current_hash.as_deref()),
+            opt_str(self.secret_previous_hash.as_deref()),
+            opt_u64(self.secret_previous_valid_until),
+        );
+        sha256_hex(&canon)
     }
 }
 
@@ -281,6 +348,16 @@ impl CredentialPayload for ShutdownRequest {
 
     fn auth_payload(&self, node_id: &str) -> String {
         format!("shutdown:{node_id}")
+    }
+
+    fn body_digest(&self) -> String {
+        let canon = format!(
+            "graceful={}&timeout_secs={}&reason={}",
+            self.graceful,
+            opt_i32(self.timeout_secs),
+            opt_str(self.reason.as_deref()),
+        );
+        sha256_hex(&canon)
     }
 }
 
@@ -326,5 +403,77 @@ fn map_nonce_error(err: NonceError, context: &str) -> Status {
             Status::unauthenticated(format!("{context}: invalid signature"))
         }
         other => Status::internal(format!("{context}: {other}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Canonical body string for realm requests is the cross-repo contract:
+    /// the superv client must build the identical string for the same logical
+    /// fields. Any change to field order/rendering here must be mirrored on the
+    /// superv side (see its `realm_body_digest` test, same expected digest).
+    const REALM_CANON: &str = "realm_id=42&name=managed&enabled=true&status=Active&expires_at=1900000000&secret_current_hash=hash-42&secret_previous_hash=&secret_previous_valid_until=";
+
+    fn dummy_credential() -> NonceCredential {
+        NonceCredential {
+            timestamp: 0,
+            nonce: String::new(),
+            signature: String::new(),
+        }
+    }
+
+    #[test]
+    fn create_realm_body_digest_matches_canonical() {
+        let req = CreateRealmRequest {
+            realm_id: Some(42),
+            name: "managed".to_string(),
+            enabled: true,
+            credential: dummy_credential(),
+            expires_at: 1_900_000_000,
+            status: Some("Active".to_string()),
+            secret_current_hash: Some("hash-42".to_string()),
+            secret_previous_hash: None,
+            secret_previous_valid_until: None,
+        };
+        assert_eq!(sha256_hex(REALM_CANON), req.body_digest());
+    }
+
+    #[test]
+    fn update_realm_body_digest_matches_canonical() {
+        let req = UpdateRealmRequest {
+            realm_id: 42,
+            name: Some("managed".to_string()),
+            enabled: Some(true),
+            credential: dummy_credential(),
+            status: Some("Active".to_string()),
+            expires_at: Some(1_900_000_000),
+            secret_current_hash: Some("hash-42".to_string()),
+            secret_previous_hash: None,
+            secret_previous_valid_until: None,
+        };
+        assert_eq!(sha256_hex(REALM_CANON), req.body_digest());
+    }
+
+    #[test]
+    fn shutdown_body_digest_matches_canonical() {
+        let req = ShutdownRequest {
+            graceful: true,
+            timeout_secs: Some(30),
+            reason: Some("deploy".to_string()),
+            credential: dummy_credential(),
+        };
+        let canon = "graceful=true&timeout_secs=30&reason=deploy";
+        assert_eq!(sha256_hex(canon), req.body_digest());
+    }
+
+    #[test]
+    fn read_ops_have_empty_body_digest() {
+        let get_realm = GetRealmRequest {
+            realm_id: 42,
+            credential: dummy_credential(),
+        };
+        assert_eq!(get_realm.body_digest(), "");
     }
 }

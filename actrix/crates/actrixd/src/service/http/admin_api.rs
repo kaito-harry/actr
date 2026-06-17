@@ -25,6 +25,7 @@ pub struct AdminApiState {
     pub jwt_secret: Vec<u8>,
     pub advertised_ip: String,
     pub metrics_store: MetricsStore,
+    pub realm_writes_enabled: bool,
 }
 
 // ── JWT ────────────────────────────────────────────────────────
@@ -179,6 +180,17 @@ async fn get_node_services(State(state): State<Arc<AdminApiState>>) -> impl Into
     (StatusCode::OK, Json(json!({"services": services_json}))).into_response()
 }
 
+async fn get_admin_capabilities(State(state): State<Arc<AdminApiState>>) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        Json(json!({
+            "realm_writes_enabled": state.realm_writes_enabled,
+            "superv_managed": !state.realm_writes_enabled,
+        })),
+    )
+        .into_response()
+}
+
 async fn list_realms(State(state): State<Arc<AdminApiState>>) -> impl IntoResponse {
     match state.service.list_realms_direct().await {
         Ok(resp) => {
@@ -214,11 +226,20 @@ async fn create_realm(
     State(state): State<Arc<AdminApiState>>,
     Json(body): Json<CreateRealmBody>,
 ) -> impl IntoResponse {
+    if !state.realm_writes_enabled {
+        return realm_writes_disabled_response();
+    }
+
     let req = CreateRealmRequest {
+        realm_id: None,
         name: body.name,
         enabled: body.enabled,
         credential: dummy_credential(),
         expires_at: body.expires_at,
+        status: None,
+        secret_current_hash: None,
+        secret_previous_hash: None,
+        secret_previous_valid_until: None,
     };
 
     match state.service.create_realm_with_secret_direct(req).await {
@@ -247,6 +268,10 @@ async fn rotate_realm_secret(
     State(state): State<Arc<AdminApiState>>,
     Path(realm_id): Path<u32>,
 ) -> impl IntoResponse {
+    if !state.realm_writes_enabled {
+        return realm_writes_disabled_response();
+    }
+
     match state.service.rotate_realm_secret_direct(realm_id).await {
         Ok(result) => (
             StatusCode::OK,
@@ -299,11 +324,20 @@ async fn update_realm(
     Path(realm_id): Path<u32>,
     Json(body): Json<UpdateRealmBody>,
 ) -> impl IntoResponse {
+    if !state.realm_writes_enabled {
+        return realm_writes_disabled_response();
+    }
+
     let req = UpdateRealmRequest {
         realm_id,
         name: body.name,
         enabled: body.enabled,
         credential: dummy_credential(),
+        status: None,
+        expires_at: None,
+        secret_current_hash: None,
+        secret_previous_hash: None,
+        secret_previous_valid_until: None,
     };
 
     match state.service.update_realm_direct(req).await {
@@ -331,7 +365,11 @@ async fn delete_realm(
     State(state): State<Arc<AdminApiState>>,
     Path(realm_id): Path<u32>,
 ) -> impl IntoResponse {
-    match state.service.delete_realm_direct(realm_id).await {
+    if !state.realm_writes_enabled {
+        return realm_writes_disabled_response();
+    }
+
+    match state.service.delete_realm_hard_direct(realm_id).await {
         Ok(resp) => {
             let status = if resp.success {
                 StatusCode::OK
@@ -706,6 +744,7 @@ async fn serve_spa() -> impl IntoResponse {
 
 pub fn build_admin_api_router(state: Arc<AdminApiState>, mfr_router: Option<Router>) -> Router {
     let authed_api = Router::new()
+        .route("/admin/api/capabilities", get(get_admin_capabilities))
         .route("/admin/api/node", get(get_node_info))
         .route("/admin/api/node/services", get(get_node_services))
         .route("/admin/api/node/shutdown", post(shutdown_node))
@@ -793,6 +832,17 @@ fn dummy_credential() -> NonceCredential {
         nonce: String::new(),
         signature: String::new(),
     }
+}
+
+fn realm_writes_disabled_response() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "success": false,
+            "error_message": "Realm writes are disabled while NodeAdminService gRPC API is enabled",
+        })),
+    )
+        .into_response()
 }
 
 fn realm_info_to_json(info: &RealmInfo) -> Value {

@@ -105,6 +105,17 @@ message RealmInfo {
   optional SecretRotationState secret_rotation_state = 10; // Secret rotation state
 }
 
+message ManagedRealmState {
+  required uint32 realm_id = 1;             // Superv-assigned realm identifier
+  required string name = 2;                 // Realm name
+  required bool enabled = 3;                // Enabled status
+  required string status = 4;               // Active / Inactive / Suspended
+  optional uint64 expires_at = 5;           // Expiration timestamp (Unix timestamp)
+  required string secret_current_hash = 6;  // Current realm secret hash
+  optional string secret_previous_hash = 7; // Previous realm secret hash during rotation
+  optional uint64 secret_previous_valid_until = 8; // Previous secret grace-window deadline
+}
+
 message SecretRotationState {
   required string current_hash_preview = 1;
   optional string previous_hash_preview = 2;

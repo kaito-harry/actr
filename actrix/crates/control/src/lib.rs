@@ -1,23 +1,19 @@
 //! Admin control-plane library for actrix nodes.
 //!
 //! This crate is the canonical implementation for node-side control-plane
-//! behavior (register/report client + node_admin gRPC API server).
+//! behavior (node_admin gRPC API server).
 #![deny(clippy::disallowed_macros)]
 
 pub mod auth;
-pub mod client;
-pub mod config;
 pub mod error;
 pub mod metrics;
 pub mod nonce_auth;
 pub mod realm;
 pub mod service;
 
-pub use auth::AuthService;
-pub use client::AdminClient;
-pub use config::AdminConfig;
+pub use auth::{AuthService, CredentialPayload};
 pub use error::{AdminError, Result as AdminResult};
-pub use realm::{get_max_realm_updated_at, realm_to_proto};
+pub use realm::realm_to_proto;
 pub use service::{
     AdminApiService, ConfigFileContent, HealthInfo, KeyInfo, KsCleanupResult, KsKeysResult,
     PlatformDetail, RealmSecretRotationResult, ServiceDetail,

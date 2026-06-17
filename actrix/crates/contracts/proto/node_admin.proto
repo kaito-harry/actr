@@ -67,13 +67,17 @@ message GetConfigResponse {
 // ------------ CreateRealm ------------
 
 message CreateRealmRequest {
-  // Field 1 removed (was realm_id, now DB auto-generated)
+  optional uint32 realm_id = 1;             // Superv managed mode uses this id; local UI may omit
   required string name = 2;                 // Realm name
   required bool enabled = 3;                // Enabled status
   // Field 4 removed (was use_servers)
   required NonceCredential credential = 5;  // Authentication credential
   // Field 6 removed (was version)
   required uint64 expires_at = 7;           // Expiration timestamp (Unix timestamp)
+  optional string status = 8;               // Active / Inactive / Suspended
+  optional string secret_current_hash = 9;  // Current realm secret hash from superv
+  optional string secret_previous_hash = 10; // Previous realm secret hash during rotation
+  optional uint64 secret_previous_valid_until = 11; // Previous secret grace-window deadline
 }
 
 message CreateRealmResponse {
@@ -102,6 +106,11 @@ message UpdateRealmRequest {
   optional string name = 2;                 // New name (optional update)
   optional bool enabled = 3;                // New enabled status (optional update)
   required NonceCredential credential = 4;  // Authentication credential
+  optional string status = 5;               // Active / Inactive / Suspended
+  optional uint64 expires_at = 6;           // Expiration timestamp (Unix timestamp)
+  optional string secret_current_hash = 7;  // Current realm secret hash from superv
+  optional string secret_previous_hash = 8; // Previous realm secret hash during rotation
+  optional uint64 secret_previous_valid_until = 9; // Previous secret grace-window deadline
 }
 
 message UpdateRealmResponse {

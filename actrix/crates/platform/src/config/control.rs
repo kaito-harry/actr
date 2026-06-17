@@ -12,9 +12,13 @@ pub enum ControlHead {
     GrpcApi,
 }
 
-/// gRPC 头配置（仅当 `head = "grpc_api"` 时生效）。
+/// gRPC 控制面配置。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ControlGrpcApiConfig {
+    /// 是否启用 NodeAdminService gRPC API。
+    #[serde(default)]
+    pub enabled: bool,
+
     /// 节点 ID（用于认证载荷）
     #[serde(default = "default_grpc_node_id")]
     pub node_id: String,
@@ -32,9 +36,13 @@ pub struct ControlGrpcApiConfig {
     pub max_clock_skew_secs: u64,
 }
 
-/// Admin UI 配置（仅当 `head = "admin_ui"` 时生效）。
+/// Admin UI 配置。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AdminUiConfig {
+    /// 是否启用本地 Admin UI。
+    #[serde(default = "default_admin_ui_enabled")]
+    pub enabled: bool,
+
     /// 登录密码（admin_ui 模式必填，≥8 字符）
     #[serde(default)]
     pub password: String,
@@ -45,11 +53,11 @@ pub struct AdminUiConfig {
 }
 
 /// Control 常驻配置。
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ControlConfig {
-    /// 二选一头模式
+    /// 旧版二选一头模式。新配置优先使用 admin_ui.enabled/grpc_api.enabled。
     #[serde(default)]
-    pub head: ControlHead,
+    pub head: Option<ControlHead>,
 
     /// gRPC 头参数（仅 grpc_api 模式使用）
     #[serde(default)]
@@ -76,9 +84,14 @@ fn default_session_expiry_secs() -> u64 {
     86400
 }
 
+fn default_admin_ui_enabled() -> bool {
+    true
+}
+
 impl Default for AdminUiConfig {
     fn default() -> Self {
         Self {
+            enabled: default_admin_ui_enabled(),
             password: String::new(),
             session_expiry_secs: default_session_expiry_secs(),
         }
@@ -88,20 +101,11 @@ impl Default for AdminUiConfig {
 impl Default for ControlGrpcApiConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             node_id: default_grpc_node_id(),
             node_name: default_grpc_node_name(),
             shared_secret: String::new(),
             max_clock_skew_secs: default_max_clock_skew_secs(),
-        }
-    }
-}
-
-impl Default for ControlConfig {
-    fn default() -> Self {
-        Self {
-            head: ControlHead::AdminUi,
-            grpc_api: ControlGrpcApiConfig::default(),
-            admin_ui: AdminUiConfig::default(),
         }
     }
 }
@@ -118,18 +122,49 @@ impl ControlGrpcApiConfig {
 }
 
 impl ControlConfig {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn admin_ui_enabled(&self) -> bool {
         match self.head {
-            ControlHead::AdminUi => self.validate_admin_ui(),
-            ControlHead::GrpcApi => self.validate_grpc_api(),
+            Some(ControlHead::AdminUi) => true,
+            Some(ControlHead::GrpcApi) => false,
+            None => self.admin_ui.enabled,
         }
+    }
+
+    pub fn grpc_api_enabled(&self) -> bool {
+        match self.head {
+            Some(ControlHead::AdminUi) => false,
+            Some(ControlHead::GrpcApi) => true,
+            None => self.grpc_api.enabled,
+        }
+    }
+
+    pub fn superv_managed(&self) -> bool {
+        self.grpc_api_enabled()
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.admin_ui_enabled() && !self.grpc_api_enabled() {
+            return Err("at least one control endpoint must be enabled".to_string());
+        }
+
+        if self.admin_ui_enabled() {
+            self.validate_admin_ui()?;
+        }
+
+        if self.grpc_api_enabled() {
+            self.validate_grpc_api()?;
+        }
+
+        Ok(())
     }
 
     fn validate_admin_ui(&self) -> Result<(), String> {
         let cfg = &self.admin_ui;
 
         if cfg.password.is_empty() {
-            return Err("control.admin_ui.password is required when head = admin_ui".to_string());
+            return Err(
+                "control.admin_ui.password is required when admin_ui is enabled".to_string(),
+            );
         }
 
         if cfg.password.len() < 8 {
@@ -152,7 +187,7 @@ impl ControlConfig {
 
         if cfg.shared_secret.trim().is_empty() {
             return Err(
-                "control.grpc_api.shared_secret is required when head = grpc_api".to_string(),
+                "control.grpc_api.shared_secret is required when grpc_api is enabled".to_string(),
             );
         }
 
@@ -182,13 +217,14 @@ mod tests {
     #[test]
     fn default_control_head_is_admin_ui() {
         let cfg = ControlConfig::default();
-        assert_eq!(cfg.head, ControlHead::AdminUi);
+        assert!(cfg.admin_ui_enabled());
+        assert!(!cfg.grpc_api_enabled());
     }
 
     #[test]
     fn admin_ui_requires_password() {
         let cfg = ControlConfig {
-            head: ControlHead::AdminUi,
+            head: Some(ControlHead::AdminUi),
             admin_ui: AdminUiConfig {
                 password: String::new(),
                 ..Default::default()
@@ -202,7 +238,7 @@ mod tests {
     #[test]
     fn admin_ui_rejects_short_password() {
         let cfg = ControlConfig {
-            head: ControlHead::AdminUi,
+            head: Some(ControlHead::AdminUi),
             admin_ui: AdminUiConfig {
                 password: "short".to_string(),
                 ..Default::default()
@@ -216,7 +252,7 @@ mod tests {
     #[test]
     fn admin_ui_accepts_valid_password() {
         let cfg = ControlConfig {
-            head: ControlHead::AdminUi,
+            head: Some(ControlHead::AdminUi),
             admin_ui: AdminUiConfig {
                 password: "changeme123".to_string(),
                 ..Default::default()
@@ -230,7 +266,7 @@ mod tests {
     #[test]
     fn grpc_api_requires_shared_secret() {
         let cfg = ControlConfig {
-            head: ControlHead::GrpcApi,
+            head: Some(ControlHead::GrpcApi),
             grpc_api: ControlGrpcApiConfig {
                 shared_secret: String::new(),
                 ..Default::default()
@@ -244,7 +280,7 @@ mod tests {
     #[test]
     fn grpc_api_accepts_valid_secret() {
         let cfg = ControlConfig {
-            head: ControlHead::GrpcApi,
+            head: Some(ControlHead::GrpcApi),
             grpc_api: ControlGrpcApiConfig {
                 shared_secret: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
                     .to_string(),
@@ -253,6 +289,29 @@ mod tests {
             ..Default::default()
         };
 
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn enabled_flags_allow_admin_ui_and_grpc_together() {
+        let cfg = ControlConfig {
+            head: None,
+            admin_ui: AdminUiConfig {
+                enabled: true,
+                password: "changeme123".to_string(),
+                ..Default::default()
+            },
+            grpc_api: ControlGrpcApiConfig {
+                enabled: true,
+                shared_secret: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    .to_string(),
+                ..Default::default()
+            },
+        };
+
+        assert!(cfg.admin_ui_enabled());
+        assert!(cfg.grpc_api_enabled());
+        assert!(cfg.superv_managed());
         assert!(cfg.validate().is_ok());
     }
 }

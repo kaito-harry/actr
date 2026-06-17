@@ -376,9 +376,31 @@ static REGISTRY: &[ConfigFieldDef] = &[
         default_value: "admin_ui",
         dynamic: false,
         reloadable: false,
-        description: "Control plane mode",
+        description: "Legacy control plane mode override (prefer admin_ui.enabled / grpc_api.enabled)",
         service: "platform",
-        choices: &["admin_ui"],
+        choices: &["admin_ui", "grpc_api"],
+    },
+    ConfigFieldDef {
+        key: "control.admin_ui.enabled",
+        toml_path: "control.admin_ui.enabled",
+        value_type: ConfigValueType::Bool,
+        default_value: "true",
+        dynamic: false,
+        reloadable: false,
+        description: "Enable local Admin UI",
+        service: "platform",
+        choices: &[],
+    },
+    ConfigFieldDef {
+        key: "control.grpc_api.enabled",
+        toml_path: "control.grpc_api.enabled",
+        value_type: ConfigValueType::Bool,
+        default_value: "false",
+        dynamic: false,
+        reloadable: false,
+        description: "Enable NodeAdminService gRPC control API",
+        service: "platform",
+        choices: &[],
     },
     ConfigFieldDef {
         key: "control.admin_ui.session_expiry_secs",
@@ -643,7 +665,7 @@ mod tests {
     #[test]
     fn test_fields_for_service() {
         let platform_fields = fields_for_service("platform");
-        assert_eq!(platform_fields.len(), 30);
+        assert_eq!(platform_fields.len(), 32);
         assert!(platform_fields.iter().all(|f| f.service == "platform"));
 
         let stun_fields = fields_for_service("stun");

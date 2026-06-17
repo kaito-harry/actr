@@ -286,8 +286,9 @@ impl ServiceManager {
         .await?;
         self.jwt_secret = Some(jwt_secret);
         platform::recording::info!(
-            "Adding control routes for head '{:?}'",
-            self.config.control_head()
+            "Adding control routes: admin_ui={}, grpc_api={}",
+            self.config.admin_ui_enabled(),
+            self.config.grpc_api_enabled()
         );
         app = app.merge(control_router);
 

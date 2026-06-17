@@ -450,7 +450,26 @@ impl ActrixConfig {
 
     /// 当前控制面头类型
     pub fn control_head(&self) -> ControlHead {
-        self.control.head
+        if self.control.grpc_api_enabled() && !self.control.admin_ui_enabled() {
+            ControlHead::GrpcApi
+        } else {
+            ControlHead::AdminUi
+        }
+    }
+
+    /// Admin UI 是否启用。
+    pub fn admin_ui_enabled(&self) -> bool {
+        self.control.admin_ui_enabled()
+    }
+
+    /// NodeAdminService gRPC API 是否启用。
+    pub fn grpc_api_enabled(&self) -> bool {
+        self.control.grpc_api_enabled()
+    }
+
+    /// 是否处于 superv 接管模式。
+    pub fn superv_managed(&self) -> bool {
+        self.control.superv_managed()
     }
 
     /// 获取 PID 文件路径，如果没有配置则使用默认值
@@ -789,6 +808,22 @@ impl ActrixConfig {
 mod tests {
     use super::*;
     use ::signer::SignerServiceConfig;
+
+    #[test]
+    fn example_config_loads_and_validates() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config.example.toml");
+        let cfg = ActrixConfig::from_file(&path).expect("example config should parse");
+        cfg.validate().expect("example config should validate");
+        assert!(
+            cfg.admin_ui_enabled(),
+            "example should have admin_ui enabled"
+        );
+        assert!(
+            !cfg.grpc_api_enabled(),
+            "example should have grpc_api disabled by default"
+        );
+    }
 
     #[test]
     fn test_default_config() {

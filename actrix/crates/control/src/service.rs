@@ -18,10 +18,10 @@ use platform::config::ActrixConfig;
 use platform::config::config_store::{ConfigOverride, ConfigOverrideStore};
 use platform::config::registry;
 use platform::config::resolver::{self, ResolvedField};
-use platform::realm::Realm;
 use platform::realm::{
     DEFAULT_REALM_SECRET_PREVIOUS_GRACE_SECS, hash_realm_secret, rotate_realm_secret,
 };
+use platform::realm::{Realm, RealmStatus};
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -723,12 +723,12 @@ impl AdminApiService {
         })
     }
 
-    async fn create_realm_internal(
+    async fn create_local_realm_internal(
         &self,
         req: CreateRealmRequest,
         expose_plain_secret: bool,
     ) -> GrpcResult<(CreateRealmResponse, Option<String>)> {
-        platform::recording::info!("CreateRealm request received: name={}", req.name);
+        platform::recording::info!("Create local realm request received: name={}", req.name);
 
         // Generate secret at creation time
         let plain_secret = platform::realm::secret::generate_realm_secret();
@@ -752,6 +752,21 @@ impl AdminApiService {
         realm.enabled = req.enabled;
         if req.expires_at > 0 {
             realm.expires_at = Some(req.expires_at);
+        }
+        if let Some(status) = req.status.as_deref() {
+            match parse_realm_status(status) {
+                Ok(status) => realm.status = status,
+                Err(err) => {
+                    return Ok((
+                        CreateRealmResponse {
+                            success: false,
+                            error_message: Some(err),
+                            realm: None,
+                        },
+                        None,
+                    ));
+                }
+            }
         }
         if let Err(err) = realm.save().await {
             // Rollback
@@ -784,12 +799,79 @@ impl AdminApiService {
         ))
     }
 
+    async fn create_managed_realm_internal(
+        &self,
+        req: CreateRealmRequest,
+    ) -> GrpcResult<CreateRealmResponse> {
+        let Some(realm_id) = req.realm_id else {
+            return Ok(CreateRealmResponse {
+                success: false,
+                error_message: Some("realm_id is required for managed CreateRealm".to_string()),
+                realm: None,
+            });
+        };
+        let Some(secret_current) = req.secret_current_hash else {
+            return Ok(CreateRealmResponse {
+                success: false,
+                error_message: Some(
+                    "secret_current_hash is required for managed CreateRealm".to_string(),
+                ),
+                realm: None,
+            });
+        };
+
+        let status = match req.status.as_deref() {
+            Some(status) => match parse_realm_status(status) {
+                Ok(status) => status,
+                Err(err) => {
+                    return Ok(CreateRealmResponse {
+                        success: false,
+                        error_message: Some(err),
+                        realm: None,
+                    });
+                }
+            },
+            None => RealmStatus::Active,
+        };
+        let secret_previous =
+            build_secret_previous(req.secret_previous_hash, req.secret_previous_valid_until);
+
+        platform::recording::info!(
+            "Create managed realm request received: id={}, name={}",
+            realm_id,
+            req.name
+        );
+
+        match Realm::upsert_managed(
+            realm_id,
+            req.name,
+            status,
+            req.enabled,
+            (req.expires_at > 0).then_some(req.expires_at),
+            secret_current,
+            secret_previous,
+        )
+        .await
+        {
+            Ok(realm) => Ok(CreateRealmResponse {
+                success: true,
+                error_message: None,
+                realm: Some(realm_to_proto(&realm)),
+            }),
+            Err(err) => Ok(CreateRealmResponse {
+                success: false,
+                error_message: Some(format!("Failed to upsert managed realm: {err}")),
+                realm: None,
+            }),
+        }
+    }
+
     /// Create a realm and return the plaintext realm secret once.
     pub async fn create_realm_with_secret_direct(
         &self,
         req: CreateRealmRequest,
     ) -> GrpcResult<(CreateRealmResponse, Option<String>)> {
-        self.create_realm_internal(req, true).await
+        self.create_local_realm_internal(req, true).await
     }
 
     /// Create a realm (gRPC path, does not expose plaintext secret in response).
@@ -797,8 +879,7 @@ impl AdminApiService {
         &self,
         req: CreateRealmRequest,
     ) -> GrpcResult<CreateRealmResponse> {
-        let (resp, _secret) = self.create_realm_internal(req, false).await?;
-        Ok(resp)
+        self.create_managed_realm_internal(req).await
     }
 
     /// Get a single realm by ID.
@@ -843,6 +924,35 @@ impl AdminApiService {
         if let Some(enabled) = req.enabled {
             realm.enabled = enabled;
         }
+        if let Some(status) = req.status.as_deref() {
+            match parse_realm_status(status) {
+                Ok(status) => realm.status = status,
+                Err(err) => {
+                    return Ok(UpdateRealmResponse {
+                        success: false,
+                        error_message: Some(err),
+                        realm: None,
+                    });
+                }
+            }
+        }
+        if let Some(expires_at) = req.expires_at {
+            realm.expires_at = (expires_at > 0).then_some(expires_at);
+        }
+        if let Some(secret_current_hash) = req.secret_current_hash {
+            if secret_current_hash.trim().is_empty() {
+                return Ok(UpdateRealmResponse {
+                    success: false,
+                    error_message: Some("secret_current_hash must not be empty".to_string()),
+                    realm: None,
+                });
+            }
+            realm.secret_current = secret_current_hash;
+        }
+        if req.secret_previous_hash.is_some() || req.secret_previous_valid_until.is_some() {
+            realm.secret_previous =
+                build_secret_previous(req.secret_previous_hash, req.secret_previous_valid_until);
+        }
 
         if let Err(err) = realm.save().await {
             return Ok(UpdateRealmResponse {
@@ -861,6 +971,24 @@ impl AdminApiService {
 
     /// Delete a realm by ID.
     pub async fn delete_realm_direct(&self, realm_id: u32) -> GrpcResult<DeleteRealmResponse> {
+        match Realm::soft_delete(realm_id).await {
+            Ok(true) => Ok(DeleteRealmResponse {
+                success: true,
+                error_message: None,
+            }),
+            Ok(false) => Ok(DeleteRealmResponse {
+                success: false,
+                error_message: Some("Realm not found".to_string()),
+            }),
+            Err(err) => Ok(DeleteRealmResponse {
+                success: false,
+                error_message: Some(format!("Failed to delete realm: {err}")),
+            }),
+        }
+    }
+
+    /// Hard-delete a realm for local Admin UI standalone mode.
+    pub async fn delete_realm_hard_direct(&self, realm_id: u32) -> GrpcResult<DeleteRealmResponse> {
         match Realm::delete(realm_id).await {
             Ok(affected) if affected > 0 => Ok(DeleteRealmResponse {
                 success: true,
@@ -1050,6 +1178,21 @@ fn service_name_to_type_id(name: &str) -> Option<i32> {
         "signaling" => Some(3),
         "ais" => Some(4),
         "signer" => Some(5),
+        _ => None,
+    }
+}
+
+fn parse_realm_status(value: &str) -> std::result::Result<RealmStatus, String> {
+    RealmStatus::from_str(value).map_err(|_| {
+        format!("Invalid realm status '{value}' (expected Active, Inactive, Suspended)")
+    })
+}
+
+fn build_secret_previous(hash: Option<String>, valid_until: Option<u64>) -> Option<(String, u64)> {
+    match (hash, valid_until) {
+        (Some(hash), Some(valid_until)) if !hash.trim().is_empty() && valid_until > 0 => {
+            Some((hash, valid_until))
+        }
         _ => None,
     }
 }

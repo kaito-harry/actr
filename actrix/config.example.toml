@@ -215,22 +215,34 @@ ws_path = "/signaling"
 # Control Plane (always enabled, shared with main HTTP port)
 # ============================================================================
 [control]
-# Select one control head:
-# - "admin_ui": local web console under /admin
-# - "grpc_api": supervisor-facing NodeAdminService under /admin.v1.NodeAdminService/*
-#   (compat alias: /admin/grpc/admin.v1.NodeAdminService/*)
-head = "admin_ui"
+# Control endpoints are enabled independently via [control.admin_ui].enabled
+# and [control.grpc_api].enabled; both may run simultaneously on the shared
+# HTTP port.
+#
+# Legacy override: set `head` to force a single endpoint and disable the other
+# (mutually exclusive). Omit it (recommended) to control each endpoint with its
+# own `enabled` flag.
+#   head = "admin_ui"   # admin_ui on, grpc_api off
+#   head = "grpc_api"   # grpc_api on, admin_ui off
 
 [control.admin_ui]
-# Login password for Admin UI (required when head = "admin_ui", min 8 chars)
+# Enable the local web console under /admin (default: true).
+enabled = true
+# Login password for Admin UI (required when admin_ui is enabled, min 8 chars).
 password = "changeme"
 # JWT session expiry in seconds (default: 86400 = 24h)
 session_expiry_secs = 86400
 
 [control.grpc_api]
-# Used only when control.head = "grpc_api"
+# Enable the supervisor-facing NodeAdminService gRPC API under
+# /admin.v1.NodeAdminService/* (default: false). When enabled, the node is
+# considered superv-managed: realms are pushed by superv and local realm
+# writes (create/update/rotate/delete) through the Admin UI are disabled.
+enabled = false
 node_id = "actrix-node-01"
 node_name = "actrix-edge-01"
+# Shared secret (hex, >= 64 chars) used to sign mutable control-plane ops.
+# Required when grpc_api is enabled.
 shared_secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 max_clock_skew_secs = 300
 

@@ -3,11 +3,8 @@ use actrix_sdk::control::{AdminApiService, AuthService, NodeAdminServiceServer};
 use anyhow::Result;
 use axum::{Json, Router, routing::get};
 use platform::{
-    ServiceCollector,
-    config::config_store::ConfigOverrideStore,
-    config::{ActrixConfig, ControlHead},
-    monitoring::MetricsStore,
-    storage::nonce::SqliteNonceStorage,
+    ServiceCollector, config::ActrixConfig, config::config_store::ConfigOverrideStore,
+    monitoring::MetricsStore, storage::nonce::SqliteNonceStorage,
 };
 use serde_json::json;
 use std::path::PathBuf;
@@ -33,25 +30,43 @@ pub async fn build_control_router(
     config_store: Arc<ConfigOverrideStore>,
     metrics_store: MetricsStore,
 ) -> Result<(Router, Vec<u8>)> {
-    match config.control.head {
-        ControlHead::AdminUi => {
-            build_admin_ui_router(
-                config,
-                service_collector,
-                shutdown_tx,
-                config_path,
-                jwt_secret,
-                config_store,
-                metrics_store,
-            )
-            .await
-        }
-        ControlHead::GrpcApi => {
-            let router = build_grpc_api_router(config, service_collector, shutdown_tx).await?;
-            // gRPC head doesn't use JWT; return a dummy secret for API consistency
-            Ok((router, jwt_secret.unwrap_or_default()))
-        }
+    let mut router = Router::new();
+    let mut jwt = jwt_secret.unwrap_or_default();
+    let admin_ui_enabled = config.admin_ui_enabled();
+    let grpc_api_enabled = config.grpc_api_enabled();
+
+    if admin_ui_enabled {
+        let (admin_router, next_jwt) = build_admin_ui_router(
+            config,
+            service_collector.clone(),
+            shutdown_tx.clone(),
+            config_path.clone(),
+            Some(jwt),
+            config_store.clone(),
+            metrics_store,
+        )
+        .await?;
+        router = router.merge(admin_router);
+        jwt = next_jwt;
     }
+
+    if grpc_api_enabled {
+        let grpc_router = build_grpc_api_router(
+            config,
+            service_collector,
+            shutdown_tx,
+            config_store,
+            !admin_ui_enabled,
+        )
+        .await?;
+        router = router.merge(grpc_router);
+    }
+
+    if !admin_ui_enabled && !grpc_api_enabled {
+        anyhow::bail!("No control endpoint enabled");
+    }
+
+    Ok((router, jwt))
 }
 
 async fn build_admin_ui_router(
@@ -118,6 +133,7 @@ async fn build_admin_ui_router(
         jwt_secret,
         advertised_ip,
         metrics_store,
+        realm_writes_enabled: !config.superv_managed(),
     });
 
     // Build MFR router and nest under /admin/api/mfr
@@ -150,6 +166,8 @@ async fn build_grpc_api_router(
     config: &ActrixConfig,
     service_collector: ServiceCollector,
     shutdown_tx: broadcast::Sender<()>,
+    config_store: Arc<ConfigOverrideStore>,
+    include_admin_index_and_alias: bool,
 ) -> Result<Router> {
     let grpc_cfg = &config.control.grpc_api;
     let shared_secret = Arc::new(
@@ -170,6 +188,10 @@ async fn build_grpc_api_router(
         service_collector,
     )
     .map_err(|e| anyhow::anyhow!("Failed to create control gRPC service: {e}"))?;
+
+    service = service
+        .with_override_store(config_store)
+        .with_running_config(config.clone());
 
     let shutdown_tx_for_handler = shutdown_tx.clone();
     service = service.with_shutdown_handler(move |_graceful, _timeout, reason| {
@@ -199,13 +221,18 @@ async fn build_grpc_api_router(
     //
     // Compatibility alias:
     // `/admin/grpc/admin.v1.NodeAdminService/<Method>`
-    Ok(Router::new()
-        .route("/admin", get(control_grpc_head_index))
-        .route_service(
-            "/admin.v1.NodeAdminService/{*grpc_method}",
-            node_admin_service.clone(),
-        )
-        .nest_service("/admin/grpc", node_admin_service))
+    let mut router = Router::new().route_service(
+        "/admin.v1.NodeAdminService/{*grpc_method}",
+        node_admin_service.clone(),
+    );
+
+    if include_admin_index_and_alias {
+        router = router
+            .route("/admin", get(control_grpc_head_index))
+            .nest_service("/admin/grpc", node_admin_service);
+    }
+
+    Ok(router)
 }
 
 async fn control_grpc_head_index() -> Json<serde_json::Value> {

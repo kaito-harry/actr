@@ -40,6 +40,11 @@ export interface PublicNodeNameResponse {
   name: string;
 }
 
+export interface AdminCapabilities {
+  realm_writes_enabled: boolean;
+  superv_managed: boolean;
+}
+
 export interface MetricDetail {
   value: number;
   score: number;
@@ -202,6 +207,8 @@ export const api = {
   },
 
   getNodeInfo: () => request<NodeInfo>("/node"),
+
+  getCapabilities: () => request<AdminCapabilities>("/capabilities"),
 
   getServices: () =>
     request<{ services: ServiceStatus[] }>("/node/services"),

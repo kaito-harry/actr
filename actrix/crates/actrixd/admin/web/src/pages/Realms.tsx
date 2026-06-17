@@ -201,10 +201,14 @@ function RealmDiagram() {
 import { ConfirmModal } from "../components/ui/ConfirmModal";
 import { RealmSecretModal } from "../components/realms/RealmSecretModal";
 
+const REALM_WRITES_DISABLED_MESSAGE =
+  "Realm writes are managed by superv while NodeAdminService gRPC API is enabled.";
+
 export function Realms() {
   const [realms, setRealms] = useState<RealmInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [realmWritesEnabled, setRealmWritesEnabled] = useState(true);
   const [realmSecretNotice, setRealmSecretNotice] = useState<{
     realmId: number;
     secret: string;
@@ -220,6 +224,23 @@ export function Realms() {
     isOpen: false,
     realmId: null,
   });
+
+  const ensureRealmWritesEnabled = useCallback(() => {
+    if (realmWritesEnabled) {
+      return true;
+    }
+    setError(REALM_WRITES_DISABLED_MESSAGE);
+    return false;
+  }, [realmWritesEnabled]);
+
+  const fetchCapabilities = useCallback(async () => {
+    try {
+      const capabilities = await api.getCapabilities();
+      setRealmWritesEnabled(capabilities.realm_writes_enabled);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load admin capabilities");
+    }
+  }, []);
 
   const fetchRealms = useCallback(async () => {
     try {
@@ -237,7 +258,23 @@ export function Realms() {
     fetchRealms();
   }, [fetchRealms]);
 
+  useEffect(() => {
+    fetchCapabilities();
+  }, [fetchCapabilities]);
+
+  useEffect(() => {
+    if (realmWritesEnabled) {
+      return;
+    }
+    setShowForm(false);
+    setEditingRealm(null);
+    setDeleteConfirm({ isOpen: false, realmId: null });
+    setRotateConfirm({ isOpen: false, realmId: null });
+  }, [realmWritesEnabled]);
+
   async function handleToggleEnabled(realm: RealmInfo) {
+    if (!ensureRealmWritesEnabled()) return;
+
     try {
       await api.updateRealm(realm.realm_id, { enabled: !realm.enabled });
       await fetchRealms();
@@ -247,10 +284,16 @@ export function Realms() {
   }
 
   async function handleDeleteClick(realmId: number) {
+    if (!ensureRealmWritesEnabled()) return;
     setDeleteConfirm({ isOpen: true, realmId });
   }
 
   async function handleConfirmDelete() {
+    if (!ensureRealmWritesEnabled()) {
+      setDeleteConfirm({ isOpen: false, realmId: null });
+      return;
+    }
+
     const realmId = deleteConfirm.realmId;
     if (realmId === null) return;
 
@@ -268,10 +311,16 @@ export function Realms() {
   }
 
   async function handleRotateSecretClick(realmId: number) {
+    if (!ensureRealmWritesEnabled()) return;
     setRotateConfirm({ isOpen: true, realmId });
   }
 
   async function handleConfirmRotate() {
+    if (!ensureRealmWritesEnabled()) {
+      setRotateConfirm({ isOpen: false, realmId: null });
+      return;
+    }
+
     const realmId = rotateConfirm.realmId;
     if (realmId === null) return;
 
@@ -291,6 +340,8 @@ export function Realms() {
   }
 
   function handleEdit(realm: RealmInfo) {
+    if (!ensureRealmWritesEnabled()) return;
+
     setEditingRealm(realm);
     setShowForm(true);
   }
@@ -305,6 +356,10 @@ export function Realms() {
     name: string;
     enabled: boolean;
   }) {
+    if (!ensureRealmWritesEnabled()) {
+      throw new Error(REALM_WRITES_DISABLED_MESSAGE);
+    }
+
     try {
       if (editingRealm) {
         await api.updateRealm(editingRealm.realm_id, {
@@ -334,8 +389,14 @@ export function Realms() {
       description="Multi-tenant isolation boundaries for WebRTC actors"
       headerActions={
         <button
-          onClick={() => setShowForm(true)}
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+          onClick={() => {
+            if (ensureRealmWritesEnabled()) {
+              setShowForm(true);
+            }
+          }}
+          disabled={!realmWritesEnabled}
+          title={realmWritesEnabled ? "Create Realm" : "Managed by superv"}
+          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500"
         >
           Create Realm
         </button>
@@ -393,10 +454,17 @@ export function Realms() {
         </div>
       )}
 
+      {!realmWritesEnabled && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+          Realm writes are disabled because this node is managed by superv through NodeAdminService.
+        </div>
+      )}
+
       {/* realmSecretNotice block removed in favor of modal */}
 
       <RealmTable
         realms={realms}
+        writesEnabled={realmWritesEnabled}
         onToggleEnabled={handleToggleEnabled}
         onEdit={handleEdit}
         onRotateSecret={handleRotateSecretClick}

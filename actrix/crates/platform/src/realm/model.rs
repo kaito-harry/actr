@@ -122,6 +122,69 @@ impl Realm {
         })
     }
 
+    /// Upsert a superv-managed realm with an externally assigned id.
+    pub async fn upsert_managed(
+        id: u32,
+        name: String,
+        status: RealmStatus,
+        enabled: bool,
+        expires_at: Option<u64>,
+        secret_current: String,
+        secret_previous: Option<(String, u64)>,
+    ) -> Result<Self, RealmError> {
+        if id == 0 {
+            return Err(RealmError::ValidationError(
+                "managed realm id must be greater than 0".to_string(),
+            ));
+        }
+        if secret_current.trim().is_empty() {
+            return Err(RealmError::ValidationError(
+                "managed realm secret_current must not be empty".to_string(),
+            ));
+        }
+
+        let db = get_database();
+        let pool = db.get_pool();
+        let now = Utc::now().timestamp();
+        let (prev_hash, prev_valid_until) = match &secret_previous {
+            Some((hash, valid_until)) if !hash.trim().is_empty() => {
+                (Some(hash.as_str()), Some(*valid_until as i64))
+            }
+            _ => (None, None),
+        };
+
+        sqlx::query(
+            "INSERT INTO realm (
+                id, name, status, enabled, expires_at, created_at, updated_at,
+                secret_current, secret_previous_hash, secret_previous_valid_until
+             )
+             VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                status = excluded.status,
+                enabled = excluded.enabled,
+                expires_at = excluded.expires_at,
+                updated_at = ?,
+                secret_current = excluded.secret_current,
+                secret_previous_hash = excluded.secret_previous_hash,
+                secret_previous_valid_until = excluded.secret_previous_valid_until",
+        )
+        .bind(id as i64)
+        .bind(&name)
+        .bind(status.to_string())
+        .bind(enabled as i32)
+        .bind(expires_at.map(|v| v as i64))
+        .bind(now)
+        .bind(&secret_current)
+        .bind(prev_hash)
+        .bind(prev_valid_until)
+        .bind(now)
+        .execute(pool)
+        .await?;
+
+        Self::get(id).await?.ok_or(RealmError::NotFound)
+    }
+
     /// Save (UPDATE) an existing realm to the database.
     pub async fn save(&mut self) -> Result<(), RealmError> {
         let db = get_database();
@@ -218,6 +281,18 @@ impl Realm {
         Ok(result.rows_affected())
     }
 
+    /// Disable a realm without physically removing it.
+    pub async fn soft_delete(id: u32) -> Result<bool, RealmError> {
+        let Some(mut realm) = Self::get(id).await? else {
+            return Ok(false);
+        };
+
+        realm.enabled = false;
+        realm.status = RealmStatus::Inactive;
+        realm.save().await?;
+        Ok(true)
+    }
+
     pub fn is_expired(&self) -> bool {
         if let Some(expires_at) = self.expires_at {
             let now = Utc::now().timestamp() as u64;
@@ -235,6 +310,8 @@ impl Realm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::test_utils::utils::setup_test_db;
+    use serial_test::serial;
 
     #[test]
     fn test_realm_status_display() {
@@ -285,6 +362,73 @@ mod tests {
         realm.expires_at = Some(future_time);
         assert!(!realm.is_expired());
         assert!(realm.is_active());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_upsert_managed_uses_external_id_and_updates() -> anyhow::Result<()> {
+        setup_test_db().await?;
+
+        let realm = Realm::upsert_managed(
+            424_242,
+            "managed-one".to_string(),
+            RealmStatus::Active,
+            true,
+            Some(1_900_000_000),
+            "hash-current".to_string(),
+            None,
+        )
+        .await?;
+        assert_eq!(realm.id, 424_242);
+        assert_eq!(realm.name, "managed-one");
+        assert_eq!(realm.secret_current, "hash-current");
+
+        let updated = Realm::upsert_managed(
+            424_242,
+            "managed-one-renamed".to_string(),
+            RealmStatus::Suspended,
+            false,
+            Some(1_900_000_001),
+            "hash-current-2".to_string(),
+            Some(("hash-prev".to_string(), 1_800_000_000)),
+        )
+        .await?;
+        assert_eq!(updated.id, 424_242);
+        assert_eq!(updated.name, "managed-one-renamed");
+        assert_eq!(updated.status, RealmStatus::Suspended);
+        assert!(!updated.enabled);
+        assert_eq!(updated.secret_current, "hash-current-2");
+        assert_eq!(
+            updated.secret_previous,
+            Some(("hash-prev".to_string(), 1_800_000_000))
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_soft_delete_marks_realm_inactive() -> anyhow::Result<()> {
+        setup_test_db().await?;
+
+        Realm::upsert_managed(
+            424_243,
+            "managed-delete".to_string(),
+            RealmStatus::Active,
+            true,
+            None,
+            "delete-current".to_string(),
+            None,
+        )
+        .await?;
+
+        assert!(Realm::soft_delete(424_243).await?);
+        let realm = Realm::get(424_243).await?.expect("realm should remain");
+        assert_eq!(realm.status, RealmStatus::Inactive);
+        assert!(!realm.enabled);
+        assert!(!Realm::soft_delete(999_999).await?);
+
+        Ok(())
     }
 
     #[test]
