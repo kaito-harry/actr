@@ -1,0 +1,9 @@
+edition = 1
+
+[package]
+name = "EchoService"
+manufacturer = "polyglot"
+version = "1.0.0"
+description = "polyglot-echo Echo workload (linked Rust binary)"
+authors = []
+license = "Apache-2.0"

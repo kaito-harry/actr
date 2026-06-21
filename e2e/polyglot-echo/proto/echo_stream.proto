@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package echo;
+
+// Control RPC for server-streaming scenario.
+//
+// Client registers a DataStream callback for client_stream_id BEFORE calling
+// this RPC. Server sends chunk_count DataStream chunks to that stream_id.
+message StartServerStreamRequest {
+  string client_stream_id = 1;
+  uint32 chunk_count = 2;
+  string text = 3;
+}
+
+message StartServerStreamResponse {
+  bool ok = 1;
+}
+
+// Control RPC for bidi-streaming scenario.
+//
+// Client and server each own a stream_id for receiving chunks.  After this
+// RPC completes, the client sends chunk_count DataStream chunks to
+// server_rx_stream_id; the server echoes each one back to client_rx_stream_id.
+message SetupBidiRequest {
+  string client_rx_stream_id = 1;
+  string server_rx_stream_id = 2;
+  uint32 expected_chunks = 3;
+}
+
+message SetupBidiResponse {
+  bool ok = 1;
+}
+
+service EchoStreamService {
+  rpc StartServerStream(StartServerStreamRequest) returns (StartServerStreamResponse);
+  rpc SetupBidi(SetupBidiRequest) returns (SetupBidiResponse);
+}

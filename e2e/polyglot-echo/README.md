@@ -1,0 +1,121 @@
+# Polyglot Echo E2E
+
+End-to-end matrix for the Actr framework. The primary axis is the
+EchoService **server form** (`--server`); the Rust client driver
+(`--client rust`) exercises every form through the same
+`echo.EchoService.Echo` route. Server and client are decoupled: the
+client only does `discover(actr_type)` + RPC and never sees how the
+server is deployed.
+
+## What this scenario covers
+
+| Axis           | Today                                               | Follow-up |
+|----------------|-----------------------------------------------------|-----------|
+| Server form    | `cdylib-rust` (`actr build` → `actr run`), `linked-rust` (in-process binary), `wasm-rust` (wasm32-wasip2 Component via `actr-hyper` `wasm-engine`) | other-language linked forms once their FFI workload entry lands |
+| Client driver  | Rust (`actr_hyper::Node`)                            | TypeScript / Python / Swift once their client bindings work on `main` (see below) |
+| Scenarios      | `echo` (unary), `server-stream` + `bidi` (via a separate linked stream server) | — |
+| Signaling      | `mock-actrix` (no real `actrix`)                    | — |
+| Trust          | static MFR pubkey (`[[trust]] kind = "static"`)     | registry trust |
+
+The Rust client enters Hyper through a link-only attachment
+(`Node::from_config_file` + a no-op workload), which synthesises the
+placeholder `local:Client:0.0.0` actr_type. The server allow-lists
+exactly that triple in `config/server-runtime.toml.tpl` (and the
+linked-rust / stream-server templates), rather than loosening the
+allow-list to a wildcard.
+
+> **TypeScript / Python / Swift client drivers are intentionally absent.**
+> Their client-side entry points are unavailable or broken on the current
+> tree:
+> - **Python**: `bindings/python` ships only the `actr-workload`
+>   build helper on `main`; the pyo3 `ActrNode` client class was removed.
+> - **Swift**: `bindings/swift` exposes `ActrNode.from(packageConfig:…)`
+>   and `ActrNode.linked(config:type:workload:)`, but the
+>   `ActrNode.fromConfig(configPath:manifestPath:)` + `ActrRef.callRemote`
+>   client entry points the driver needs were removed / superseded.
+> - **TypeScript**: `bindings/typescript`'s napi `ActrNode.fromConfig`
+>   client path registers with an empty `ActrType.version`, which a
+>   debug-built `mock-actrix` rejects (`ActrType.version must be
+>   non-empty`). Re-enabling the TS client driver requires fixing that
+>   binding-side registration first.
+>
+> Each of these is a binding-side fix, out of scope for this scenario.
+> Adding a driver back is a one-function change in `run.sh` once the
+> corresponding binding entry point works (see "Adding a new client
+> driver").
+
+## Run
+
+```bash
+bash e2e/polyglot-echo/run.sh                              # cdylib-rust server, rust client, echo
+bash e2e/polyglot-echo/run.sh --server linked-rust        # in-process Rust linked workload server
+bash e2e/polyglot-echo/run.sh --server wasm-rust          # Rust Wasm Component server
+bash e2e/polyglot-echo/run.sh --client rust hi            # custom echo message
+bash e2e/polyglot-echo/run.sh --client rust --scenario server-stream
+bash e2e/polyglot-echo/run.sh --client rust --scenario bidi
+```
+
+> `--server wasm-rust` builds a wasm32-wasip2 Component via
+> `wasm-component-ld`. If your global cargo config forces a native linker
+> (e.g. `link-arg=-fuse-ld=mold` in `~/.cargo/config.toml`), the wasm
+> component link will fail with `unexpected argument '-f'`; that flag must
+> not leak into the wasm target.
+
+## Layout
+
+```
+e2e/polyglot-echo/
+├── proto/
+│   ├── echo.proto                shared unary service contract
+│   └── echo_stream.proto         server-stream + bidi contract
+├── config/
+│   ├── server-runtime.toml.tpl       rendered for `actr run` (cdylib / wasm)
+│   ├── linked-rust-runtime.toml.tpl  rendered for the linked-rust binary
+│   ├── stream-server-runtime.toml.tpl rendered for the linked stream server
+│   └── client-runtime.toml.tpl       rendered for the Rust driver into RUN_DIR
+├── lib/
+│   ├── common.sh                 shell helpers (no actrix dependency)
+│   └── setup.sh                  bootstrap: build → seed → run server form
+├── services/                     server forms (see services/README.md)
+│   ├── cdylib-rust/              default; scaffolded fresh via `actr init`
+│   ├── linked-rust/              in-process Rust linked workload binary
+│   └── wasm-rust/                wasm32-wasip2 Component package
+├── server/                       linked EchoStreamService (DataStream scenarios)
+├── clients/
+│   └── rust/                     Rust driver (link-only workload + outbound RPC)
+└── run.sh                        orchestrator + assertion harness
+```
+
+`run.sh` materialises every per-run artefact under `.tmp/run-<id>/`:
+
+- `state/`, `logs/`, `dist/` — sqlite (unused), per-process logs, signed package
+- `dev-key.json` — fresh MFR keypair generated by `actr pkg keygen`
+- `service-keychain.json` — copy injected into the scaffolded service tree
+- `*-runtime.toml` — rendered server/client configs
+
+The directory is removed on success. Set `KEEP_TMP=1` to preserve it.
+
+## Adding a new client driver
+
+1. Create `clients/<lang>/` with whatever scaffolding that ecosystem
+   needs to build a binary or script. It must register through the
+   *client* entry point its binding exposes (a link-only `Node` in Rust;
+   the analogous `ActrNode` client factory in other bindings).
+2. The driver receives from `setup.sh`:
+   - `$CLIENT_RUNTIME` — path to the rendered runtime config.
+   - `$SERVICE_TYPE`   — `<mfr>:EchoService:<version>` to discover.
+   - `$TEST_MESSAGE`   — payload to echo (positional CLI arg).
+3. Wire a `run_<lang>_driver` function in `run.sh` that invokes the
+   driver, asserts the log contains `[Received reply] Echo: $TEST_MESSAGE`,
+   and `fail`s otherwise.
+4. Add the corresponding case to the dispatcher near the bottom of `run.sh`
+   and to the `--client` validation list.
+5. Update the matrix table above.
+
+## Why a separate scenario
+
+`e2e/package-runtime-echo` already covers the end-to-end packaging /
+trust / runtime path against a real `actrix`. This scenario focuses on
+the *server-form* axis: it deliberately runs against the in-tree
+`mock-actrix` so it can land in CI without a private repo dependency, and
+the simpler bootstrap keeps onboarding cost low.

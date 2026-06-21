@@ -1,0 +1,16 @@
+edition = 1
+
+# Manifest for the TS driver.
+#
+# `ActrNode.fromConfig(manifestPath)` reads this file to locate the
+# sibling `actr.toml` (rendered into `RUN_DIR` by setup.sh and exposed
+# here via a symlink at runtime) **and** to drive the node's registered
+# actr_type via `Node::from_config_with_package`. The triple below is
+# what the polyglot server's ACL allow-lists.
+exports = []
+
+[package]
+name = "TsDriver"
+manufacturer = "polyglot"
+version = "0.1.0"
+description = "polyglot-echo TypeScript driver"

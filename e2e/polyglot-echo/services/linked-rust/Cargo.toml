@@ -1,0 +1,26 @@
+[package]
+name = "polyglot-echo-linked-rust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "polyglot-echo-linked-rust"
+path = "src/main.rs"
+
+[dependencies]
+actr-framework = { workspace = true }
+actr-protocol = { workspace = true }
+actr-hyper = { workspace = true }
+actr-config = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = "0.3"
+prost = { workspace = true }
+bytes = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+
+[build-dependencies]
+prost-build = "0.14"

@@ -1,0 +1,9 @@
+edition = 1
+
+[package]
+name = "EchoStreamService"
+manufacturer = "polyglot"
+version = "1.0.0"
+description = "polyglot-echo streaming server (linked workload)"
+authors = []
+license = "Apache-2.0"

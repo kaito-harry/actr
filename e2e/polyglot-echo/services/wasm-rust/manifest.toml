@@ -1,0 +1,25 @@
+edition = 1
+exports = ["protos/local/echo.proto"]
+
+[package]
+name = "EchoService"
+manufacturer = "polyglot"
+version = "1.0.0"
+description = "polyglot-echo Echo workload (Wasm Component)"
+authors = []
+license = "Apache-2.0"
+tags = ["dev", "service"]
+
+[binary]
+path = "dist/polyglot_echo_wasm_rust.wasm"
+target = "wasm32-wasip2"
+kind = "component"
+
+[build]
+tool = "cargo"
+manifest_path = "Cargo.toml"
+artifact = "lib"
+profile = "release"
+post_build = [
+  'mkdir -p "$(dirname "$ACTR_BUILD_BINARY_PATH")" && TARGET_ROOT="${CARGO_TARGET_DIR:-target}" && cp "$TARGET_ROOT/wasm32-wasip2/$ACTR_BUILD_PROFILE/polyglot_echo_wasm_rust.wasm" "$ACTR_BUILD_BINARY_PATH"',
+]

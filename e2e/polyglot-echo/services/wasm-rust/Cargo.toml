@@ -1,0 +1,40 @@
+# Empty [workspace] declares this crate as its own workspace root, so the
+# enclosing e2e/Cargo.toml workspace doesn't try to ingest it (it has wasm-
+# only deps that don't fit the workspace's native build matrix).
+[workspace]
+
+[package]
+name = "polyglot-echo-wasm-rust"
+version = "1.0.0"
+edition = "2024"
+publish = false
+build = "build.rs"
+
+[lib]
+name = "polyglot_echo_wasm_rust"
+crate-type = ["cdylib"]
+
+# Note: NO `cdylib` feature on actr-framework here.  That feature gates the
+# native C-ABI cdylib entry path; for wasm32-wasip2 we want actr-framework's
+# Component Model export path, which the `entry!` macro selects automatically
+# under `#[cfg(target_arch = "wasm32")]`.
+
+[dependencies]
+actr-framework = "0.3"
+actr-protocol = "0.3"
+async-trait = "0.1"
+prost = "0.14"
+bytes = "1"
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(actr_has_generated)'] }
+
+[profile.release]
+opt-level = "s"
+
+# Pin actr-* crates at the in-tree workspace so `actr build` picks up
+# unreleased framework changes (mirrors e2e/Cargo.toml).
+[patch.crates-io]
+actr-protocol = { path = "../../../../core/protocol" }
+actr-framework = { path = "../../../../core/framework" }
+

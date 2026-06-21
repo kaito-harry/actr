@@ -1,0 +1,5 @@
+.tmp/
+
+# Runtime symlink the TS driver creates next to its manifest at run time
+# (points at the rendered client-runtime.toml). Not source.
+clients/typescript/actr.toml

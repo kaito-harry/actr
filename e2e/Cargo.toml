@@ -2,6 +2,9 @@
 members = [
     "package-runtime-echo/client",
     "package-runtime-echo/client-guest",
+    "polyglot-echo/clients/rust",
+    "polyglot-echo/server",
+    "polyglot-echo/services/linked-rust",
 ]
 resolver = "2"
 

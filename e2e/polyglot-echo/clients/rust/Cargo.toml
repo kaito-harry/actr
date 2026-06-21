@@ -1,0 +1,23 @@
+[package]
+name = "polyglot-echo-rust-driver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+actr-hyper = { workspace = true }
+actr-framework = { workspace = true }
+actr-protocol = { workspace = true }
+actr-config = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+tracing = { workspace = true }
+tracing-subscriber = "0.3"
+anyhow = { workspace = true }
+prost = { workspace = true }
+bytes = { workspace = true }
+async-trait = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+
+[build-dependencies]
+prost-build = "0.14"

@@ -2358,6 +2358,61 @@ dependencies = [
 ]
 
 [[package]]
+name = "polyglot-echo-linked-rust"
+version = "0.3.3"
+dependencies = [
+ "actr-config",
+ "actr-framework",
+ "actr-hyper",
+ "actr-protocol",
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "prost 0.14.4",
+ "prost-build",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "polyglot-echo-rust-driver"
+version = "0.3.3"
+dependencies = [
+ "actr-config",
+ "actr-framework",
+ "actr-hyper",
+ "actr-protocol",
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "prost 0.14.4",
+ "prost-build",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "polyglot-echo-stream-server"
+version = "0.3.3"
+dependencies = [
+ "actr-config",
+ "actr-framework",
+ "actr-hyper",
+ "actr-protocol",
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "prost 0.14.4",
+ "prost-build",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "polyval"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

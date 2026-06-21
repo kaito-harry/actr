@@ -59,6 +59,68 @@ jobs:
   # removed; equivalent coverage now lives in the `package-runtime-echo-e2e`
   # job above.
 
+  polyglot-echo-e2e:
+    name: Polyglot Echo E2E
+    # Server-form matrix against an in-tree EchoService: three server forms
+    # (cdylib-rust / linked-rust / wasm-rust) driven by the Rust client, plus
+    # the Rust server-stream + bidi DataStream scenarios. Runs entirely against
+    # the in-tree mock-actrix, so unlike package-runtime-echo it needs no
+    # private actrix artifact. One job runs the whole matrix sequentially so the
+    # slow setup (mock-actrix + actr CLI + service build) is amortised across
+    # every scenario.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      - name: Install Linux e2e dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq lsof
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Distinct from package-runtime-echo's cache: the polyglot scenario
+          # uses its own CARGO_TARGET_DIR tree under target/e2e-cache/polyglot-echo/.
+          key: polyglot-echo-e2e
+          workspaces: |
+            .
+            target/e2e-cache/polyglot-echo/actr-cli
+            target/e2e-cache/polyglot-echo/mock-actrix
+            target/e2e-cache/polyglot-echo/service-build
+            target/e2e-cache/polyglot-echo/driver-rust
+            target/e2e-cache/polyglot-echo/linked-rust
+            target/e2e-cache/polyglot-echo/wasm-rust
+            target/e2e-cache/polyglot-echo/stream-server
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      # ── server forms (Rust client, echo scenario) ──────────────────────────
+      - name: Run polyglot-echo (--server cdylib-rust --client rust)
+        run: bash e2e/polyglot-echo/run.sh --server cdylib-rust --client rust polyglot-ci-cdylib
+      - name: Run polyglot-echo (--server linked-rust --client rust)
+        run: bash e2e/polyglot-echo/run.sh --server linked-rust --client rust polyglot-ci-linked
+      - name: Run polyglot-echo (--server wasm-rust --client rust)
+        run: bash e2e/polyglot-echo/run.sh --server wasm-rust --client rust polyglot-ci-wasm
+      # ── streaming scenarios (Rust client, dedicated linked stream server) ───
+      - name: Run polyglot-echo (--client rust --scenario server-stream)
+        run: bash e2e/polyglot-echo/run.sh --client rust --scenario server-stream polyglot-ci-stream
+      - name: Run polyglot-echo (--client rust --scenario bidi)
+        run: bash e2e/polyglot-echo/run.sh --client rust --scenario bidi polyglot-ci-bidi
+      # ── cross-language client (TypeScript driver, echo scenario) ────────────
+      - name: Run polyglot-echo (--server cdylib-rust --client ts)
+        run: bash e2e/polyglot-echo/run.sh --server cdylib-rust --client ts polyglot-ci-ts
+
   typescript-e2e:
     name: TypeScript E2E
     runs-on: ubuntu-latest
