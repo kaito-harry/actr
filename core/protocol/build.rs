@@ -46,7 +46,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     config.compile_protos(&proto_files, &["proto/"])?;
 
-    // Tell cargo to rerun if proto files change
+    // Tell cargo to rerun if any proto file changes. Track each FILE
+    // individually rather than the `proto/` directory: on Linux a directory's
+    // mtime only changes when entries are added/removed/renamed, NOT when a
+    // file's contents are edited in place. A directory-only rerun-if-changed
+    // therefore silently misses in-place .proto edits, leaving stale generated
+    // modules linked into some build targets (observed: an in-place addition of
+    // a field went unregenerated in cached per-component target dirs, so a
+    // decode/re-encode hop dropped the new field on the wire).
+    for proto in &proto_files {
+        println!("cargo:rerun-if-changed={proto}");
+    }
+    // Also rerun if a proto file is added or removed.
     println!("cargo:rerun-if-changed=proto/");
 
     Ok(())
