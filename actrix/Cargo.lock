@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "actrix"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "actr-protocol",
  "actr-runtime",
@@ -125,7 +125,7 @@ dependencies = [
  "signer",
  "sqlx",
  "strum 0.26.3",
- "stun 0.1.1",
+ "stun 0.1.2",
  "subtle",
  "tempfile",
  "thiserror 2.0.18",
@@ -141,7 +141,7 @@ dependencies = [
  "tracing-appender",
  "tracing-opentelemetry",
  "tracing-subscriber",
- "turn 0.1.1",
+ "turn 0.1.2",
  "typetag",
  "url",
  "urlencoding",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "actrix-mfr"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
  "base64",
@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "actrix-proto"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "prost",
  "prost-types",
@@ -186,14 +186,14 @@ dependencies = [
 
 [[package]]
 name = "actrix-sdk"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "admin",
 ]
 
 [[package]]
 name = "admin"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "actrix-proto",
  "chrono",
@@ -270,7 +270,7 @@ dependencies = [
 
 [[package]]
 name = "ais"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "actr-protocol",
  "actrix-mfr",
@@ -2926,7 +2926,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "platform"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "actr-protocol",
  "actrix-proto",
@@ -3934,7 +3934,7 @@ dependencies = [
 
 [[package]]
 name = "signaling"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -3975,7 +3975,7 @@ dependencies = [
 
 [[package]]
 name = "signer"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "actrix-proto",
  "aes-gcm",
@@ -4326,7 +4326,7 @@ dependencies = [
 
 [[package]]
 name = "stun"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "platform",
@@ -5072,7 +5072,7 @@ dependencies = [
 
 [[package]]
 name = "turn"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "actr-protocol",
  "anyhow",

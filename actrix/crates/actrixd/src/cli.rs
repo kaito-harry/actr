@@ -5,8 +5,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "aux-servers")]
-#[command(version = "0.1.0")]
+#[command(name = "aux-servers", version)]
 #[command(
     about = "Collection of WebRTC auxiliary servers including Signaling, STUN and TURN services"
 )]
