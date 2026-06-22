@@ -1,0 +1,41 @@
+syntax = "proto3";
+package local;
+
+enum StreamPayloadMode {
+  STREAM_RELIABLE = 0;
+  STREAM_LATENCY_FIRST = 1;
+}
+
+service DuplexEchoService {
+  rpc Echo(EchoRequest) returns (EchoResponse);
+  rpc StartDuplexStream(StartDuplexStreamRequest) returns (StartDuplexStreamResponse);
+  rpc FinishDuplexStream(FinishDuplexStreamRequest) returns (FinishDuplexStreamResponse);
+}
+
+message EchoRequest  { string message = 1; }
+message EchoResponse { string message = 1; }
+
+message StartDuplexStreamRequest {
+  string session_id = 1;
+  string client_to_service_stream_id = 2;
+  uint32 client_chunk_count = 3;
+  StreamPayloadMode payload_mode = 4;
+  string note = 5;
+}
+message StartDuplexStreamResponse {
+  string session_id = 1;
+  string accepted_client_to_service_stream_id = 2;
+  string service_to_client_stream_id = 3;
+  string status = 4;
+}
+message FinishDuplexStreamRequest {
+  string session_id = 1;
+  string client_to_service_stream_id = 2;
+  string service_to_client_stream_id = 3;
+}
+message FinishDuplexStreamResponse {
+  string session_id = 1;
+  uint32 client_chunks_received = 2;
+  uint32 service_chunks_sent = 3;
+  string status = 4;
+}

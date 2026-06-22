@@ -1,0 +1,11 @@
+edition = 1
+exports = ["protos/local/probe.proto"]
+
+[package]
+name = "SwiftTsWorkloadApp"
+manufacturer = "actrium"
+version = "0.1.0"
+description = "Actrium SwiftTsWorkloadApp — iOS linked runtime"
+
+[dependencies]
+duplex_echo = { actr_type = "actrium:DuplexEchoService:1.0.0" }

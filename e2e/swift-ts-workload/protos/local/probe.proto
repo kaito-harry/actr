@@ -1,0 +1,15 @@
+syntax = "proto3";
+package local;
+
+service ProbeService {
+  rpc StartProbe(StartProbeRequest) returns (StartProbeResponse);
+}
+
+message StartProbeRequest {
+  string probe_name = 1;
+  string target_type = 2;
+}
+message StartProbeResponse {
+  bool started = 1;
+  string message = 2;
+}
