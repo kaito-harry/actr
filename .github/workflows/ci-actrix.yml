@@ -1,14 +1,23 @@
-name: CI
+name: CI (actrix)
 
 on:
   push:
-    branches: [main, "develop*", "release*"]
+    branches: [main]
+    paths:
+      - "actrix/**"
+      - ".github/workflows/ci-actrix.yml"
   pull_request:
-    types: [opened, synchronize, reopened, closed]
-    branches: [main, "develop*", "release*"]
+    branches: [main]
+    paths:
+      - "actrix/**"
+      - ".github/workflows/ci-actrix.yml"
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    working-directory: actrix
 
 jobs:
   test:
@@ -17,9 +26,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-
-      - name: Checkout actr
-        run: git clone --depth=1 https://github.com/Actrium/actr.git ../actr
 
       - name: Install protoc
         run: |
@@ -33,6 +39,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: actrix
 
       - name: Run unit tests
         run: cargo test --workspace --all-features --lib --bins
@@ -44,9 +52,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Checkout actr
-        run: git clone --depth=1 https://github.com/Actrium/actr.git ../actr
-
       - name: Install protoc
         run: |
           sudo apt-get update
@@ -57,6 +62,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: actrix
 
       - name: Run integration tests
         run: cargo test --workspace --all-features --test '*'
@@ -66,8 +73,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout actr
-        run: git clone --depth=1 https://github.com/Actrium/actr.git ../actr
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -78,9 +83,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Checkout actr
-        run: git clone --depth=1 https://github.com/Actrium/actr.git ../actr
 
       - name: Install protoc
         run: |
@@ -93,6 +95,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: actrix
 
       - run: cargo clippy --workspace --all-features -- -D warnings
 
@@ -104,16 +108,11 @@ jobs:
         platform:
           - os: ubuntu-latest
             artifact_name: actrix-linux-x86_64
-            binary_path: target/release/actrix
           - os: macos-14
             artifact_name: actrix-macos-arm64
-            binary_path: target/release/actrix
     runs-on: ${{ matrix.platform.os }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Checkout actr
-        run: git clone --depth=1 https://github.com/Actrium/actr.git ../actr
 
       - name: Install protoc (Linux)
         if: runner.os == 'Linux'
@@ -129,6 +128,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: actrix
 
       - name: Build release
         run: cargo build --release --all-features
@@ -138,33 +139,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform.artifact_name }}
-          path: ${{ matrix.platform.binary_path }}
-
-  build-release-status:
-    name: Build Release
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Confirm release builds succeeded
-        run: echo "All release build matrix jobs completed successfully."
-
-  notify-merge:
-    name: Notify WeChat on PR Merge
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main'
-    steps:
-      - name: Send WeChat Work notification
-        env:
-          WECHAT_WEBHOOK_URL: ${{ secrets.WECHAT_WEBHOOK_URL }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          REPO: ${{ github.repository }}
-        run: |
-          CONTENT=$(printf '<font color="warning">New PR merged to main branch</font>\n> Project: <font color="comment">%s</font>\n> Issue Author: <font color="comment">%s</font>\n> Issue: <font color="comment">[#%s](%s)</font>\n> Title: <font color="comment">%s</font>\n> MR: <font color="comment">%s</font>' \
-            "$REPO" "$PR_AUTHOR" "$PR_NUMBER" "$PR_URL" "$PR_TITLE" "$PR_URL")
-          jq -n --arg content "$CONTENT" '{msgtype: "markdown", markdown: {content: $content}}' > /tmp/payload.json
-          curl -s --fail -X POST "$WECHAT_WEBHOOK_URL" \
-            -H 'Content-Type: application/json' \
-            -d @/tmp/payload.json
+          path: actrix/target/release/actrix
