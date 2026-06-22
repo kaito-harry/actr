@@ -90,6 +90,9 @@ build_mock_actrix() {
 
 start_mock_actrix() {
     section "🚀 Starting mock-actrix"
+    # Reap orphaned servers from a prior run BEFORE the fresh mock-actrix
+    # comes up, so a stale `actr run` cannot re-register under an old ACL.
+    reap_stale_polyglot_servers
     kill_listener tcp "$HTTP_PORT"
 
     "$MOCK_ACTRIX_BIN" --port "$HTTP_PORT" \

@@ -67,6 +67,24 @@ kill_listener() {
     fi
 }
 
+# Reap `actr run` server processes left behind by a previous polyglot-echo
+# run. They connect OUTBOUND to the signaling port (they are clients, not
+# listeners), so `kill_listener` never sees them; orphaned by a hard-killed
+# run (e.g. the EXIT trap could not fire), they keep reconnecting to the
+# fixed HTTP_PORT and re-register with the fresh mock-actrix under a stale
+# ACL — surfacing later as a baffling "ACL denied" on the new run. The match
+# is pinned to this scenario's per-run config path (`polyglot-echo/.tmp/run-`),
+# so unrelated `actr` processes elsewhere on the host are never touched.
+reap_stale_polyglot_servers() {
+    local pids
+    pids="$(pgrep -f 'actr run -c .*/polyglot-echo/\.tmp/run-' 2>/dev/null || true)"
+    if [ -n "$pids" ]; then
+        warn "Reaping stale polyglot-echo server(s) from a previous run: $pids"
+        # SIGKILL: these are orphans that already ignored normal teardown.
+        kill -9 $pids 2>/dev/null || true
+    fi
+}
+
 wait_for_http_ok() {
     local url="$1"
     local timeout="$2"
