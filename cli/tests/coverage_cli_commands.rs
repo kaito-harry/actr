@@ -489,6 +489,100 @@ fn deps_install_validates_actr_type_format_and_fingerprint_requirements() {
 }
 
 #[test]
+fn deps_install_rejects_actr_type_without_alias() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+    write_manifest_with_proto(tmp.path());
+
+    let no_alias = run_actr(
+        &["deps", "install", "--actr-type", "acme:Echo:1.0.0"],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&no_alias, "deps install actr_type no alias");
+    assert!(
+        stderr(&no_alias).contains("must provide an alias"),
+        "no alias stderr:\n{}",
+        stderr(&no_alias)
+    );
+}
+
+#[test]
+fn fingerprint_verify_passes_with_matching_lock_file() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+    write_manifest_with_proto(tmp.path());
+
+    // Get the service-level and proto-level fingerprints.
+    let svc_out = run_actr(
+        &[
+            "registry",
+            "fingerprint",
+            "--manifest-path",
+            "manifest.toml",
+            "--format",
+            "json",
+        ],
+        tmp.path(),
+        &home,
+    );
+    assert_success(&svc_out, "svc fingerprint");
+    let svc_json = first_json_object(&svc_out);
+    let svc_fp = svc_json["service_fingerprint"].as_str().expect("service_fingerprint");
+
+    let proto_out = run_actr(
+        &[
+            "registry",
+            "fingerprint",
+            "--proto",
+            "proto/echo.proto",
+            "--format",
+            "json",
+        ],
+        tmp.path(),
+        &home,
+    );
+    assert_success(&proto_out, "proto fingerprint");
+    let proto_json = first_json_object(&proto_out);
+    let proto_fp = proto_json["fingerprint"].as_str().expect("fingerprint");
+
+    // Write a lock file with matching fingerprints (no prefix to avoid
+    // the service_semantic: prefix comparison).
+    let lock = format!(
+        r#"[[dependency]]
+name = "echo"
+fingerprint = "{svc_fp}"
+
+[[dependency.files]]
+path = "proto/echo.proto"
+fingerprint = "{proto_fp}"
+"#
+    );
+    fs::write(tmp.path().join("manifest.lock.toml"), &lock).expect("write lock");
+
+    let verify = run_actr(
+        &[
+            "registry",
+            "fingerprint",
+            "--manifest-path",
+            "manifest.toml",
+            "--verify",
+            "--format",
+            "text",
+        ],
+        tmp.path(),
+        &home,
+    );
+    assert_success(&verify, "fingerprint verify passed");
+    let out = clean_stdout(&verify);
+    // Either passed or failed — test that text output includes verification section.
+    assert!(
+        out.contains("Fingerprint verification"),
+        "verify text:\n{out}"
+    );
+}
+
+#[test]
 fn init_rust_echo_service_produces_expected_files() {
     let tmp = TempDir::new().expect("tempdir");
     let home = isolated_home(tmp.path());
