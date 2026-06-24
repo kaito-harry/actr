@@ -1250,6 +1250,34 @@ fn registry_fingerprint_covers_text_no_exports_and_unsupported_format() {
 }
 
 #[test]
+fn actr_without_subcommand_prints_help() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+
+    let output = run_actr(&[], tmp.path(), &home);
+    assert_success(&output, "actr no subcommand");
+    let out = clean_stdout(&output);
+    assert!(
+        out.contains("Actor-RTC Command Line Tool"),
+        "help output:\n{out}"
+    );
+    assert!(
+        out.contains("development:") || out.contains("init"),
+        "help output:\n{out}"
+    );
+}
+
+#[test]
+fn completion_invalid_shell_is_rejected() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+
+    // Invalid shell name → clap validation rejects it.
+    let bad_shell = run_actr(&["completion", "nope"], tmp.path(), &home);
+    assert_failure(&bad_shell, "completion bad shell");
+}
+
+#[test]
 fn doc_generates_default_pages_without_manifest_and_rejects_subdir() {
     let tmp = TempDir::new().expect("tempdir");
     let home = isolated_home(tmp.path());
