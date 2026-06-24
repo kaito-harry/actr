@@ -385,6 +385,110 @@ fn registry_publish_reports_reading_errors_before_network() {
 }
 
 #[test]
+fn config_rejects_unknown_keys_and_bad_values() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+
+    let bad_key = run_actr(
+        &["config", "--local", "set", "nope.nope", "x"],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&bad_key, "config unknown key");
+    assert!(stderr(&bad_key).contains("Unknown configuration key"));
+
+    let bad_bool = run_actr(
+        &["config", "--local", "set", "cache.auto_lock", "maybe"],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&bad_bool, "config bad bool");
+    assert!(stderr(&bad_bool).contains("expects a boolean"));
+
+    let bad_int = run_actr(
+        &["config", "--local", "set", "network.realm_id", "abc"],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&bad_int, "config bad int");
+    assert!(stderr(&bad_int).contains("expects a positive integer"));
+}
+
+#[test]
+fn fingerprint_text_and_proto_yaml_covers_remaining_formats() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+    write_manifest_with_proto(tmp.path());
+
+    // Service-level in YAML format (already tested via existing test, but
+    // text format with service fingerprint is not)
+    let svc_text = run_actr(
+        &["registry", "fingerprint", "--manifest-path", "manifest.toml", "--format", "text"],
+        tmp.path(),
+        &home,
+    );
+    assert_success(&svc_text, "fingerprint svc text");
+    assert!(
+        clean_stdout(&svc_text).contains("Service Semantic Fingerprint"),
+        "svc text: {}",
+        clean_stdout(&svc_text)
+    );
+
+    // Proto YAML format was not covered.
+    let proto_yaml = run_actr(
+        &[
+            "registry",
+            "fingerprint",
+            "--proto",
+            "proto/echo.proto",
+            "--format",
+            "yaml",
+        ],
+        tmp.path(),
+        &home,
+    );
+    assert_success(&proto_yaml, "fingerprint proto yaml");
+    assert!(
+        clean_stdout(&proto_yaml).contains("proto_file:"),
+        "proto yaml: {}",
+        clean_stdout(&proto_yaml)
+    );
+}
+
+#[test]
+fn deps_install_validates_actr_type_format_and_fingerprint_requirements() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+    write_manifest_with_proto(tmp.path());
+
+    // --actr-type with bad format → rejected before network.
+    let bad_type = run_actr(
+        &["deps", "install", "my-alias", "--actr-type", "bad-format"],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&bad_type, "deps install bad actr_type");
+    assert!(
+        stderr(&bad_type).contains("Invalid actr_type format"),
+        "bad type stderr:\n{}",
+        stderr(&bad_type)
+    );
+
+    // --fingerprint without --actr-type → rejected.
+    let fp_no_type = run_actr(
+        &["deps", "install", "pkg", "--fingerprint", "fp"],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&fp_no_type, "deps install fingerprint no type");
+    assert!(
+        stderr(&fp_no_type).contains("--fingerprint requires specifying --actr-type"),
+        "fp no type stderr:\n{}",
+        stderr(&fp_no_type)
+    );
+}
+
+#[test]
 fn init_rust_echo_service_produces_expected_files() {
     let tmp = TempDir::new().expect("tempdir");
     let home = isolated_home(tmp.path());
