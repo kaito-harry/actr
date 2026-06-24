@@ -385,6 +385,37 @@ fn registry_publish_reports_reading_errors_before_network() {
 }
 
 #[test]
+fn init_rust_echo_service_produces_expected_files() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+    let project = tmp.path().join("my-echo");
+
+    let output = run_actr(
+        &[
+            "init",
+            "my-echo",
+            "--template",
+            "echo",
+            "--role",
+            "service",
+            "--signaling",
+            "ws://localhost:8080",
+            "--manufacturer",
+            "test-org",
+            "--language",
+            "rust",
+        ],
+        tmp.path(),
+        &home,
+    );
+    assert_success(&output, "init rust echo");
+    assert!(project.join("manifest.toml").exists(), "manifest.toml missing");
+    assert!(project.join("Cargo.toml").exists(), "Cargo.toml missing");
+    let manifest = fs::read_to_string(project.join("manifest.toml")).unwrap();
+    assert!(manifest.contains("test-org"), "manifest:\n{manifest}");
+}
+
+#[test]
 fn registry_fingerprint_reports_service_json_and_lock_mismatches() {
     let tmp = TempDir::new().expect("tempdir");
     let home = isolated_home(tmp.path());
