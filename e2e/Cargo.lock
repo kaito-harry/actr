@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "actr-config"
-version = "0.4.0"
+version = "0.4.3"
 dependencies = [
  "actr-protocol",
  "chrono",
@@ -17,7 +17,7 @@ dependencies = [
 
 [[package]]
 name = "actr-framework"
-version = "0.4.0"
+version = "0.4.3"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -32,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "actr-hyper"
-version = "0.4.0"
+version = "0.4.3"
 dependencies = [
  "actr-config",
  "actr-framework",
@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "actr-pack"
-version = "0.4.0"
+version = "0.4.3"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "actr-platform-native"
-version = "0.4.0"
+version = "0.4.3"
 dependencies = [
  "actr-hyper",
  "actr-platform-traits",
@@ -117,7 +117,7 @@ dependencies = [
 
 [[package]]
 name = "actr-platform-traits"
-version = "0.4.0"
+version = "0.4.3"
 dependencies = [
  "async-trait",
  "thiserror 2.0.18",
@@ -125,13 +125,14 @@ dependencies = [
 
 [[package]]
 name = "actr-protocol"
-version = "0.4.0"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "base64",
  "bytes",
  "chrono",
  "glob",
+ "hex",
  "prost 0.14.4",
  "prost-build",
  "prost-types",
@@ -144,7 +145,7 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime"
-version = "0.4.0"
+version = "0.4.3"
 dependencies = [
  "actr-framework",
  "actr-protocol",
@@ -156,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime-mailbox"
-version = "0.4.0"
+version = "0.4.3"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -173,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "actr-service-compat"
-version = "0.4.0"
+version = "0.4.3"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -3650,21 +3651,6 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "0.9.12+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf92845e79fc2e2def6a5d828f0801e29a2f8acc037becc5ab08595c7d5e9863"
-dependencies = [
- "indexmap",
- "serde_core",
- "serde_spanned 1.1.1",
- "toml_datetime 0.7.5+spec-1.1.0",
- "toml_parser",
- "toml_writer",
- "winnow 0.7.15",
-]
-
-[[package]]
-name = "toml"
 version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81f3d15e84cbcd896376e6730314d59fb5a87f31e4b038454184435cd57defee"
@@ -3685,15 +3671,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22cddaf88f4fbc13c51aebbf5f8eceb5c7c5a9da2ac40a13519eb5b0a0e8f11c"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "toml_datetime"
-version = "0.7.5+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
-dependencies = [
- "serde_core",
 ]
 
 [[package]]
@@ -3997,7 +3974,7 @@ dependencies = [
  "serde",
  "tempfile",
  "textwrap",
- "toml 0.9.12+spec-1.1.0",
+ "toml 0.8.23",
  "uniffi_internal_macros",
  "uniffi_meta",
  "uniffi_pipeline",
@@ -4042,7 +4019,7 @@ dependencies = [
  "quote",
  "serde",
  "syn",
- "toml 0.9.12+spec-1.1.0",
+ "toml 0.8.23",
  "uniffi_meta",
 ]
 
@@ -5245,4 +5222,4 @@ dependencies = [
 
 [[patch.unused]]
 name = "actr"
-version = "0.4.0"
+version = "0.4.3"

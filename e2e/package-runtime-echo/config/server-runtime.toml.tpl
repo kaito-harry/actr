@@ -14,8 +14,11 @@ realm_id = __REALM_ID__
 realm_secret = "__REALM_SECRET__"
 
 [[trust]]
+# RegistryTrust fetches MFR pubkeys at {endpoint}/mfr/{name}/verifying_key,
+# which lives at the actrix base (MfrService mounts /mfr), NOT under /ais.
+# [ais_endpoint] above keeps the /ais suffix because /register is mounted there.
 kind = "registry"
-endpoint = "http://127.0.0.1:8081/ais"
+endpoint = "http://127.0.0.1:8081"
 
 [discovery]
 visible = true
