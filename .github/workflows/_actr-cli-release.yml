@@ -218,7 +218,7 @@ jobs:
   report:
     name: Collect CLI release state
     if: always()
-    needs: [validate, build, publish]
+    needs: [validate, prepare-assets, build, publish]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

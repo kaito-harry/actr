@@ -126,6 +126,8 @@ command_build() {
   if [[ "${ACTR_PREBUILT_ASSETS:-}" != "1" ]]; then
     log_info "Syncing CLI web runtime assets for $TARGET"
     (cd "$repo_root" && bash bindings/web/scripts/sync-cli-assets.sh --build)
+  else
+    log_info "Skipping asset sync (ACTR_PREBUILT_ASSETS=1)"
   fi
   cargo_args=(--release -p actr-cli --locked --features wasm-engine)
   filename=$(binary_name)
