@@ -100,6 +100,7 @@ pub struct MetadataEntry {
 pub struct PeerEvent {
     pub peer: ActrId,
     pub relayed: Option<bool>,
+    pub status: Option<WebrtcPeerStatus>,
 }
 
 /// Lowered from WIT `record realm`.
@@ -192,4 +193,17 @@ pub enum PayloadType {
     StreamLatencyFirst,
     #[serde(rename = "media-rtp")]
     MediaRtp,
+}
+
+/// Lowered from WIT `variant webrtc-peer-status`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum WebrtcPeerStatus {
+    #[serde(rename = "idle")]
+    Idle,
+    #[serde(rename = "connecting")]
+    Connecting,
+    #[serde(rename = "connected")]
+    Connected,
+    #[serde(rename = "recovering")]
+    Recovering,
 }

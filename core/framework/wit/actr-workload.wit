@@ -112,6 +112,17 @@ interface types {
         data-stream-delivery-uncertain,
     }
 
+    // Coarse WebRTC send-readiness state — one-to-one with
+    // `actr_framework::WebRtcPeerStatus`. Carried by `peer-event.status`
+    // so guests can distinguish an initial connection attempt, an active
+    // connection, and a recovery window from a terminal teardown.
+    variant webrtc-peer-status {
+        idle,
+        connecting,
+        connected,
+        recovering,
+    }
+
     // Structured error — one-to-one with `actr_protocol::ActrError`.
     //
     // Closed variant mirroring the Rust enum's shape; any future addition
@@ -147,10 +158,12 @@ interface types {
     // Peer-scoped event (actr_framework::PeerEvent) carried by the
     // WebSocket / WebRTC transport hooks. `relayed` is Some(true) when a
     // WebRTC connection traverses TURN, Some(false) for a direct P2P
-    // connection, None for WebSocket events.
+    // connection, None for WebSocket events. `status` is the coarse
+    // WebRTC send-readiness state; None for WebSocket events.
     record peer-event {
         peer: actr-id,
         relayed: option<bool>,
+        status: option<webrtc-peer-status>,
     }
 
     // Wall-clock timestamp represented as "whole seconds + nanoseconds"

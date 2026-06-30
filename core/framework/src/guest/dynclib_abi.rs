@@ -60,6 +60,17 @@ pub mod lifecycle_hook {
     pub const ON_STOP: u32 = 3;
 }
 
+/// `WebRtcPeerStatus` discriminants carried by [`PeerEventV1::status`].
+/// One-to-one with `actr_framework::WebRtcPeerStatus`; 0-based to mirror
+/// the enum's declaration order. `optional` prost fields track presence, so
+/// `Some(IDLE)` is distinct from `None`.
+pub mod webrtc_peer_status {
+    pub const IDLE: u32 = 0;
+    pub const CONNECTING: u32 = 1;
+    pub const CONNECTED: u32 = 2;
+    pub const RECOVERING: u32 = 3;
+}
+
 /// Observation hook identifiers carried by [`GuestHookV1`].
 pub mod runtime_hook {
     pub const ON_SIGNALING_CONNECTING: u32 = 1;
@@ -177,6 +188,10 @@ pub struct PeerEventV1 {
     pub peer: ActrId,
     #[prost(bool, optional, tag = "2")]
     pub relayed: Option<bool>,
+    /// `WebRtcPeerStatus` discriminant (see [`webrtc_peer_status`]).
+    /// `None` for WebSocket events.
+    #[prost(uint32, optional, tag = "3")]
+    pub status: Option<u32>,
 }
 
 /// Credential lifecycle event payload.

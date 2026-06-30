@@ -3,6 +3,8 @@
 //! This module replaces the old executor adapter layer. `ActrNode` dispatches
 //! directly into a runtime `Workload` enum.
 
+#[cfg(feature = "dynclib-engine")]
+use actr_framework::WebRtcPeerStatus;
 use actr_framework::guest::dynclib_abi::{
     self as guest_abi, HostCallRawV1, HostCallV1, HostDiscoverV1, HostRegisterStreamV1,
     HostSendDataStreamV1, HostTellV1, HostUnregisterStreamV1,
@@ -814,6 +816,18 @@ fn peer_event_to_v1(event: PeerEvent) -> guest_abi::PeerEventV1 {
     guest_abi::PeerEventV1 {
         peer: event.peer,
         relayed: event.relayed,
+        status: event.status.map(peer_status_to_v1),
+    }
+}
+
+#[cfg(feature = "dynclib-engine")]
+fn peer_status_to_v1(status: WebRtcPeerStatus) -> u32 {
+    use actr_framework::guest::dynclib_abi::webrtc_peer_status as st;
+    match status {
+        WebRtcPeerStatus::Idle => st::IDLE,
+        WebRtcPeerStatus::Connecting => st::CONNECTING,
+        WebRtcPeerStatus::Connected => st::CONNECTED,
+        WebRtcPeerStatus::Recovering => st::RECOVERING,
     }
 }
 

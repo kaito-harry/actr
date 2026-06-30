@@ -1,11 +1,13 @@
 #![cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
 
+#[cfg(feature = "dynclib-engine")]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(feature = "dynclib-engine")]
 use std::sync::LazyLock;
 use std::time::{Duration, UNIX_EPOCH};
 
+use actr_framework::WebRtcPeerStatus;
 use actr_hyper::test_support::{TestPackageHookEvent, runtime_context_with_host_transport};
 use actr_hyper::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
 use actr_protocol::{ActrError, ActrId, ActrType, PayloadType, Realm};
@@ -72,30 +74,40 @@ fn package_hook_cases() -> Vec<(TestPackageHookEvent, &'static str)> {
         ),
         (
             TestPackageHookEvent::WebSocketConnecting { peer: peer.clone() },
-            "on_websocket_connecting:peer=1:relayed=none",
+            "on_websocket_connecting:peer=1:relayed=none:status=none",
         ),
         (
             TestPackageHookEvent::WebSocketConnected { peer: peer.clone() },
-            "on_websocket_connected:peer=1:relayed=none",
+            "on_websocket_connected:peer=1:relayed=none:status=none",
         ),
         (
             TestPackageHookEvent::WebSocketDisconnected { peer: peer.clone() },
-            "on_websocket_disconnected:peer=1:relayed=none",
+            "on_websocket_disconnected:peer=1:relayed=none:status=none",
         ),
         (
             TestPackageHookEvent::WebRtcConnecting { peer: peer.clone() },
-            "on_webrtc_connecting:peer=1:relayed=none",
+            "on_webrtc_connecting:peer=1:relayed=none:status=connecting",
         ),
         (
             TestPackageHookEvent::WebRtcConnected {
                 peer: peer.clone(),
                 relayed: true,
             },
-            "on_webrtc_connected:peer=1:relayed=true",
+            "on_webrtc_connected:peer=1:relayed=true:status=connected",
         ),
         (
-            TestPackageHookEvent::WebRtcDisconnected { peer },
-            "on_webrtc_disconnected:peer=1:relayed=none",
+            TestPackageHookEvent::WebRtcDisconnected {
+                peer: peer.clone(),
+                status: WebRtcPeerStatus::Recovering,
+            },
+            "on_webrtc_disconnected:peer=1:relayed=none:status=recovering",
+        ),
+        (
+            TestPackageHookEvent::WebRtcDisconnected {
+                peer,
+                status: WebRtcPeerStatus::Idle,
+            },
+            "on_webrtc_disconnected:peer=1:relayed=none:status=idle",
         ),
         (
             TestPackageHookEvent::CredentialRenewed { new_expiry: expiry },

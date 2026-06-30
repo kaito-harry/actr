@@ -45,6 +45,16 @@ fn relayed_label(event: &actr_framework::PeerEvent) -> &'static str {
     }
 }
 
+fn status_label(event: &actr_framework::PeerEvent) -> &'static str {
+    match event.status {
+        Some(actr_framework::WebRtcPeerStatus::Idle) => "idle",
+        Some(actr_framework::WebRtcPeerStatus::Connecting) => "connecting",
+        Some(actr_framework::WebRtcPeerStatus::Connected) => "connected",
+        Some(actr_framework::WebRtcPeerStatus::Recovering) => "recovering",
+        None => "none",
+    }
+}
+
 async fn record_peer_hook<C: Context>(
     ctx: &C,
     name: &'static str,
@@ -53,9 +63,10 @@ async fn record_peer_hook<C: Context>(
     record_hook_value(
         ctx,
         format!(
-            "{name}:peer={}:relayed={}",
+            "{name}:peer={}:relayed={}:status={}",
             event.peer.serial_number,
-            relayed_label(event)
+            relayed_label(event),
+            status_label(event),
         ),
     )
     .await;

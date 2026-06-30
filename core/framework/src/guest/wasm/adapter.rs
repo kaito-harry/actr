@@ -31,7 +31,9 @@ use std::sync::OnceLock;
 use actr_protocol::{ActrError, RpcEnvelope};
 use bytes::Bytes;
 
-use crate::workload::{BackpressureEvent, CredentialEvent, ErrorCategory, ErrorEvent, PeerEvent};
+use crate::workload::{
+    BackpressureEvent, CredentialEvent, ErrorCategory, ErrorEvent, PeerEvent, WebRtcPeerStatus,
+};
 use crate::{MessageDispatcher, Workload};
 
 use super::context::{WasmContext, proto_actr_error_to_wit, wit_actr_error_to_proto};
@@ -101,7 +103,16 @@ fn peer_event_from_wit(e: wit_types::PeerEvent) -> PeerEvent {
     PeerEvent {
         peer: super::context_helpers::actr_id_from_wit(&e.peer),
         relayed: e.relayed,
-        status: None,
+        status: e.status.map(webrtc_peer_status_from_wit),
+    }
+}
+
+fn webrtc_peer_status_from_wit(s: wit_types::WebrtcPeerStatus) -> WebRtcPeerStatus {
+    match s {
+        wit_types::WebrtcPeerStatus::Idle => WebRtcPeerStatus::Idle,
+        wit_types::WebrtcPeerStatus::Connecting => WebRtcPeerStatus::Connecting,
+        wit_types::WebrtcPeerStatus::Connected => WebRtcPeerStatus::Connected,
+        wit_types::WebrtcPeerStatus::Recovering => WebRtcPeerStatus::Recovering,
     }
 }
 

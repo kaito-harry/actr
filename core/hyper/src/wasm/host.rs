@@ -33,7 +33,7 @@
 use std::sync::Arc;
 
 use actr_framework::guest::dynclib_abi::InitPayloadV1;
-use actr_framework::{BackpressureEvent, CredentialEvent, PeerEvent};
+use actr_framework::{BackpressureEvent, CredentialEvent, PeerEvent, WebRtcPeerStatus};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     ActrError, ActrId, ActrType, ConnectionNotReadyInfo, DataStream, MetadataEntry, PayloadType,
@@ -51,6 +51,7 @@ use super::component_bindings::actr::workload::types::{
     BackpressureEvent as WitBackpressureEvent, CredentialEvent as WitCredentialEvent,
     DataStream as WitDataStream, Dest as WitDest, PayloadType as WitPayloadType,
     PeerEvent as WitPeerEvent, Realm as WitRealm, RpcEnvelope as WitRpcEnvelope,
+    WebrtcPeerStatus as WitWebrtcPeerStatus,
 };
 use crate::wasm::error::{WasmError, WasmResult};
 use crate::workload::{
@@ -494,6 +495,16 @@ fn proto_peer_event_to_wit(event: PeerEvent) -> WitPeerEvent {
     WitPeerEvent {
         peer: proto_actr_id_to_wit(&event.peer),
         relayed: event.relayed,
+        status: event.status.map(proto_webrtc_peer_status_to_wit),
+    }
+}
+
+fn proto_webrtc_peer_status_to_wit(status: WebRtcPeerStatus) -> WitWebrtcPeerStatus {
+    match status {
+        WebRtcPeerStatus::Idle => WitWebrtcPeerStatus::Idle,
+        WebRtcPeerStatus::Connecting => WitWebrtcPeerStatus::Connecting,
+        WebRtcPeerStatus::Connected => WitWebrtcPeerStatus::Connected,
+        WebRtcPeerStatus::Recovering => WitWebrtcPeerStatus::Recovering,
     }
 }
 

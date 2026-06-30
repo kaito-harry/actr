@@ -107,15 +107,36 @@ pub enum TestPackageHookEvent {
     SignalingConnecting,
     SignalingConnected,
     SignalingDisconnected,
-    WebSocketConnecting { peer: ActrId },
-    WebSocketConnected { peer: ActrId },
-    WebSocketDisconnected { peer: ActrId },
-    WebRtcConnecting { peer: ActrId },
-    WebRtcConnected { peer: ActrId, relayed: bool },
-    WebRtcDisconnected { peer: ActrId },
-    CredentialRenewed { new_expiry: std::time::SystemTime },
-    CredentialExpiring { new_expiry: std::time::SystemTime },
-    MailboxBackpressure { queue_len: usize, threshold: usize },
+    WebSocketConnecting {
+        peer: ActrId,
+    },
+    WebSocketConnected {
+        peer: ActrId,
+    },
+    WebSocketDisconnected {
+        peer: ActrId,
+    },
+    WebRtcConnecting {
+        peer: ActrId,
+    },
+    WebRtcConnected {
+        peer: ActrId,
+        relayed: bool,
+    },
+    WebRtcDisconnected {
+        peer: ActrId,
+        status: actr_framework::WebRtcPeerStatus,
+    },
+    CredentialRenewed {
+        new_expiry: std::time::SystemTime,
+    },
+    CredentialExpiring {
+        new_expiry: std::time::SystemTime,
+    },
+    MailboxBackpressure {
+        queue_len: usize,
+        threshold: usize,
+    },
 }
 
 #[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
@@ -160,11 +181,11 @@ impl From<TestPackageHookEvent> for crate::workload::PackageHookEvent {
                     status: Some(actr_framework::WebRtcPeerStatus::Connected),
                 })
             }
-            TestPackageHookEvent::WebRtcDisconnected { peer } => {
+            TestPackageHookEvent::WebRtcDisconnected { peer, status } => {
                 Self::WebRtcDisconnected(actr_framework::PeerEvent {
                     peer,
                     relayed: None,
-                    status: Some(actr_framework::WebRtcPeerStatus::Recovering),
+                    status: Some(status),
                 })
             }
             TestPackageHookEvent::CredentialRenewed { new_expiry } => {
@@ -274,14 +295,14 @@ impl TestPackageHookObserver {
                     )
                     .await;
             }
-            TestPackageHookEvent::WebRtcDisconnected { peer } => {
+            TestPackageHookEvent::WebRtcDisconnected { peer, status } => {
                 self.observer
                     .on_webrtc_disconnected(
                         ctx,
                         &actr_framework::PeerEvent {
                             peer,
                             relayed: None,
-                            status: Some(actr_framework::WebRtcPeerStatus::Recovering),
+                            status: Some(status),
                         },
                     )
                     .await;

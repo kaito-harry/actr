@@ -32,7 +32,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 
 use crate::web::context::WebContext;
-use crate::workload::{BackpressureEvent, CredentialEvent, ErrorCategory, ErrorEvent, PeerEvent};
+use crate::workload::{
+    BackpressureEvent, CredentialEvent, ErrorCategory, ErrorEvent, PeerEvent, WebRtcPeerStatus,
+};
 use crate::{MessageDispatcher, Workload};
 
 use actr_web_abi::host as web_host;
@@ -89,7 +91,16 @@ fn peer_event_from_wit(e: wit::PeerEvent) -> PeerEvent {
     PeerEvent {
         peer: actr_id_from_wit(&e.peer),
         relayed: e.relayed,
-        status: None,
+        status: e.status.map(webrtc_peer_status_from_wit),
+    }
+}
+
+fn webrtc_peer_status_from_wit(s: wit::WebrtcPeerStatus) -> WebRtcPeerStatus {
+    match s {
+        wit::WebrtcPeerStatus::Idle => WebRtcPeerStatus::Idle,
+        wit::WebrtcPeerStatus::Connecting => WebRtcPeerStatus::Connecting,
+        wit::WebrtcPeerStatus::Connected => WebRtcPeerStatus::Connected,
+        wit::WebrtcPeerStatus::Recovering => WebRtcPeerStatus::Recovering,
     }
 }
 
