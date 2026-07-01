@@ -92,6 +92,11 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+      - name: Verify actr-hyper WIT drift
+        # core/hyper/wit/actr-workload.wit is a publish-time copy of the
+        # framework original (shipped in the actr-hyper tarball so bindgen
+        # works without the sibling framework crate). Fail fast if they drift.
+        run: cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
       - name: Cache cargo-installed tools
         id: cargo-tools
         uses: actions/cache@v4
@@ -145,6 +150,11 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+      - name: Verify actr-hyper WIT drift
+        # core/hyper/wit/actr-workload.wit is a publish-time copy of the
+        # framework original (shipped in the actr-hyper tarball so bindgen
+        # works without the sibling framework crate). Fail fast if they drift.
+        run: cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
       - name: Cache cargo-installed tools
         id: cargo-tools
         uses: actions/cache@v4
@@ -337,6 +347,11 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+      - name: Verify actr-hyper WIT drift
+        # core/hyper/wit/actr-workload.wit is a publish-time copy of the
+        # framework original (shipped in the actr-hyper tarball so bindgen
+        # works without the sibling framework crate). Fail fast if they drift.
+        run: cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
       - name: Cache cargo-installed tools
         id: cargo-tools
         uses: actions/cache@v4

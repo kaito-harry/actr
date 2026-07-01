@@ -35,7 +35,12 @@
 
 wasmtime::component::bindgen!({
     world: "actr-workload-guest",
-    path: "../framework/wit",
+    // `wit/actr-workload.wit` is a checked-in copy of
+    // `core/framework/wit/actr-workload.wit`. The copy lives inside this
+    // crate (not `../framework/wit`) so it ships in the publish tarball and
+    // `cargo package --all-features` can build without the sibling framework
+    // crate. Drift is guarded by CI (`cmp` against the framework original).
+    path: "wit",
     imports: { default: async | trappable },
     exports: { default: async },
 });
