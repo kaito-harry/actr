@@ -509,7 +509,11 @@ mod tests {
         assert!(!pool.is_closed());
 
         // Empty pool: no ready candidates, no connection.
-        assert!(!pool.has_live_candidate(&[ConnType::WebSocket, ConnType::WebRTC]).await);
+        assert!(
+            !pool
+                .has_live_candidate(&[ConnType::WebSocket, ConnType::WebRTC])
+                .await
+        );
         assert!(pool.get_connection(ConnType::WebSocket).await.is_none());
 
         // watch_ready receiver starts with an empty set.
@@ -544,9 +548,15 @@ mod tests {
             session_id: 1,
         };
         // No Ready slot → both identity checks are false.
-        assert!(!pool.connection_matches_identity(ConnType::WebRTC, &id).await);
         assert!(
-            !pool.mark_connection_closed_if_same(ConnType::WebRTC, &id).await,
+            !pool
+                .connection_matches_identity(ConnType::WebRTC, &id)
+                .await
+        );
+        assert!(
+            !pool
+                .mark_connection_closed_if_same(ConnType::WebRTC, &id)
+                .await,
             "non-ready slot should not be marked closed"
         );
     }
@@ -640,20 +650,26 @@ mod tests {
         .unwrap();
 
         // Matching identity → closes (true).
-        assert!(pool
-            .mark_connection_closed_if_same(ConnType::WebSocket, &id)
-            .await);
+        assert!(
+            pool.mark_connection_closed_if_same(ConnType::WebSocket, &id)
+                .await
+        );
         // Slot now Failed → no longer matches anything.
-        assert!(!pool.connection_matches_identity(ConnType::WebSocket, &id).await);
+        assert!(
+            !pool
+                .connection_matches_identity(ConnType::WebSocket, &id)
+                .await
+        );
 
         // Re-ready a fresh wire, then assert a mismatched identity does NOT close.
         let pool2 = WirePool::new(fast_retry());
-        pool2.add_connection(Arc::new(MockWire {
-            conn_type: ConnType::WebSocket,
-            succeed: true,
-            identity: Some(id.clone()),
-        }))
-        .await;
+        pool2
+            .add_connection(Arc::new(MockWire {
+                conn_type: ConnType::WebSocket,
+                succeed: true,
+                identity: Some(id.clone()),
+            }))
+            .await;
         tokio::time::timeout(Duration::from_secs(2), async {
             while pool2.get_connection(ConnType::WebSocket).await.is_none() {
                 tokio::time::sleep(Duration::from_millis(10)).await;

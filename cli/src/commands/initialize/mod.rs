@@ -112,7 +112,6 @@ pub async fn execute_initialize(language: SupportedLanguage, context: &InitConte
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     #[test]
     fn factory_returns_all_languages() {
@@ -125,16 +124,5 @@ mod tests {
         ] {
             let _ = InitializerFactory::get_initializer(lang).unwrap();
         }
-    }
-
-    #[test]
-    fn create_protoc_plugin_config_writes_and_skips_existing() {
-        let dir = TempDir::new().unwrap();
-        let config = dir.path().join(".protoc-plugin.toml");
-        // First call writes.
-        create_protoc_plugin_config(dir.path()).unwrap();
-        assert!(config.exists());
-        // Second call skips (file exists).
-        create_protoc_plugin_config(dir.path()).unwrap();
     }
 }

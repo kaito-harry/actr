@@ -2390,7 +2390,11 @@ mod tests {
         let host = format!(
             "{}-unknown-{}",
             std::env::consts::ARCH,
-            if std::env::consts::OS == "macos" { "darwin" } else { std::env::consts::OS }
+            if std::env::consts::OS == "macos" {
+                "darwin"
+            } else {
+                std::env::consts::OS
+            }
         );
         assert!(is_compatible_native_target(&host));
 

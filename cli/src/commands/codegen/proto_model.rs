@@ -392,8 +392,12 @@ mod tests {
 
     #[test]
     fn parse_rpc_method_parses_stream_and_unary_signatures() {
-        let m = parse_rpc_method("Echo(EchoRequest) returns (EchoResponse);", "echo", "EchoService")
-            .unwrap();
+        let m = parse_rpc_method(
+            "Echo(EchoRequest) returns (EchoResponse);",
+            "echo",
+            "EchoService",
+        )
+        .unwrap();
         assert_eq!(m.name, "Echo");
         assert_eq!(m.snake_name, "echo");
         assert_eq!(m.input_type, "EchoRequest");

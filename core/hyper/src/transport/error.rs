@@ -477,32 +477,71 @@ mod tests {
             (NetworkError::SignalingError("x".into()), "signaling"),
             (NetworkError::WebRtcError("x".into()), "webrtc"),
             (NetworkError::ProtocolError("x".into()), "protocol"),
-            (NetworkError::SerializationError("x".into()), "serialization"),
-            (NetworkError::DeserializationError("x".into()), "serialization"),
+            (
+                NetworkError::SerializationError("x".into()),
+                "serialization",
+            ),
+            (
+                NetworkError::DeserializationError("x".into()),
+                "serialization",
+            ),
             (NetworkError::TimeoutError("x".into()), "timeout"),
-            (NetworkError::AuthenticationError("x".into()), "authentication"),
+            (
+                NetworkError::AuthenticationError("x".into()),
+                "authentication",
+            ),
             (NetworkError::PermissionError("x".into()), "permission"),
-            (NetworkError::ConfigurationError("x".into()), "configuration"),
-            (NetworkError::ResourceExhaustedError("x".into()), "resource_exhausted"),
-            (NetworkError::NetworkUnreachableError("x".into()), "network_unreachable"),
-            (NetworkError::ServiceDiscoveryError("x".into()), "service_discovery"),
+            (
+                NetworkError::ConfigurationError("x".into()),
+                "configuration",
+            ),
+            (
+                NetworkError::ResourceExhaustedError("x".into()),
+                "resource_exhausted",
+            ),
+            (
+                NetworkError::NetworkUnreachableError("x".into()),
+                "network_unreachable",
+            ),
+            (
+                NetworkError::ServiceDiscoveryError("x".into()),
+                "service_discovery",
+            ),
             (NetworkError::NatTraversalError("x".into()), "nat_traversal"),
             (NetworkError::DataChannelError("x".into()), "data_channel"),
             (NetworkError::IceError("x".into()), "ice"),
             (NetworkError::DtlsError("x".into()), "dtls"),
             (NetworkError::StunTurnError("x".into()), "stun_turn"),
             (NetworkError::WebSocketError("x".into()), "websocket"),
-            (NetworkError::ConnectionNotFound("x".into()), "connection_not_found"),
-            (NetworkError::ConnectionClosed("x".into()), "connection_closed"),
+            (
+                NetworkError::ConnectionNotFound("x".into()),
+                "connection_not_found",
+            ),
+            (
+                NetworkError::ConnectionClosed("x".into()),
+                "connection_closed",
+            ),
             (NetworkError::NotImplemented("x".into()), "not_implemented"),
             (NetworkError::ChannelClosed("x".into()), "channel_closed"),
             (NetworkError::SendError("x".into()), "send_error"),
             (NetworkError::NoRoute("x".into()), "no_route"),
-            (NetworkError::InvalidOperation("x".into()), "invalid_operation"),
-            (NetworkError::InvalidArgument("x".into()), "invalid_argument"),
-            (NetworkError::ChannelNotFound("x".into()), "channel_not_found"),
+            (
+                NetworkError::InvalidOperation("x".into()),
+                "invalid_operation",
+            ),
+            (
+                NetworkError::InvalidArgument("x".into()),
+                "invalid_argument",
+            ),
+            (
+                NetworkError::ChannelNotFound("x".into()),
+                "channel_not_found",
+            ),
             (NetworkError::BroadcastError("x".into()), "broadcast"),
-            (NetworkError::CredentialExpired("x".into()), "credential_expired"),
+            (
+                NetworkError::CredentialExpired("x".into()),
+                "credential_expired",
+            ),
         ];
         for (err, expected) in &cases {
             assert_eq!(err.category(), *expected, "category mismatch for {err}");
@@ -575,7 +614,8 @@ mod tests {
 
     #[test]
     fn from_json_error_into_network_error() {
-        let bad: serde_json::Error = serde_json::from_str::<serde_json::Value>("{bad}").unwrap_err();
+        let bad: serde_json::Error =
+            serde_json::from_str::<serde_json::Value>("{bad}").unwrap_err();
         let e: NetworkError = bad.into();
         assert!(matches!(e, NetworkError::JsonError(_)));
         assert_eq!(e.category(), "json");
@@ -629,11 +669,9 @@ mod tests {
     #[test]
     fn io_error_becomes_internal_via_kind_fallback() {
         // IoError is Internal-kind, not in any precise map → Internal.
-        let e: ActrError = NetworkError::IoError(std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
-            "io",
-        ))
-        .into();
+        let e: ActrError =
+            NetworkError::IoError(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "io"))
+                .into();
         assert!(matches!(e, ActrError::Internal(_)));
     }
 }

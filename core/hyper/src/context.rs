@@ -308,8 +308,6 @@ impl RuntimeContext {
         dep_type == *target_type
     }
 
-
-
     /// Internal: Send discovery request to signaling server
     async fn send_discovery_request(
         &self,
@@ -841,7 +839,6 @@ mod tests {
     use super::*;
     use crate::test_support::runtime_context_with_host_transport;
     use crate::transport::HostTransport;
-    use actr_framework::Context as _;
 
     fn ctx() -> RuntimeContext {
         runtime_context_with_host_transport(ActrId::default(), Arc::new(HostTransport::new()))
@@ -870,9 +867,7 @@ mod tests {
         // helper, which sets Some). Actor dest must fail.
         use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
         use crate::outbound::{Gate, HostGate};
-        use crate::wire::webrtc::{
-            ReconnectConfig, SignalingClient as _, SignalingConfig, WebSocketSignalingClient,
-        };
+        use crate::wire::webrtc::{ReconnectConfig, SignalingConfig, WebSocketSignalingClient};
         let host = Arc::new(HostTransport::new());
         let inproc = Gate::Host(Arc::new(HostGate::new(host)));
         let c = RuntimeContext::new(
@@ -938,10 +933,8 @@ mod tests {
     #[tokio::test]
     async fn ensure_session_ready_rejects_stale_generation() {
         let mut c = ctx();
-        let snap = crate::lifecycle::session_state::SessionSnapshot::empty_with_id(
-            ActrId::default(),
-            5,
-        );
+        let snap =
+            crate::lifecycle::session_state::SessionSnapshot::empty_with_id(ActrId::default(), 5);
         let ss = SessionState::new(snap);
         c.session_state = Some(ss.clone());
         c.context_generation = 0;
@@ -1004,7 +997,7 @@ mod tests {
             Arc::new(MediaFrameRegistry::new()),
             {
                 use crate::wire::webrtc::{
-                    ReconnectConfig, SignalingClient as _, SignalingConfig, WebSocketSignalingClient,
+                    ReconnectConfig, SignalingConfig, WebSocketSignalingClient,
                 };
                 Arc::new(WebSocketSignalingClient::new(SignalingConfig {
                     server_url: url::Url::parse("ws://127.0.0.1:9").unwrap(),
@@ -1033,10 +1026,8 @@ mod tests {
     #[tokio::test]
     async fn build_bootstrap_prefers_session_generation_when_set() {
         let mut b = builder();
-        let snap = crate::lifecycle::session_state::SessionSnapshot::empty_with_id(
-            ActrId::default(),
-            9,
-        );
+        let snap =
+            crate::lifecycle::session_state::SessionSnapshot::empty_with_id(ActrId::default(), 9);
         let ss = SessionState::new(snap);
         b.set_session_state(Some(ss.clone()));
 
@@ -1056,14 +1047,12 @@ mod tests {
 
     // ── get_dependency_fingerprint ──────────────────────────────────────────
 
-    use actr_config::lock::{LockedDependency, LockFile};
+    use actr_config::lock::{LockFile, LockedDependency};
 
     fn ctx_with_lock(lock: Option<LockFile>) -> RuntimeContext {
         use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
         use crate::outbound::{Gate, HostGate};
-        use crate::wire::webrtc::{
-            ReconnectConfig, SignalingClient as _, SignalingConfig, WebSocketSignalingClient,
-        };
+        use crate::wire::webrtc::{ReconnectConfig, SignalingConfig, WebSocketSignalingClient};
         let host = Arc::new(HostTransport::new());
         let inproc = Gate::Host(Arc::new(HostGate::new(host)));
         RuntimeContext::new(

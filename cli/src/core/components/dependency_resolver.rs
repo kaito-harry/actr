@@ -224,10 +224,7 @@ mod tests {
     async fn resolve_dependencies_no_match_uses_empty_fingerprint() {
         let resolver = DefaultDependencyResolver::new();
         let specs = vec![spec("ghost", "ghost", None, None)];
-        let result = resolver
-            .resolve_dependencies(&specs, &[])
-            .await
-            .unwrap();
+        let result = resolver.resolve_dependencies(&specs, &[]).await.unwrap();
         assert_eq!(result[0].fingerprint, "");
         assert!(result[0].proto_files.is_empty());
     }

@@ -248,17 +248,21 @@ mod tests {
     #[test]
     fn client_new_holds_endpoint_and_no_secret() {
         let c = AisClient::new("http://ais.example.com:8080");
-        // endpoint stored as given; realm_secret defaults to None.
-        // (Fields are private; we assert behavior indirectly via with_realm_secret chaining.)
-        let _chained = c.with_realm_secret("s3cr3t");
-        // Construction must not panic and returns Self for chaining.
+        assert_eq!(c.endpoint, "http://ais.example.com:8080");
+        assert!(c.realm_secret.is_none());
+
+        let chained = c.with_realm_secret("s3cr3t");
+        assert_eq!(chained.realm_secret.as_deref(), Some("s3cr3t"));
     }
 
     #[test]
     fn with_realm_secret_is_chainable_idempotent_builder() {
         let c = AisClient::new("http://ais").with_realm_secret("abc");
-        // Builder returns a usable client; calling again replaces the secret.
-        let _c2 = c.with_realm_secret("def");
+        assert_eq!(c.realm_secret.as_deref(), Some("abc"));
+
+        let c2 = c.with_realm_secret("def");
+        assert_eq!(c2.endpoint, "http://ais");
+        assert_eq!(c2.realm_secret.as_deref(), Some("def"));
     }
 
     // ── parse_retry_after ───────────────────────────────────────────────────
@@ -266,10 +270,7 @@ mod tests {
     #[test]
     fn parse_retry_after_valid_seconds() {
         let h = HeaderValue::from_static("120");
-        assert_eq!(
-            parse_retry_after(Some(&h)),
-            Some(Duration::from_secs(120))
-        );
+        assert_eq!(parse_retry_after(Some(&h)), Some(Duration::from_secs(120)));
     }
 
     #[test]
@@ -301,7 +302,10 @@ mod tests {
             classify_renew_status(400, None),
             RenewError::InvalidRequest(_)
         ));
-        assert!(matches!(classify_renew_status(401, None), RenewError::TokenRejected));
+        assert!(matches!(
+            classify_renew_status(401, None),
+            RenewError::TokenRejected
+        ));
         assert!(matches!(
             classify_renew_status(403, None),
             RenewError::RealmUnavailable
@@ -375,13 +379,8 @@ mod tests {
 
     #[test]
     fn renew_error_display_messages() {
-        // Sanity-check Display impls surface the variant text (cheap coverage).
         assert!(format!("{}", RenewError::TokenRejected).contains("rejected"));
         assert!(format!("{}", RenewError::RealmUnavailable).contains("unavailable"));
-        assert!(format!(
-            "{}",
-            RenewError::InvalidRequest("bad".into())
-        )
-        .contains("bad"));
+        assert!(format!("{}", RenewError::InvalidRequest("bad".into())).contains("bad"));
     }
 }

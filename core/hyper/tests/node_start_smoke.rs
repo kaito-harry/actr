@@ -8,11 +8,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use actr_framework::{Bytes, Context, MessageDispatcher, Workload};
+use actr_framework::{Bytes, Context, Dest, MessageDispatcher, Workload};
 use actr_hyper::test_support::TestSignalingServer;
-use actr_hyper::{Hyper, HyperConfig, Node, StaticTrust};
+use actr_hyper::{ActrRef, Hyper, HyperConfig, Node, StaticTrust};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActrType, Realm, RpcEnvelope, RpcRequest};
+use actr_protocol::{ActrError, ActrId, ActrType, PayloadType, Realm, RpcEnvelope, RpcRequest};
 use async_trait::async_trait;
 use tempfile::TempDir;
 
@@ -132,6 +132,43 @@ fn runtime_config_with_type(
         package_path: None,
         web: None,
     }
+}
+
+async fn discover_required(caller: &ActrRef, target_type: &ActrType, expected: &ActrId) -> ActrId {
+    let candidates = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        caller.discover_route_candidates(target_type, 1),
+    )
+    .await
+    .expect("discover must not hang")
+    .expect("discover must not error");
+
+    assert!(
+        candidates.iter().any(|candidate| candidate == expected),
+        "discovery did not return expected actor {expected:?}; candidates: {candidates:?}"
+    );
+
+    candidates
+        .into_iter()
+        .next()
+        .expect("discovery returned no candidates")
+}
+
+async fn assert_echo_rpc(caller: &ActrRef, target: ActrId, payload: &[u8]) {
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        caller.call_remote::<EchoRequest>(
+            target,
+            EchoRequest {
+                payload: payload.to_vec(),
+            },
+        ),
+    )
+    .await
+    .expect("echo RPC must not hang")
+    .expect("echo RPC must succeed");
+
+    assert_eq!(response.payload, payload);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -334,12 +371,17 @@ async fn discover_unknown_type_returns_no_candidates() {
         name: "NoSuchActor".to_string(),
         version: "0.0.0".to_string(),
     };
-    // Either an empty candidate list or an error is acceptable; it must not hang.
-    let _ = tokio::time::timeout(
+    let err = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         actr.discover_route_candidates(&unknown_type, 1),
     )
-    .await;
+    .await
+    .expect("discover must not hang")
+    .expect_err("unknown type should not return route candidates");
+    assert!(
+        matches!(err, ActrError::NotFound(_)),
+        "unknown type should map to NotFound, got {err:?}"
+    );
 
     actr.shutdown();
     actr.wait_for_shutdown().await;
@@ -410,30 +452,8 @@ async fn two_nodes_connect_and_exchange_rpc() {
         .await
         .unwrap();
 
-    // Discover the echo node by type, then call it directly by id.
-    let candidates = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        caller_actr.discover_route_candidates(&echo_type, 1),
-    )
-    .await
-    .expect("discover must not hang")
-    .expect("discover must not error");
-    let target = candidates
-        .into_iter()
-        .next()
-        .unwrap_or(echo_id);
-
-    let req = EchoRequest {
-        payload: b"ping".to_vec(),
-    };
-    // The RPC may fail if WebRTC/WS connection establishment is flaky in CI;
-    // the coverage value is in attempting the call (drives coordinator +
-    // handle_incoming), so accept either Ok or Err as long as it resolves.
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        caller_actr.call_remote::<EchoRequest>(target.clone(), req),
-    )
-    .await;
+    let target = discover_required(&caller_actr, &echo_type, &echo_id).await;
+    assert_echo_rpc(&caller_actr, target, b"ping").await;
 
     caller_actr.shutdown();
     caller_actr.wait_for_shutdown().await;
@@ -502,23 +522,19 @@ async fn two_nodes_rpc_unknown_route_returns_error() {
         .unwrap();
 
     // First discover to warm the connection, then issue the unknown-route call.
-    let candidates = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        caller_actr.discover_route_candidates(&echo_type, 1),
-    )
-    .await
-    .expect("discover must not hang")
-    .expect("discover must not error");
-    let target = candidates.into_iter().next().unwrap_or(echo_id);
+    let target = discover_required(&caller_actr, &echo_type, &echo_id).await;
 
-    let result = tokio::time::timeout(
+    let err = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         caller_actr.call_remote::<UnknownRouteRequest>(target, UnknownRouteRequest::default()),
     )
-    .await;
-    // Either a propagated error or a timeout is acceptable; the coverage is in
-    // driving the dispatch-error path. It must not panic.
-    let _ = result;
+    .await
+    .expect("unknown-route RPC must not hang")
+    .expect_err("unknown route should propagate an error");
+    assert!(
+        err.to_string().contains("unknown route"),
+        "unexpected unknown-route error: {err:?}"
+    );
 
     caller_actr.shutdown();
     caller_actr.wait_for_shutdown().await;
@@ -587,22 +603,8 @@ async fn two_nodes_connect_over_webrtc() {
         .await
         .unwrap();
 
-    let candidates = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        caller_actr.discover_route_candidates(&echo_type, 1),
-    )
-    .await
-    .expect("discover must not hang")
-    .expect("discover must not error");
-    let target = candidates.into_iter().next().unwrap_or(echo_id);
-
-    // Issue a call; WebRTC establishment may be slow/flaky in CI — the
-    // coverage value is in driving the coordinator's WebRTC path.
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(45),
-        caller_actr.call_remote::<EchoRequest>(target, EchoRequest { payload: b"hi".to_vec() }),
-    )
-    .await;
+    let target = discover_required(&caller_actr, &echo_type, &echo_id).await;
+    assert_echo_rpc(&caller_actr, target, b"hi").await;
 
     caller_actr.shutdown();
     caller_actr.wait_for_shutdown().await;
@@ -754,20 +756,29 @@ async fn two_nodes_drop_ice_candidates_triggers_restart() {
     // Drop ICE candidates to disrupt connectivity, then attempt a call which
     // drives the ICE-restart / connection-rebuild path.
     server.drop_next_ice_candidates(3);
-    let candidates = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        caller_actr.discover_route_candidates(&echo_type, 1),
+    let target = discover_required(&caller_actr, &echo_type, &echo_id).await;
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        caller_actr.call_remote::<EchoRequest>(
+            target.clone(),
+            EchoRequest {
+                payload: b"x".to_vec(),
+            },
+        ),
     )
     .await
-    .expect("discover must not hang")
-    .expect("discover must not error");
-    let target = candidates.into_iter().next().unwrap_or(echo_id);
-
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        caller_actr.call_remote::<EchoRequest>(target, EchoRequest { payload: b"x".to_vec() }),
-    )
-    .await;
+    .expect("ICE-disrupted call must resolve instead of hanging");
+    match result {
+        Ok(response) => assert_eq!(response.payload, b"x"),
+        Err(err) => assert!(
+            matches!(
+                err,
+                ActrError::ConnectionNotReady(_) | ActrError::Unavailable(_) | ActrError::TimedOut
+            ),
+            "ICE disruption should return a transport-class error, got {err:?}"
+        ),
+    }
 
     caller_actr.shutdown();
     caller_actr.wait_for_shutdown().await;
@@ -828,7 +839,8 @@ async fn linked_node_run_with_acl_and_scripts_config() {
     .unwrap();
 
     let mut cfg = runtime_config(&dir, &server, "AclNode");
-    cfg.scripts.insert("greet".to_string(), "echo hi".to_string());
+    cfg.scripts
+        .insert("greet".to_string(), "echo hi".to_string());
 
     let ais = format!("http://127.0.0.1:{}/ais", server.port());
     let actr = Node::from_hyper(hyper, cfg)
@@ -969,19 +981,8 @@ async fn peer_disconnect_triggers_coordinator_cleanup() {
         .unwrap();
 
     // Establish a connection via discovery + a call.
-    let candidates = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        caller_actr.discover_route_candidates(&echo_type, 1),
-    )
-    .await
-    .expect("discover must not hang")
-    .expect("discover must not error");
-    let target = candidates.into_iter().next().unwrap_or(echo_id);
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(20),
-        caller_actr.call_remote::<EchoRequest>(target.clone(), EchoRequest { payload: b"hi".to_vec() }),
-    )
-    .await;
+    let target = discover_required(&caller_actr, &echo_type, &echo_id).await;
+    assert_echo_rpc(&caller_actr, target.clone(), b"hi").await;
 
     // Now shut down the echo peer — caller should detect the disconnect and
     // clean up its side of the connection.
@@ -990,6 +991,32 @@ async fn peer_disconnect_triggers_coordinator_cleanup() {
 
     // Give the caller time to observe the peer loss and run cleanup.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let context = caller_actr.app_context().await;
+    let err = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        context.call_raw(
+            &Dest::Actor(target),
+            EchoRequest::route_key().to_string(),
+            PayloadType::RpcReliable,
+            EchoRequest {
+                payload: b"after-disconnect".to_vec(),
+            }
+            .encode_to_vec()
+            .into(),
+            1_000,
+        ),
+    )
+    .await
+    .expect("post-disconnect call must resolve")
+    .expect_err("call to a shut down peer should fail");
+    assert!(
+        matches!(
+            err,
+            ActrError::ConnectionNotReady(_) | ActrError::Unavailable(_) | ActrError::TimedOut
+        ),
+        "post-disconnect call should return a transport-class error, got {err:?}"
+    );
 
     caller_actr.shutdown();
     caller_actr.wait_for_shutdown().await;

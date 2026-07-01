@@ -557,7 +557,10 @@ mod tests {
     fn apply_placeholders_substitutes_all_keys() {
         let result = apply_placeholders(
             "{{NAME}} at {{PLACE}}",
-            &[("{{NAME}}".into(), "X".into()), ("{{PLACE}}".into(), "Y".into())],
+            &[
+                ("{{NAME}}".into(), "X".into()),
+                ("{{PLACE}}".into(), "Y".into()),
+            ],
         );
         assert_eq!(result, "X at Y");
     }

@@ -208,12 +208,7 @@ mod tests {
         let mut env = envelope("req-1");
         env.timeout_ms = 10;
         let err = gate
-            .send_request_with_type(
-                &ActrId::default(),
-                PayloadType::RpcReliable,
-                None,
-                env,
-            )
+            .send_request_with_type(&ActrId::default(), PayloadType::RpcReliable, None, env)
             .await
             .unwrap_err();
         assert!(matches!(err, ActrError::TimedOut), "got {err:?}");
@@ -221,7 +216,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn send_request_with_type_completes_when_responded() {
-        let gate = gate();
+        let _gate = gate();
         // Share the underlying transport by constructing the gate from a
         // shared Arc, then complete the pending request from another task.
         let transport = Arc::new(HostTransport::new());
@@ -231,13 +226,8 @@ mod tests {
         let handle = tokio::spawn(async move {
             let mut env = envelope("req-ok");
             env.timeout_ms = 5000;
-            gate.send_request_with_type(
-                &ActrId::default(),
-                PayloadType::RpcReliable,
-                None,
-                env,
-            )
-            .await
+            gate.send_request_with_type(&ActrId::default(), PayloadType::RpcReliable, None, env)
+                .await
         });
 
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;

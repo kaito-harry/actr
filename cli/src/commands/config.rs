@@ -703,7 +703,10 @@ realm_id = 2368266035
                 .unwrap_or_else(|e| panic!("apply {key} failed: {e}"));
         }
         assert_eq!(config.mfr.manufacturer.as_deref(), Some("acme"));
-        assert_eq!(config.network.signaling_url.as_deref(), Some("ws://localhost"));
+        assert_eq!(
+            config.network.signaling_url.as_deref(),
+            Some("ws://localhost")
+        );
         assert_eq!(config.storage.hyper_data_dir.as_deref(), Some("/hyper"));
         assert_eq!(config.ui.format.as_deref(), Some("json"));
     }
@@ -721,7 +724,8 @@ realm_id = 2368266035
             ConfigCommand::apply_key_to_config(&mut config, key, "true")
                 .unwrap_or_else(|e| panic!("apply {key}=true failed: {e}"));
             assert_eq!(
-                ConfigCommand::apply_key_to_config(&mut CliConfig::default(), key, "false").unwrap(),
+                ConfigCommand::apply_key_to_config(&mut CliConfig::default(), key, "false")
+                    .unwrap(),
                 ()
             );
         }
@@ -745,8 +749,8 @@ realm_id = 2368266035
             .unwrap_err();
         assert!(format!("{err}").contains("expects a boolean"));
 
-        let err = ConfigCommand::apply_key_to_config(&mut config, "network.realm_id", "abc")
-            .unwrap_err();
+        let err =
+            ConfigCommand::apply_key_to_config(&mut config, "network.realm_id", "abc").unwrap_err();
         assert!(format!("{err}").contains("expects a positive integer"));
     }
 

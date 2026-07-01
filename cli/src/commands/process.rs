@@ -111,8 +111,6 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn wait_for_exit_returns_true_for_nonexistent_pid() {
-        assert!(
-            wait_for_exit(9_999_999, std::time::Duration::from_secs(1)).await
-        );
+        assert!(wait_for_exit(9_999_999, std::time::Duration::from_secs(1)).await);
     }
 }

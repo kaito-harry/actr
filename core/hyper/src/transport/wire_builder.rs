@@ -515,13 +515,17 @@ mod tests {
         );
 
         // Cache miss → None.
-        assert!(factory
-            .resolve_websocket_url(&Dest::actor(id.clone()))
-            .await
-            .is_none());
+        assert!(
+            factory
+                .resolve_websocket_url(&Dest::actor(id.clone()))
+                .await
+                .is_none()
+        );
 
         // Populate discovery map → hit returns the URL.
-        map.write().await.insert(id.clone(), "ws://host:7".to_string());
+        map.write()
+            .await
+            .insert(id.clone(), "ws://host:7".to_string());
         assert_eq!(
             factory
                 .resolve_websocket_url(&Dest::actor(id))

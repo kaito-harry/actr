@@ -700,7 +700,8 @@ realm_id = 1
 
     #[test]
     fn load_pubkey_invalid_b64_errors() {
-        let err = load_static_pubkey_bytes(None, Some("not!!valid!!b64@@".to_string())).unwrap_err();
+        let err =
+            load_static_pubkey_bytes(None, Some("not!!valid!!b64@@".to_string())).unwrap_err();
         assert!(err.to_string().contains("pubkey_b64"));
     }
 
@@ -817,7 +818,10 @@ realm_id = 1
             .resolve("{env.ACTR_DEFINITELY_MISSING_VAR_XYZ}")
             .unwrap_err();
         assert!(matches!(err, HyperError::TemplateVariable(_)));
-        assert!(err.to_string().contains("env.ACTR_DEFINITELY_MISSING_VAR_XYZ"));
+        assert!(
+            err.to_string()
+                .contains("env.ACTR_DEFINITELY_MISSING_VAR_XYZ")
+        );
     }
 
     #[test]

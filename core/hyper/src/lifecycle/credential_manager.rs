@@ -927,7 +927,10 @@ mod tests {
             })
         });
 
-        let expires_at = prost_types::Timestamp { seconds: 1000, nanos: 0 };
+        let expires_at = prost_types::Timestamp {
+            seconds: 1000,
+            nanos: 0,
+        };
         fire_credential_renewed(Some(&cb), &expires_at).await;
 
         let got = captured.lock().unwrap().take();
@@ -937,10 +940,13 @@ mod tests {
 
     #[tokio::test]
     async fn fire_credential_renewed_none_callback_is_noop() {
-        // No callback installed → no panic, no work.
+        // None callback is the explicit no-op contract for runtimes without observers.
         fire_credential_renewed(
             None,
-            &prost_types::Timestamp { seconds: 5, nanos: 0 },
+            &prost_types::Timestamp {
+                seconds: 5,
+                nanos: 0,
+            },
         )
         .await;
     }
@@ -963,7 +969,10 @@ mod tests {
         // Negative seconds (malformed/epoch) must clamp to 0 → UNIX_EPOCH.
         fire_credential_renewed(
             Some(&cb),
-            &prost_types::Timestamp { seconds: -100, nanos: 0 },
+            &prost_types::Timestamp {
+                seconds: -100,
+                nanos: 0,
+            },
         )
         .await;
         assert_eq!(*captured.lock().unwrap(), Some(SystemTime::UNIX_EPOCH));

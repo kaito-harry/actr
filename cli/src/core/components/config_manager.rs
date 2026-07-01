@@ -267,7 +267,11 @@ description = "Echo service"
     async fn load_config_errors_on_missing_file() {
         let dir = TempDir::new().unwrap();
         let (mgr, _) = manager_with(dir.path(), VALID_MANIFEST);
-        assert!(mgr.load_config(&dir.path().join("nope.toml")).await.is_err());
+        assert!(
+            mgr.load_config(&dir.path().join("nope.toml"))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -313,18 +317,22 @@ description = "Echo service"
         let spec = DependencySpec {
             alias: "echo".into(),
             name: "echo-service".into(),
-            actr_type: Some(
-                actr_protocol::ActrType::from_string_repr("acme:Echo:1.0.0").unwrap(),
-            ),
+            actr_type: Some(actr_protocol::ActrType::from_string_repr("acme:Echo:1.0.0").unwrap()),
             fingerprint: Some("fp1".into()),
         };
         mgr.update_dependency(&spec).await.unwrap();
         let content = std::fs::read_to_string(dir.path().join("manifest.toml")).unwrap();
         assert!(content.contains("echo"), "added dep key: {content}");
-        assert!(content.contains("acme:Echo:1.0.0"), "actr_type written: {content}");
+        assert!(
+            content.contains("acme:Echo:1.0.0"),
+            "actr_type written: {content}"
+        );
         assert!(content.contains("fp1"), "fingerprint written: {content}");
         // name differs from alias → name field emitted.
-        assert!(content.contains("name = \"echo-service\""), "name written: {content}");
+        assert!(
+            content.contains("name = \"echo-service\""),
+            "name written: {content}"
+        );
     }
 
     #[tokio::test]
@@ -349,8 +357,14 @@ echo = { actr_type = "acme:Echo:1.0.0", fingerprint = "keep-fp" }
         };
         mgr.update_dependency(&spec).await.unwrap();
         let content = std::fs::read_to_string(dir.path().join("manifest.toml")).unwrap();
-        assert!(content.contains("acme:Echo:1.0.0"), "actr_type preserved: {content}");
-        assert!(content.contains("keep-fp"), "fingerprint preserved: {content}");
+        assert!(
+            content.contains("acme:Echo:1.0.0"),
+            "actr_type preserved: {content}"
+        );
+        assert!(
+            content.contains("keep-fp"),
+            "fingerprint preserved: {content}"
+        );
     }
 
     #[tokio::test]
@@ -364,10 +378,7 @@ echo = { actr_type = "acme:Echo:1.0.0", fingerprint = "keep-fp" }
         // Corrupt the original, then restore from backup.
         std::fs::write(&manifest, "corrupted").unwrap();
         mgr.restore_backup(backup.clone()).await.unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&manifest).unwrap(),
-            VALID_MANIFEST
-        );
+        assert_eq!(std::fs::read_to_string(&manifest).unwrap(), VALID_MANIFEST);
 
         // Remove the backup file.
         mgr.remove_backup(backup).await.unwrap();

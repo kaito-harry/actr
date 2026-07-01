@@ -681,6 +681,7 @@ mod tests {
     };
     use actr_framework::Context as _;
     use actr_protocol::{AIdCredential, ActrId, ActrType, Realm};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::{Notify, mpsc};
 
     #[tokio::test(flavor = "current_thread")]
@@ -1206,6 +1207,7 @@ mod tests {
         let peer = PeerEvent {
             peer: test_actr_id(7),
             relayed: Some(false),
+            status: None,
         };
 
         chained.on_websocket_connecting(&ctx, &peer).await;
@@ -1294,7 +1296,10 @@ mod tests {
         let err = chained_err.on_stop(&ctx).await.unwrap_err();
         match err {
             ActrError::Internal(msg) => {
-                assert!(msg.contains("multiple"), "expected combined message, got: {msg}");
+                assert!(
+                    msg.contains("multiple"),
+                    "expected combined message, got: {msg}"
+                );
             }
             other => panic!("expected Internal, got {other:?}"),
         }
@@ -1307,9 +1312,7 @@ mod tests {
     // drive the WebSocket / WebRTC / Credential / Mailbox / Signaling arms
     // plus the None-ctx early-return paths.
 
-    fn ctx_builder_always(
-        ctx: RuntimeContext,
-    ) -> (HookContextBuilder, RuntimeContext) {
+    fn ctx_builder_always(ctx: RuntimeContext) -> (HookContextBuilder, RuntimeContext) {
         let for_builder = ctx.clone();
         let b: HookContextBuilder = Arc::new(move || {
             let c = for_builder.clone();
@@ -1388,13 +1391,23 @@ mod tests {
         .await;
         cb(HookEvent::WebRtcDisconnected {
             peer_id: test_actr_id(3),
+            status: WebRtcPeerStatus::Recovering,
         })
         .await;
 
         let rec = expect_n(&mut rx, 3).await;
-        assert!(rec.iter().any(|s| s == "on_webrtc_connecting:peer=3:relayed=none"));
-        assert!(rec.iter().any(|s| s == "on_webrtc_connected:peer=3:relayed=true"));
-        assert!(rec.iter().any(|s| s == "on_webrtc_disconnected:peer=3:relayed=none"));
+        assert!(
+            rec.iter()
+                .any(|s| s == "on_webrtc_connecting:peer=3:relayed=none")
+        );
+        assert!(
+            rec.iter()
+                .any(|s| s == "on_webrtc_connected:peer=3:relayed=true")
+        );
+        assert!(
+            rec.iter()
+                .any(|s| s == "on_webrtc_disconnected:peer=3:relayed=none")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1418,9 +1431,18 @@ mod tests {
         .await;
 
         let rec = expect_n(&mut rx, 3).await;
-        assert!(rec.iter().any(|s| s == "on_websocket_connecting:peer=8:relayed=none"));
-        assert!(rec.iter().any(|s| s == "on_websocket_connected:peer=8:relayed=none"));
-        assert!(rec.iter().any(|s| s == "on_websocket_disconnected:peer=8:relayed=none"));
+        assert!(
+            rec.iter()
+                .any(|s| s == "on_websocket_connecting:peer=8:relayed=none")
+        );
+        assert!(
+            rec.iter()
+                .any(|s| s == "on_websocket_connected:peer=8:relayed=none")
+        );
+        assert!(
+            rec.iter()
+                .any(|s| s == "on_websocket_disconnected:peer=8:relayed=none")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1447,9 +1469,10 @@ mod tests {
         let rec = expect_n(&mut rx, 3).await;
         assert!(rec.iter().any(|s| s == "on_credential_renewed:expiry=0"));
         assert!(rec.iter().any(|s| s == "on_credential_expiring:expiry=0"));
-        assert!(rec
-            .iter()
-            .any(|s| s == "on_mailbox_backpressure:queue_len=9:threshold=4"));
+        assert!(
+            rec.iter()
+                .any(|s| s == "on_mailbox_backpressure:queue_len=9:threshold=4")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1488,10 +1511,18 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn hook_callback_without_observer_only_logs() {
-        // No observer installed → callback must still run (logging) without panic.
+    async fn hook_callback_without_observer_still_builds_context_for_observable_events() {
         let ctx = test_runtime_context();
-        let (builder, _ctx) = ctx_builder_always(ctx);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_builder = calls.clone();
+        let builder: HookContextBuilder = Arc::new(move || {
+            let ctx = ctx.clone();
+            let calls = calls_for_builder.clone();
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Some(ctx)
+            })
+        });
         let cb: HookCallback = build_hook_callback(None, builder);
 
         cb(HookEvent::SignalingConnected).await;
@@ -1505,14 +1536,17 @@ mod tests {
             threshold: 2,
         })
         .await;
-        // Reaching here without panic is the assertion.
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "callback should still execute shared logging/context plumbing without an observer"
+        );
     }
 
-    // ── log_hook_event: every variant emits without panic ───────────────────
+    // ── log_hook_event: every variant is accepted by the logging router ─────
 
     #[test]
     fn log_hook_event_covers_all_variants() {
-        // Each call just emits a tracing record; the assertion is "no panic".
         log_hook_event(&HookEvent::SignalingConnectStart { attempt: 2 });
         log_hook_event(&HookEvent::SignalingConnected);
         log_hook_event(&HookEvent::SignalingDisconnected);
@@ -1525,6 +1559,7 @@ mod tests {
         });
         log_hook_event(&HookEvent::WebRtcDisconnected {
             peer_id: test_actr_id(1),
+            status: WebRtcPeerStatus::Idle,
         });
         log_hook_event(&HookEvent::DataStreamDeliveryUncertain {
             stream_id: "s".into(),

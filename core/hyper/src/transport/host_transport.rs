@@ -559,10 +559,7 @@ mod tests {
     #[tokio::test]
     async fn media_lane_requires_track_id_and_errors_when_missing() {
         let t = HostTransport::new();
-        let err = t
-            .get_lane(PayloadType::MediaRtp, None)
-            .await
-            .unwrap_err();
+        let err = t.get_lane(PayloadType::MediaRtp, None).await.unwrap_err();
         assert!(matches!(err, NetworkError::InvalidArgument(_)));
 
         let err = t

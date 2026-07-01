@@ -17,6 +17,7 @@ pub struct TestSignalingServer {
 impl TestSignalingServer {
     /// Start the test server on a random available port.
     pub async fn start() -> anyhow::Result<Self> {
+        super::utils::install_test_crypto_provider();
         Ok(Self {
             inner: MockActrixServer::start().await?,
         })
@@ -24,6 +25,7 @@ impl TestSignalingServer {
 
     /// Start the test server on the specified port.
     pub async fn start_on_port(port: u16) -> anyhow::Result<Self> {
+        super::utils::install_test_crypto_provider();
         Ok(Self {
             inner: MockActrixServer::start_on_port(port).await?,
         })

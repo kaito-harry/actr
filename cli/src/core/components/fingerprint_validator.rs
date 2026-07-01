@@ -149,7 +149,10 @@ mod tests {
             description: None,
             methods: vec![],
         };
-        let result = validator.compute_service_fingerprint(&service).await.unwrap();
+        let result = validator
+            .compute_service_fingerprint(&service)
+            .await
+            .unwrap();
         assert_eq!(result.algorithm, "sha256");
         assert_eq!(result.value, "deadbeef");
     }
@@ -171,7 +174,10 @@ mod tests {
             .unwrap();
         assert_eq!(first.algorithm, "sha256");
         assert_eq!(first.value.len(), 64);
-        assert_eq!(first.value, second.value, "fingerprint must be deterministic");
+        assert_eq!(
+            first.value, second.value,
+            "fingerprint must be deterministic"
+        );
 
         // Empty directory yields a valid (all-zero-input) hash.
         let empty = TempDir::new().unwrap();
@@ -198,8 +204,14 @@ mod tests {
         let ordered = vec![mk("a", "1"), mk("b", "2")];
         let reversed = vec![mk("b", "2"), mk("a", "1")];
         let f1 = validator.generate_lock_fingerprint(&ordered).await.unwrap();
-        let f2 = validator.generate_lock_fingerprint(&reversed).await.unwrap();
-        assert_eq!(f1.value, f2.value, "lock fingerprint must be order-independent");
+        let f2 = validator
+            .generate_lock_fingerprint(&reversed)
+            .await
+            .unwrap();
+        assert_eq!(
+            f1.value, f2.value,
+            "lock fingerprint must be order-independent"
+        );
         assert_eq!(f1.algorithm, "sha256");
     }
 }

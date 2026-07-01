@@ -413,24 +413,32 @@ mod tests {
     #[test]
     fn user_message_formats_known_and_fallback_variants() {
         assert!(
-            ActrCliError::Config { message: "bad".into() }
-                .user_message()
-                .contains("Config file error: bad")
+            ActrCliError::Config {
+                message: "bad".into()
+            }
+            .user_message()
+            .contains("Config file error: bad")
         );
         assert!(
-            ActrCliError::Network { message: "down".into() }
-                .user_message()
-                .contains("Network connection error: down")
+            ActrCliError::Network {
+                message: "down".into()
+            }
+            .user_message()
+            .contains("Network connection error: down")
         );
         assert!(
-            ActrCliError::Dependency { message: "missing".into() }
-                .user_message()
-                .contains("Dependency error: missing")
+            ActrCliError::Dependency {
+                message: "missing".into()
+            }
+            .user_message()
+            .contains("Dependency error: missing")
         );
         assert!(
-            ActrCliError::ValidationFailed { details: "x".into() }
-                .user_message()
-                .contains("Validation failed: x")
+            ActrCliError::ValidationFailed {
+                details: "x".into()
+            }
+            .user_message()
+            .contains("Validation failed: x")
         );
         assert!(
             ActrCliError::InstallFailed { reason: "r".into() }
@@ -452,42 +460,65 @@ mod tests {
     #[test]
     fn suggested_actions_counts_match_per_variant() {
         assert_eq!(
-            ActrCliError::Config { message: "x".into() }.suggested_actions().len(),
+            ActrCliError::Config {
+                message: "x".into()
+            }
+            .suggested_actions()
+            .len(),
             3
         );
         assert_eq!(
-            ActrCliError::Network { message: "x".into() }.suggested_actions().len(),
+            ActrCliError::Network {
+                message: "x".into()
+            }
+            .suggested_actions()
+            .len(),
             4
         );
         assert_eq!(
-            ActrCliError::Dependency { message: "x".into() }.suggested_actions().len(),
+            ActrCliError::Dependency {
+                message: "x".into()
+            }
+            .suggested_actions()
+            .len(),
             3
         );
         assert_eq!(
-            ActrCliError::ValidationFailed { details: "x".into() }
+            ActrCliError::ValidationFailed {
+                details: "x".into()
+            }
+            .suggested_actions()
+            .len(),
+            3
+        );
+        assert_eq!(
+            ActrCliError::InstallFailed { reason: "x".into() }
                 .suggested_actions()
                 .len(),
-            3
-        );
-        assert_eq!(
-            ActrCliError::InstallFailed { reason: "x".into() }.suggested_actions().len(),
             4
         );
-        assert_eq!(ActrCliError::OperationCancelled.suggested_actions().len(), 1);
+        assert_eq!(
+            ActrCliError::OperationCancelled.suggested_actions().len(),
+            1
+        );
     }
 
     #[test]
     fn documentation_links_for_config_dependency_and_default() {
         assert_eq!(
-            ActrCliError::Config { message: "x".into() }
-                .documentation_links()
-                .len(),
+            ActrCliError::Config {
+                message: "x".into()
+            }
+            .documentation_links()
+            .len(),
             2
         );
         assert_eq!(
-            ActrCliError::Dependency { message: "x".into() }
-                .documentation_links()
-                .len(),
+            ActrCliError::Dependency {
+                message: "x".into()
+            }
+            .documentation_links()
+            .len(),
             2
         );
         assert_eq!(
@@ -498,8 +529,9 @@ mod tests {
 
     #[test]
     fn format_error_renders_message_suggestions_and_docs() {
-        let formatted =
-            ErrorReporter::format_error(&ActrCliError::Config { message: "boom".into() });
+        let formatted = ErrorReporter::format_error(&ActrCliError::Config {
+            message: "boom".into(),
+        });
         assert!(formatted.contains("Config file error: boom"));
         assert!(formatted.contains("Suggested solutions"));
         assert!(formatted.contains("Related documentation"));
@@ -507,11 +539,11 @@ mod tests {
 
     #[test]
     fn format_validation_report_renders_all_sections_and_converts_to_error() {
+        use crate::core::components::Fingerprint as Fp;
         use crate::core::components::{
-            ConflictReport, ConflictType, ConfigValidation, DependencyValidation,
+            ConfigValidation, ConflictReport, ConflictType, DependencyValidation,
             FingerprintValidation, HealthStatus, NetworkValidation, ValidationReport,
         };
-        use crate::core::components::Fingerprint as Fp;
 
         let failing = ValidationReport {
             is_valid: false,

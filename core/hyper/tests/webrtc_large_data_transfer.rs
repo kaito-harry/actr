@@ -27,6 +27,27 @@ use std::time::Duration;
 static WEBRTC_LARGE_DATA_TEST_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
 
+struct BackgroundTasks(Vec<tokio::task::JoinHandle<()>>);
+
+impl BackgroundTasks {
+    async fn shutdown(mut self) {
+        for task in &self.0 {
+            task.abort();
+        }
+        while let Some(task) = self.0.pop() {
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for BackgroundTasks {
+    fn drop(&mut self) {
+        for task in &self.0 {
+            task.abort();
+        }
+    }
+}
+
 fn init_tracing() {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
@@ -136,10 +157,7 @@ fn spawn_data_echo_responder(
 ///
 /// Returns the harness with connected peers. The data-echo responder runs
 /// on peer `to_serial`, and the response receiver runs on peer `from_serial`.
-async fn setup_connected_peers(
-    from_serial: u64,
-    to_serial: u64,
-) -> (TestHarness, Vec<tokio::task::JoinHandle<()>>) {
+async fn setup_connected_peers(from_serial: u64, to_serial: u64) -> (TestHarness, BackgroundTasks) {
     let mut harness = TestHarness::new().await;
     harness.add_peer(from_serial).await;
     harness.add_peer(to_serial).await;
@@ -194,7 +212,7 @@ async fn setup_connected_peers(
     // Brief stabilization
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    (harness, bg_tasks)
+    (harness, BackgroundTasks(bg_tasks))
 }
 
 /// Helper: send a large payload and verify the echoed response with multi-layer
@@ -497,12 +515,12 @@ async fn test_bidirectional_large_data() {
 
     // ── Direction 1: peer 100 → peer 200 (128 KB) ──
     tracing::info!("📤 Direction 1: peer 100 → peer 200 (128 KB)");
-    let (harness_1, _bg_1) = setup_connected_peers(100, 200).await;
+    let (harness, forward_tasks) = setup_connected_peers(100, 200).await;
 
     let (data_a, hash_a) = generate_test_data(128 * 1024);
     let target_200 = make_actor_id(200);
     send_and_verify(
-        &harness_1.peer(100).gate,
+        &harness.peer(100).gate,
         &target_200,
         "bidir_100_to_200",
         &data_a,
@@ -510,33 +528,28 @@ async fn test_bidirectional_large_data() {
         Duration::from_secs(30),
     )
     .await;
-    drop(harness_1);
+    forward_tasks.shutdown().await;
 
-    // ── Direction 2: peer 300 → peer 400 (96 KB, reversed peer roles) ──
-    // Using different serial numbers so the role assignment is reversed:
-    // peer 300 (serial < 400) acts as offerer, peer 400 acts as answerer.
-    // But here we set up the echo on peer 300 (the smaller serial) and send from 400,
-    // verifying that the answerer can also fragment and reassemble correctly.
-    tracing::info!("📤 Direction 2: peer 400 → peer 300 (96 KB, answerer sends)");
+    // ── Direction 2: peer 200 → peer 100 (96 KB, answerer sends) ──
+    tracing::info!("📤 Direction 2: peer 200 → peer 100 (96 KB, answerer sends)");
 
-    let mut harness_2 = TestHarness::new().await;
-    harness_2.add_peer(300).await;
-    harness_2.add_peer(400).await;
+    // Swap the single-consumer message handlers while retaining the same peer
+    // connection established above.
+    let _reverse_tasks = BackgroundTasks(vec![
+        spawn_data_echo_responder(
+            harness.peer(100).coordinator.clone(),
+            harness.peer(100).gate.clone(),
+            "data_echo_100",
+        ),
+        spawn_response_receiver(
+            harness.peer(200).coordinator.clone(),
+            harness.peer(200).gate.clone(),
+            "recv_200",
+        ),
+    ]);
 
-    // Echo on peer 300, receiver on peer 400
-    let _echo_300 = spawn_data_echo_responder(
-        harness_2.peer(300).coordinator.clone(),
-        harness_2.peer(300).gate.clone(),
-        "data_echo_300",
-    );
-    let _recv_400 = spawn_response_receiver(
-        harness_2.peer(400).coordinator.clone(),
-        harness_2.peer(400).gate.clone(),
-        "recv_400",
-    );
-
-    // Establish connection (400 → 300)
-    let target_300 = make_actor_id(300);
+    // Verify the reverse request path before sending the large payload.
+    let target_100 = make_actor_id(100);
     let setup_env = RpcEnvelope {
         request_id: "bidir2_setup".to_string(),
         route_key: "test.ping".to_string(),
@@ -546,22 +559,19 @@ async fn test_bidirectional_large_data() {
     };
     tokio::time::timeout(
         Duration::from_secs(15),
-        harness_2
-            .peer(400)
-            .gate
-            .send_request(&target_300, setup_env),
+        harness.peer(200).gate.send_request(&target_100, setup_env),
     )
     .await
-    .expect("setup 400→300 timed out")
-    .expect("setup 400→300 failed");
+    .expect("setup 200→100 timed out")
+    .expect("setup 200→100 failed");
 
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     let (data_b, hash_b) = generate_test_data(96 * 1024);
     send_and_verify(
-        &harness_2.peer(400).gate,
-        &target_300,
-        "bidir_400_to_300",
+        &harness.peer(200).gate,
+        &target_100,
+        "bidir_200_to_100",
         &data_b,
         &hash_b,
         Duration::from_secs(30),

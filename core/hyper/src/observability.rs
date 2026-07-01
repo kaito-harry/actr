@@ -223,7 +223,9 @@ mod tests {
 
     #[test]
     fn init_with_default_layer() {
-        let _guard = init_observability_with_layer(&cfg(), None::<BoxedLayer<tracing_subscriber::Registry>>).unwrap();
+        let _guard =
+            init_observability_with_layer(&cfg(), None::<BoxedLayer<tracing_subscriber::Registry>>)
+                .unwrap();
     }
 
     #[test]

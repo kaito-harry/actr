@@ -6849,6 +6849,8 @@ mod tests {
         assert!(is_ipv4_candidate_allowed("candidate:... 192.168.1.10 ..."));
         assert!(is_ipv4_candidate_allowed("candidate:... 10.0.0.5 ..."));
         // No IPv6 marker → accepted.
-        assert!(is_ipv4_candidate_allowed("candidate:... 203.0.113.7 udp ..."));
+        assert!(is_ipv4_candidate_allowed(
+            "candidate:... 203.0.113.7 udp ..."
+        ));
     }
 }

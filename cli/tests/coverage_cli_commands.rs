@@ -223,10 +223,7 @@ fn config_global_scope_round_trips_and_list_shows_effective_values() {
     );
     assert_success(&set, "config global set");
     let global_config = home.join(".actr/config.toml");
-    assert!(
-        global_config.exists(),
-        "global config should be written"
-    );
+    assert!(global_config.exists(), "global config should be written");
     let saved = fs::read_to_string(&global_config).expect("read global config");
     assert!(saved.contains("realm_id"), "global config:\n{saved}");
 
@@ -412,7 +409,14 @@ fn fingerprint_text_and_proto_yaml_covers_remaining_formats() {
     // Service-level in YAML format (already tested via existing test, but
     // text format with service fingerprint is not)
     let svc_text = run_actr(
-        &["registry", "fingerprint", "--manifest-path", "manifest.toml", "--format", "text"],
+        &[
+            "registry",
+            "fingerprint",
+            "--manifest-path",
+            "manifest.toml",
+            "--format",
+            "text",
+        ],
         tmp.path(),
         &home,
     );
@@ -517,7 +521,9 @@ fn fingerprint_verify_passes_with_matching_lock_file() {
     );
     assert_success(&svc_out, "svc fingerprint");
     let svc_json = first_json_object(&svc_out);
-    let svc_fp = svc_json["service_fingerprint"].as_str().expect("service_fingerprint");
+    let svc_fp = svc_json["service_fingerprint"]
+        .as_str()
+        .expect("service_fingerprint");
 
     let proto_out = run_actr(
         &[
@@ -557,17 +563,20 @@ fingerprint = "{proto_fp}"
             "manifest.toml",
             "--verify",
             "--format",
-            "text",
+            "json",
         ],
         tmp.path(),
         &home,
     );
     assert_success(&verify, "fingerprint verify passed");
-    let out = clean_stdout(&verify);
-    // Either passed or failed — test that text output includes verification section.
-    assert!(
-        out.contains("Fingerprint verification"),
-        "verify text:\n{out}"
+    let verify_json = first_json_object(&verify);
+    assert_eq!(
+        verify_json["verification"]["status"], "passed",
+        "verification should pass for matching lock file: {verify_json}"
+    );
+    assert_eq!(
+        verify_json["verification"]["matched_fingerprint"], "all_files_verified",
+        "matching lock file should verify every file: {verify_json}"
     );
 }
 
@@ -596,7 +605,10 @@ fn init_rust_echo_service_produces_expected_files() {
         &home,
     );
     assert_success(&output, "init rust echo");
-    assert!(project.join("manifest.toml").exists(), "manifest.toml missing");
+    assert!(
+        project.join("manifest.toml").exists(),
+        "manifest.toml missing"
+    );
     assert!(project.join("Cargo.toml").exists(), "Cargo.toml missing");
     let manifest = fs::read_to_string(project.join("manifest.toml")).unwrap();
     assert!(manifest.contains("test-org"), "manifest:\n{manifest}");
@@ -821,7 +833,11 @@ fn ps_reports_no_runtimes_for_isolated_hyper_dir() {
     );
 
     // `--all` on an empty store should behave the same.
-    let all = run_actr(&["ps", "--all", "--hyper-dir", &hyper_arg], tmp.path(), &home);
+    let all = run_actr(
+        &["ps", "--all", "--hyper-dir", &hyper_arg],
+        tmp.path(),
+        &home,
+    );
     assert_success(&all, "ps all empty");
     assert!(clean_stdout(&all).contains("No detached runtimes found."));
 }
@@ -900,7 +916,10 @@ fn dlq_list_stats_and_purge_handle_empty_database_and_bad_input() {
     let stats = run_actr(&["dlq", "stats", "--db", &db_arg], tmp.path(), &home);
     assert_success(&stats, "dlq stats empty");
     let stats_out = clean_stdout(&stats);
-    assert!(stats_out.contains("DLQ Statistics"), "stats output:\n{stats_out}");
+    assert!(
+        stats_out.contains("DLQ Statistics"),
+        "stats output:\n{stats_out}"
+    );
     assert!(stats_out.contains("Total messages:           0"));
 
     // Purge without id or --all → rejected.
@@ -913,7 +932,11 @@ fn dlq_list_stats_and_purge_handle_empty_database_and_bad_input() {
     );
 
     // Purge --all on empty database → purges zero.
-    let purge_all = run_actr(&["dlq", "purge", "--all", "--db", &db_arg], tmp.path(), &home);
+    let purge_all = run_actr(
+        &["dlq", "purge", "--all", "--db", &db_arg],
+        tmp.path(),
+        &home,
+    );
     assert_success(&purge_all, "dlq purge all empty");
     assert!(clean_stdout(&purge_all).contains("Purged 0 DLQ record(s)."));
 
@@ -987,7 +1010,14 @@ fn pkg_sign_validates_manifest_and_signs_on_success() {
 
     // Missing manifest → error.
     let missing = run_actr(
-        &["pkg", "sign", "--manifest-path", "missing.toml", "--key", &key_arg],
+        &[
+            "pkg",
+            "sign",
+            "--manifest-path",
+            "missing.toml",
+            "--key",
+            &key_arg,
+        ],
         tmp.path(),
         &home,
     );
@@ -997,7 +1027,14 @@ fn pkg_sign_validates_manifest_and_signs_on_success() {
     // Invalid TOML → error.
     fs::write(tmp.path().join("bad.toml"), "invalid = {{{").expect("write bad toml");
     let bad = run_actr(
-        &["pkg", "sign", "--manifest-path", "bad.toml", "--key", &key_arg],
+        &[
+            "pkg",
+            "sign",
+            "--manifest-path",
+            "bad.toml",
+            "--key",
+            &key_arg,
+        ],
         tmp.path(),
         &home,
     );
@@ -1007,7 +1044,14 @@ fn pkg_sign_validates_manifest_and_signs_on_success() {
     // Missing [package] → error.
     fs::write(tmp.path().join("no_package.toml"), "edition = 1\n").expect("write no_package");
     let no_pkg = run_actr(
-        &["pkg", "sign", "--manifest-path", "no_package.toml", "--key", &key_arg],
+        &[
+            "pkg",
+            "sign",
+            "--manifest-path",
+            "no_package.toml",
+            "--key",
+            &key_arg,
+        ],
         tmp.path(),
         &home,
     );
@@ -1025,7 +1069,14 @@ fn pkg_sign_validates_manifest_and_signs_on_success() {
     )
     .expect("write partial");
     let partial = run_actr(
-        &["pkg", "sign", "--manifest-path", "partial.toml", "--key", &key_arg],
+        &[
+            "pkg",
+            "sign",
+            "--manifest-path",
+            "partial.toml",
+            "--key",
+            &key_arg,
+        ],
         tmp.path(),
         &home,
     );
@@ -1038,7 +1089,14 @@ fn pkg_sign_validates_manifest_and_signs_on_success() {
 
     // Valid manifest → signs successfully and writes a 64-byte signature.
     let signed = run_actr(
-        &["pkg", "sign", "--manifest-path", "manifest.toml", "--key", &key_arg],
+        &[
+            "pkg",
+            "sign",
+            "--manifest-path",
+            "manifest.toml",
+            "--key",
+            &key_arg,
+        ],
         tmp.path(),
         &home,
     );
@@ -1147,7 +1205,12 @@ fn registry_fingerprint_covers_text_no_exports_and_unsupported_format() {
 
     // Service-level text output with exports.
     let text = run_actr(
-        &["registry", "fingerprint", "--manifest-path", "manifest.toml"],
+        &[
+            "registry",
+            "fingerprint",
+            "--manifest-path",
+            "manifest.toml",
+        ],
         tmp.path(),
         &home,
     );
@@ -1287,7 +1350,11 @@ fn doc_generates_default_pages_without_manifest_and_rejects_subdir() {
         "edition = 1\n\n[package]\nname = \"x\"\nmanufacturer = \"acme\"\nversion = \"0.1.0\"\n",
     )
     .expect("write parent manifest");
-    let subdir = run_actr(&["doc", "--output", "docs-out"], &parent.join("child"), &home);
+    let subdir = run_actr(
+        &["doc", "--output", "docs-out"],
+        &parent.join("child"),
+        &home,
+    );
     assert_failure(&subdir, "doc subdir");
     assert!(
         stderr(&subdir).contains("Please run 'actr doc' from the workload root"),

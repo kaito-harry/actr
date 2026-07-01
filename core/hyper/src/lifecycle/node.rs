@@ -2613,10 +2613,10 @@ mod tests {
     use crate::transport::HostTransport;
     use crate::workload::{HostOperation, HostOperationResult, LinkedWorkloadHandle, Workload};
     use actr_framework::guest::dynclib_abi::{
-        HostCallRawV1, HostCallV1, HostDiscoverV1, HostRegisterStreamV1, HostSendDataStreamV1,
-        HostTellV1, HostUnregisterStreamV1,
+        DestV1, HostCallRawV1, HostCallV1, HostDiscoverV1, HostRegisterStreamV1,
+        HostSendDataStreamV1, HostTellV1, HostUnregisterStreamV1, code as abi_code,
     };
-    use actr_protocol::{ActrId, PayloadType};
+    use actr_protocol::{AIdCredential, ActrId, PayloadType};
     use std::sync::Arc;
 
     /// Trivial linked handle that accepts every default hook and rejects
@@ -2630,36 +2630,76 @@ mod tests {
         crate::context::RuntimeContext,
         Arc<tokio::sync::Mutex<Workload>>,
     ) {
-        let ctx = runtime_context_with_host_transport(
+        let ctx =
+            runtime_context_with_host_transport(ActrId::default(), Arc::new(HostTransport::new()));
+        let wl = Workload::Linked(Arc::new(DummyLinkedHandle) as Arc<dyn LinkedWorkloadHandle>);
+        (ctx, Arc::new(tokio::sync::Mutex::new(wl)))
+    }
+
+    async fn actorless_harness() -> (
+        crate::context::RuntimeContext,
+        Arc<tokio::sync::Mutex<Workload>>,
+    ) {
+        use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+        use crate::outbound::{Gate, HostGate};
+        use crate::wire::webrtc::{ReconnectConfig, SignalingConfig, WebSocketSignalingClient};
+
+        let host = Arc::new(HostTransport::new());
+        let inproc = Gate::Host(Arc::new(HostGate::new(host)));
+        let ctx = crate::context::RuntimeContext::new(
             ActrId::default(),
-            Arc::new(HostTransport::new()),
+            None,
+            "req".into(),
+            inproc,
+            None,
+            Arc::new(DataStreamRegistry::new()),
+            Arc::new(MediaFrameRegistry::new()),
+            Arc::new(WebSocketSignalingClient::new(SignalingConfig {
+                server_url: url::Url::parse("ws://127.0.0.1:9").unwrap(),
+                connection_timeout: 1,
+                heartbeat_interval: 30,
+                reconnect_config: ReconnectConfig::default(),
+                auth_config: None,
+                webrtc_role: None,
+            })) as Arc<dyn SignalingClient>,
+            AIdCredential::default(),
+            None,
+            Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            None,
+            0,
         );
         let wl = Workload::Linked(Arc::new(DummyLinkedHandle) as Arc<dyn LinkedWorkloadHandle>);
         (ctx, Arc::new(tokio::sync::Mutex::new(wl)))
     }
 
+    fn expect_error_code(res: HostOperationResult, expected: i32) {
+        match res {
+            HostOperationResult::Error(code) => assert_eq!(code, expected),
+            other => panic!("expected HostOperationResult::Error({expected}), got {other:?}"),
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn callraw_without_peer_returns_error_code() {
-        let (ctx, wl) = harness().await;
-        let res = host_operation_handler(ctx, wl, HostOperation::CallRaw(HostCallRawV1::default()))
-            .await;
-        // No route to the default ActrId target → routing error → Error code.
-        assert!(matches!(res, HostOperationResult::Error(_)));
+        let (ctx, wl) = actorless_harness().await;
+        let res =
+            host_operation_handler(ctx, wl, HostOperation::CallRaw(HostCallRawV1::default())).await;
+        // No remote actor gate is installed, so routing fails immediately.
+        expect_error_code(res, abi_code::GENERIC_ERROR);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn call_with_default_dest_returns_error() {
         let (ctx, wl) = harness().await;
         let res = host_operation_handler(ctx, wl, HostOperation::Call(HostCallV1::default())).await;
-        // Either dest decode fails (PROTOCOL_ERROR) or routing fails — both Error.
-        assert!(matches!(res, HostOperationResult::Error(_)));
+        expect_error_code(res, abi_code::PROTOCOL_ERROR);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tell_with_default_dest_returns_error() {
         let (ctx, wl) = harness().await;
         let res = host_operation_handler(ctx, wl, HostOperation::Tell(HostTellV1::default())).await;
-        assert!(matches!(res, HostOperationResult::Error(_)));
+        expect_error_code(res, abi_code::PROTOCOL_ERROR);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2669,7 +2709,7 @@ mod tests {
             host_operation_handler(ctx, wl, HostOperation::Discover(HostDiscoverV1::default()))
                 .await;
         // Default ActrType with unreachable signaling → discover errors.
-        assert!(matches!(res, HostOperationResult::Error(_)));
+        expect_error_code(res, abi_code::GENERIC_ERROR);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2688,11 +2728,14 @@ mod tests {
             "register_stream should succeed against the in-process transport: {register:?}"
         );
 
-        let unregister =
-            host_operation_handler(ctx, wl, HostOperation::UnregisterStream(HostUnregisterStreamV1 {
+        let unregister = host_operation_handler(
+            ctx,
+            wl,
+            HostOperation::UnregisterStream(HostUnregisterStreamV1 {
                 stream_id: "stream-1".to_string(),
-            }))
-            .await;
+            }),
+        )
+        .await;
         assert!(
             matches!(unregister, HostOperationResult::Done),
             "unregister_stream should succeed after register: {unregister:?}"
@@ -2725,12 +2768,13 @@ mod tests {
             ctx,
             wl,
             HostOperation::SendDataStream(HostSendDataStreamV1 {
+                dest: DestV1::local(),
                 payload_type: PayloadType::RpcReliable as i32,
                 ..Default::default()
             }),
         )
         .await;
-        assert!(matches!(res, HostOperationResult::Error(_)));
+        expect_error_code(res, abi_code::PROTOCOL_ERROR);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2740,12 +2784,13 @@ mod tests {
             ctx,
             wl,
             HostOperation::SendDataStream(HostSendDataStreamV1 {
+                dest: DestV1::local(),
                 payload_type: 9999,
                 ..Default::default()
             }),
         )
         .await;
-        assert!(matches!(res, HostOperationResult::Error(_)));
+        expect_error_code(res, abi_code::PROTOCOL_ERROR);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2756,12 +2801,13 @@ mod tests {
             ctx,
             wl,
             HostOperation::SendDataStream(HostSendDataStreamV1 {
+                dest: DestV1::local(),
                 payload_type: PayloadType::StreamReliable as i32,
                 ..Default::default()
             }),
         )
         .await;
-        assert!(matches!(res, HostOperationResult::Error(_)));
+        expect_error_code(res, abi_code::GENERIC_ERROR);
     }
 
     // ── stream_callback_host_operation_handler ──────────────────────────────
@@ -2776,35 +2822,31 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stream_callback_callraw_without_peer_errors() {
-        let ctx = ctx_only().await;
+        let ctx = actorless_harness().await.0;
         let res = stream_callback_host_operation_handler(
             ctx,
             HostOperation::CallRaw(HostCallRawV1::default()),
         )
         .await;
-        assert!(matches!(res, HostOperationResult::Error(_)));
+        expect_error_code(res, abi_code::GENERIC_ERROR);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stream_callback_call_with_default_dest_errors() {
         let ctx = ctx_only().await;
-        let res = stream_callback_host_operation_handler(
-            ctx,
-            HostOperation::Call(HostCallV1::default()),
-        )
-        .await;
-        assert!(matches!(res, HostOperationResult::Error(_)));
+        let res =
+            stream_callback_host_operation_handler(ctx, HostOperation::Call(HostCallV1::default()))
+                .await;
+        expect_error_code(res, abi_code::PROTOCOL_ERROR);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stream_callback_tell_with_default_dest_errors() {
         let ctx = ctx_only().await;
-        let res = stream_callback_host_operation_handler(
-            ctx,
-            HostOperation::Tell(HostTellV1::default()),
-        )
-        .await;
-        assert!(matches!(res, HostOperationResult::Error(_)));
+        let res =
+            stream_callback_host_operation_handler(ctx, HostOperation::Tell(HostTellV1::default()))
+                .await;
+        expect_error_code(res, abi_code::PROTOCOL_ERROR);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2815,7 +2857,7 @@ mod tests {
             HostOperation::Discover(HostDiscoverV1::default()),
         )
         .await;
-        assert!(matches!(res, HostOperationResult::Error(_)));
+        expect_error_code(res, abi_code::GENERIC_ERROR);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2829,7 +2871,7 @@ mod tests {
         )
         .await;
         // Registering a stream from inside a stream callback is rejected.
-        assert!(matches!(res, HostOperationResult::Error(_)));
+        expect_error_code(res, abi_code::UNSUPPORTED_OP);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2854,12 +2896,13 @@ mod tests {
         let res = stream_callback_host_operation_handler(
             ctx,
             HostOperation::SendDataStream(HostSendDataStreamV1 {
+                dest: DestV1::local(),
                 payload_type: PayloadType::RpcReliable as i32,
                 ..Default::default()
             }),
         )
         .await;
-        assert!(matches!(res, HostOperationResult::Error(_)));
+        expect_error_code(res, abi_code::PROTOCOL_ERROR);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2868,12 +2911,13 @@ mod tests {
         let res = stream_callback_host_operation_handler(
             ctx,
             HostOperation::SendDataStream(HostSendDataStreamV1 {
+                dest: DestV1::local(),
                 payload_type: 9999,
                 ..Default::default()
             }),
         )
         .await;
-        assert!(matches!(res, HostOperationResult::Error(_)));
+        expect_error_code(res, abi_code::PROTOCOL_ERROR);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2882,12 +2926,13 @@ mod tests {
         let res = stream_callback_host_operation_handler(
             ctx,
             HostOperation::SendDataStream(HostSendDataStreamV1 {
+                dest: DestV1::local(),
                 payload_type: PayloadType::StreamLatencyFirst as i32,
                 ..Default::default()
             }),
         )
         .await;
-        assert!(matches!(res, HostOperationResult::Error(_)));
+        expect_error_code(res, abi_code::GENERIC_ERROR);
     }
 
     // ── duplicate_wait_timeout / wait_for_inflight_duplicate ────────────────
@@ -2969,7 +3014,10 @@ mod tests {
             wire_code_to_actr_error(10001, m.clone()),
             ActrError::Unavailable(_)
         ));
-        assert!(matches!(wire_code_to_actr_error(10002, m.clone()), ActrError::TimedOut));
+        assert!(matches!(
+            wire_code_to_actr_error(10002, m.clone()),
+            ActrError::TimedOut
+        ));
         assert!(matches!(
             wire_code_to_actr_error(10003, m.clone()),
             ActrError::NotFound(_)

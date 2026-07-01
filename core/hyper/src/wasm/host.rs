@@ -598,7 +598,6 @@ impl WasmHost {
         Ok(Self { engine, component })
     }
 
-
     /// Instantiate the component into a runnable internal workload.
     ///
     /// Builds a fresh [`Linker`] per instance (cheap), registers WASI

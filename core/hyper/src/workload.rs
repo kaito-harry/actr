@@ -1292,8 +1292,9 @@ mod tests {
     // forwarding path (and the handle's default hooks) actually executes.
 
     fn linked_echo() -> Workload {
-        let handle: Arc<dyn LinkedWorkloadHandle> =
-            WorkloadAdapter::new(EchoWorkload { suffix: "-ok".to_string() });
+        let handle: Arc<dyn LinkedWorkloadHandle> = WorkloadAdapter::new(EchoWorkload {
+            suffix: "-ok".to_string(),
+        });
         Workload::Linked(handle)
     }
 
@@ -1345,6 +1346,7 @@ mod tests {
         let peer = PeerEvent {
             peer: make_id(5),
             relayed: Some(true),
+            status: None,
         };
         let cred = CredentialEvent {
             new_expiry: std::time::SystemTime::UNIX_EPOCH,

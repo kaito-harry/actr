@@ -109,7 +109,10 @@ mod tests {
     async fn generate_code_returns_output_path_in_generation_result() {
         let processor = DefaultProtoProcessor::new();
         let output = std::path::Path::new("/tmp/out");
-        let genres = processor.generate_code(std::path::Path::new("/in"), output).await.unwrap();
+        let genres = processor
+            .generate_code(std::path::Path::new("/in"), output)
+            .await
+            .unwrap();
         assert_eq!(genres.generated_files, vec![output.to_path_buf()]);
         assert!(genres.warnings.is_empty());
         assert!(genres.errors.is_empty());

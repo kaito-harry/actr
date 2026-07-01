@@ -372,7 +372,7 @@ mod tests {
             },
         );
         rm.allocate_resources(&ResourceUsage {
-            cpu_usage: 0.5, // cpu_ratio tracks raw usage fraction = 0.5
+            cpu_usage: 0.5,         // cpu_ratio tracks raw usage fraction = 0.5
             memory_used_bytes: 250, // 250/1000 = 0.25
             network_usage_bps: 50,  // 50/200 = 0.25
             disk_io_bps: 100,       // 100/400 = 0.25

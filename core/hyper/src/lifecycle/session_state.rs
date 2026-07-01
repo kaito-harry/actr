@@ -322,10 +322,7 @@ mod tests {
     async fn sync_readers_return_some_when_unlocked() {
         let state = SessionState::new(SessionSnapshot::empty_with_id(test_actor_id(), 7));
         // No contending lock held → try_read succeeds.
-        assert_eq!(
-            state.actor_id_sync().map(|i| i.serial_number),
-            Some(42)
-        );
+        assert_eq!(state.actor_id_sync().map(|i| i.serial_number), Some(42));
         assert_eq!(state.generation_sync(), Some(7));
     }
 
@@ -339,15 +336,9 @@ mod tests {
         // Default-constructed accessors on an empty snapshot.
         assert_eq!(state.credential_expires_at().await, Timestamp::default());
         assert!(state.renewal_token().await.is_empty());
-        assert_eq!(
-            state.renewal_token_expires_at().await,
-            Timestamp::default()
-        );
+        assert_eq!(state.renewal_token_expires_at().await, Timestamp::default());
         assert_eq!(state.credential().await, AIdCredential::default());
-        assert_eq!(
-            state.turn_credential().await,
-            TurnCredential::default()
-        );
+        assert_eq!(state.turn_credential().await, TurnCredential::default());
     }
 
     #[tokio::test]
