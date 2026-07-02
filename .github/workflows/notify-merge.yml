@@ -1,7 +1,10 @@
 name: Notify Merge
 
 on:
-  pull_request:
+  # pull_request_target (not pull_request) so secrets like WECHAT_WEBHOOK_URL
+  # are available even when the merged PR came from a fork. Safe because this
+  # workflow never checks out PR code — it only posts a webhook payload.
+  pull_request_target:
     types: [closed]
     branches: [main]
 
