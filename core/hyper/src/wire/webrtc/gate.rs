@@ -8,7 +8,7 @@ use crate::inbound::DataStreamRegistry;
 use crate::wire::webrtc::trace::set_parent_from_rpc_envelope;
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{self, ActrId, DataStream, PayloadType, RpcEnvelope};
+use actr_protocol::{self, ActrId, DataStream, Direction, PayloadType, RpcEnvelope};
 use actr_protocol::{ActorResult, ActrError};
 use actr_runtime_mailbox::{Mailbox, MessagePriority};
 use std::collections::HashMap;
@@ -20,6 +20,20 @@ type PendingRequestsMap =
     Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>;
 #[cfg(feature = "opentelemetry")]
 use tracing::Instrument as _;
+
+/// Why an inbound `RpcEnvelope.direction` could not be routed.
+///
+/// `direction_for_routing` returns this so the caller can decode the peer
+/// (for diagnostics) only on the drop path, never on the happy path.
+#[derive(Debug)]
+enum DirectionError {
+    /// `direction` field absent from the envelope.
+    Missing,
+    /// `direction` present but `DIRECTION_UNSPECIFIED`.
+    Unspecified,
+    /// `direction` present but not a known variant.
+    Unknown,
+}
 
 /// WebRTC Gate - OutboundGate implementation
 ///
@@ -88,8 +102,12 @@ impl WebRtcGate {
     /// - `mailbox`: Mailbox for enqueueing requests
     ///
     /// # Behavior
-    /// - If request_id exists in pending_requests: Response → wake up waiting caller
-    /// - If request_id doesn't exist: Request → enqueue to Mailbox
+    /// Routes strictly on the sender-set `direction` field:
+    /// - `Request`: enqueue to Mailbox, skipping the pending lookup.
+    /// - `Response`: wake the waiting caller if a pending entry exists;
+    ///   otherwise drop as an orphan late response — never enqueue (fix for #255).
+    /// - missing, `Unspecified`, or unknown: warn and drop. There is no
+    ///   pending-map inference fallback in the current wire protocol.
     async fn handle_envelope(
         envelope: RpcEnvelope,
         from_bytes: Vec<u8>,
@@ -100,7 +118,35 @@ impl WebRtcGate {
     ) {
         let request_id = envelope.request_id.clone();
 
-        // Determine if Response or Request
+        let direction = match Self::direction_for_routing(envelope.direction) {
+            Ok(direction) => direction,
+            Err(error) => {
+                // Drop path only: decode the peer lazily for diagnostics.
+                let peer = Self::peer_for_log(&from_bytes);
+                let reason = match error {
+                    DirectionError::Missing => "missing",
+                    DirectionError::Unspecified => "unspecified",
+                    DirectionError::Unknown => "unknown",
+                };
+                tracing::warn!(
+                    request_id = %request_id,
+                    peer = %peer,
+                    route_key = %envelope.route_key,
+                    direction = ?envelope.direction,
+                    reason = %reason,
+                    "rpc.invalid_direction_dropped: invalid RpcEnvelope.direction; dropping"
+                );
+                return;
+            }
+        };
+
+        if matches!(direction, Direction::Request) {
+            // Explicit request — enqueue directly, skip pending lookup.
+            Self::enqueue_request(from_bytes, data, payload_type, mailbox, &request_id).await;
+            return;
+        }
+
+        // Direction::Response: consult pending map.
         let mut pending = pending_requests.write().await;
         if let Some((target, response_tx)) = pending.remove(&request_id) {
             // Response - Wake up waiting caller (bypassing disk, fast path)
@@ -124,31 +170,77 @@ impl WebRtcGate {
             };
             let _ = response_tx.send(result);
         } else {
-            // Request - Enqueue to Mailbox (pass raw bytes, zero overhead)
             drop(pending); // Release lock
-            tracing::debug!("📥 Received RPC Request: request_id={}", request_id);
+            // Orphan/late response: pending entry was removed (caller timed
+            // out). Drop instead of enqueueing as a new request.
+            let peer = Self::peer_for_log(&from_bytes);
+            tracing::warn!(
+                request_id = %request_id,
+                peer = %peer,
+                route_key = %envelope.route_key,
+                "rpc.orphan_response_dropped: envelope marked Response has no pending request; dropping (late reply or peer-mislabeled request)"
+            );
+        }
+    }
 
-            // Determine priority based on PayloadType
-            let priority = match payload_type {
-                PayloadType::RpcSignal => MessagePriority::High,
-                PayloadType::RpcReliable => MessagePriority::Normal,
-                _ => MessagePriority::Normal,
-            };
+    fn peer_for_log(from_bytes: &[u8]) -> String {
+        if from_bytes.is_empty() {
+            return "unavailable".to_string();
+        }
 
-            tracing::info!(request_id = %request_id, "rpc.mailbox.enqueue");
-            // Enqueue to Mailbox (from_bytes and data are original bytes, zero overhead)
-            // Convert Bytes to Vec<u8> (Mailbox uses Vec)
-            match mailbox.enqueue(from_bytes, data.to_vec(), priority).await {
-                Ok(msg_id) => {
-                    tracing::debug!(
-                        "✅ RPC message enqueued to Mailbox: msg_id={}, priority={:?}",
-                        msg_id,
-                        priority
-                    );
-                }
-                Err(e) => {
-                    tracing::error!("❌ Mailbox enqueue failed: {:?}", e);
-                }
+        ActrId::decode(from_bytes)
+            .map(|peer| peer.to_string_repr())
+            .unwrap_or_else(|e| format!("decode_failed:{e}"))
+    }
+
+    /// Classify an inbound `RpcEnvelope.direction` into a routable direction
+    /// or a `DirectionError`.
+    ///
+    /// Pure: performs no logging and no peer decode. The caller handles
+    /// diagnostics on the drop path so the happy path stays free of
+    /// `ActrId::decode` + `to_string_repr()`.
+    fn direction_for_routing(raw_direction: Option<i32>) -> Result<Direction, DirectionError> {
+        match raw_direction {
+            Some(raw) => match Direction::try_from(raw) {
+                Ok(direction @ (Direction::Request | Direction::Response)) => Ok(direction),
+                Ok(Direction::Unspecified) => Err(DirectionError::Unspecified),
+                Err(_) => Err(DirectionError::Unknown),
+            },
+            None => Err(DirectionError::Missing),
+        }
+    }
+
+    /// Enqueue an explicit inbound RPC request to the Mailbox with priority
+    /// derived from the inbound `PayloadType`.
+    async fn enqueue_request(
+        from_bytes: Vec<u8>,
+        data: Bytes,
+        payload_type: PayloadType,
+        mailbox: Arc<dyn Mailbox>,
+        request_id: &str,
+    ) {
+        tracing::debug!("📥 Received RPC Request: request_id={}", request_id);
+
+        // Determine priority based on PayloadType
+        let priority = match payload_type {
+            PayloadType::RpcSignal => MessagePriority::High,
+            PayloadType::RpcReliable => MessagePriority::Normal,
+            _ => MessagePriority::Normal,
+        };
+
+        tracing::info!(request_id = %request_id, "rpc.mailbox.enqueue");
+        // Enqueue to Mailbox (from_bytes and data are original bytes, zero overhead)
+        // Convert Bytes to Vec<u8> (Mailbox uses Vec)
+        match mailbox.enqueue(from_bytes, data.to_vec(), priority).await {
+            Ok(msg_id) => {
+                tracing::debug!(
+                    "✅ RPC message enqueued to Mailbox: msg_id={}, priority={:?}",
+                    msg_id,
+                    priority
+                );
+            }
+            Err(e) => {
+                tracing::error!("❌ Mailbox enqueue failed: {:?}", e);
             }
         }
     }
@@ -299,7 +391,7 @@ impl WebRtcGate {
     pub async fn send_response(
         &self,
         target: &ActrId,
-        response_envelope: RpcEnvelope,
+        mut response_envelope: RpcEnvelope,
     ) -> ActorResult<()> {
         // Fill actr_id span field at runtime
         #[cfg(feature = "opentelemetry")]
@@ -309,6 +401,8 @@ impl WebRtcGate {
                 tracing::Span::current().record("actr_id", tracing::field::display(id));
             }
         }
+        response_envelope.direction = Some(Direction::Response as i32);
+
         // Serialize RpcEnvelope (Protobuf)
         let mut buf = Vec::new();
         response_envelope
@@ -323,5 +417,267 @@ impl WebRtcGate {
             buf.len()
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actr_protocol::{ActrType, Realm};
+    use actr_runtime_mailbox::{MailboxStats, MessageRecord, StorageResult};
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use uuid::Uuid;
+
+    struct CapturingMailbox {
+        enqueue_count: AtomicUsize,
+        last_priority: Mutex<Option<MessagePriority>>,
+    }
+
+    impl CapturingMailbox {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                enqueue_count: AtomicUsize::new(0),
+                last_priority: Mutex::new(None),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Mailbox for CapturingMailbox {
+        async fn enqueue(
+            &self,
+            _from: Vec<u8>,
+            _payload: Vec<u8>,
+            priority: MessagePriority,
+        ) -> StorageResult<Uuid> {
+            self.enqueue_count.fetch_add(1, Ordering::SeqCst);
+            *self.last_priority.lock().unwrap() = Some(priority);
+            Ok(Uuid::new_v4())
+        }
+
+        async fn dequeue(&self) -> StorageResult<Vec<MessageRecord>> {
+            Ok(vec![])
+        }
+
+        async fn ack(&self, _: Uuid) -> StorageResult<()> {
+            Ok(())
+        }
+
+        async fn status(&self) -> StorageResult<MailboxStats> {
+            Ok(MailboxStats {
+                queued_messages: 0,
+                inflight_messages: 0,
+                queued_by_priority: Default::default(),
+            })
+        }
+    }
+
+    fn test_actor_id(serial: u64) -> ActrId {
+        ActrId {
+            realm: Realm { realm_id: 1 },
+            serial_number: serial,
+            r#type: ActrType {
+                manufacturer: "test".to_string(),
+                name: "node".to_string(),
+                version: "1.0.0".to_string(),
+            },
+        }
+    }
+
+    fn make_rpc_envelope(request_id: &str) -> RpcEnvelope {
+        RpcEnvelope {
+            request_id: request_id.to_string(),
+            route_key: "test".to_string(),
+            payload: Some(Bytes::from("hello")),
+            error: None,
+            direction: Some(Direction::Request as i32),
+            timeout_ms: 5000,
+            ..Default::default()
+        }
+    }
+
+    fn empty_pending() -> PendingRequestsMap {
+        Arc::new(RwLock::new(HashMap::new()))
+    }
+
+    #[tokio::test]
+    async fn handle_envelope_missing_direction_is_dropped_not_enqueued() {
+        let mailbox = CapturingMailbox::new();
+        let pending = empty_pending();
+
+        let mut envelope = make_rpc_envelope("missing-direction");
+        envelope.direction = None;
+        let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
+
+        WebRtcGate::handle_envelope(
+            envelope,
+            vec![],
+            Bytes::from(data),
+            PayloadType::RpcReliable,
+            pending,
+            mailbox.clone(),
+        )
+        .await;
+
+        assert_eq!(
+            mailbox.enqueue_count.load(Ordering::SeqCst),
+            0,
+            "missing WebRTC direction must be dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_envelope_unspecified_direction_is_dropped_not_enqueued() {
+        let mailbox = CapturingMailbox::new();
+        let pending = empty_pending();
+
+        let mut envelope = make_rpc_envelope("unspecified-direction");
+        envelope.direction = Some(Direction::Unspecified as i32);
+        let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
+
+        WebRtcGate::handle_envelope(
+            envelope,
+            vec![],
+            Bytes::from(data),
+            PayloadType::RpcReliable,
+            pending,
+            mailbox.clone(),
+        )
+        .await;
+
+        assert_eq!(
+            mailbox.enqueue_count.load(Ordering::SeqCst),
+            0,
+            "Unspecified WebRTC direction must be dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_envelope_unknown_direction_is_dropped_not_enqueued() {
+        let mailbox = CapturingMailbox::new();
+        let pending = empty_pending();
+
+        let mut envelope = make_rpc_envelope("unknown-direction");
+        envelope.direction = Some(99);
+        let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
+
+        WebRtcGate::handle_envelope(
+            envelope,
+            vec![],
+            Bytes::from(data),
+            PayloadType::RpcReliable,
+            pending,
+            mailbox.clone(),
+        )
+        .await;
+
+        assert_eq!(
+            mailbox.enqueue_count.load(Ordering::SeqCst),
+            0,
+            "unknown WebRTC direction must be dropped"
+        );
+    }
+
+    /// An explicit WebRTC Response whose pending entry was already removed
+    /// must be dropped instead of being re-enqueued as a request.
+    #[tokio::test]
+    async fn handle_envelope_explicit_response_with_no_pending_is_dropped_not_enqueued() {
+        let mailbox = CapturingMailbox::new();
+        let pending = empty_pending();
+
+        let mut envelope = make_rpc_envelope("late-webrtc-1");
+        envelope.direction = Some(Direction::Response as i32);
+        let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
+        let from = actr_protocol::prost::Message::encode_to_vec(&test_actor_id(42));
+
+        WebRtcGate::handle_envelope(
+            envelope,
+            from,
+            Bytes::from(data),
+            PayloadType::RpcReliable,
+            pending,
+            mailbox.clone(),
+        )
+        .await;
+
+        assert_eq!(
+            mailbox.enqueue_count.load(Ordering::SeqCst),
+            0,
+            "orphan late WebRTC response must not be enqueued as a new request"
+        );
+    }
+
+    /// An explicit WebRTC Request must be enqueued even if a pending entry with
+    /// the same request_id exists; direction wins over pending-map inference.
+    #[tokio::test]
+    async fn handle_envelope_explicit_request_always_enqueues() {
+        let mailbox = CapturingMailbox::new();
+        let pending = empty_pending();
+        let (tx, _rx) = oneshot::channel();
+        pending
+            .write()
+            .await
+            .insert("req-stale".to_string(), (test_actor_id(9), tx));
+
+        let mut envelope = make_rpc_envelope("req-stale");
+        envelope.direction = Some(Direction::Request as i32);
+        let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
+
+        WebRtcGate::handle_envelope(
+            envelope,
+            vec![],
+            Bytes::from(data),
+            PayloadType::RpcReliable,
+            pending.clone(),
+            mailbox.clone(),
+        )
+        .await;
+
+        assert_eq!(
+            mailbox.enqueue_count.load(Ordering::SeqCst),
+            1,
+            "explicit WebRTC Request must be enqueued"
+        );
+        assert!(
+            pending.read().await.contains_key("req-stale"),
+            "explicit WebRTC Request must not consume the pending entry"
+        );
+    }
+
+    /// An explicit WebRTC Response with a matching pending entry should still
+    /// wake the caller and avoid the mailbox.
+    #[tokio::test]
+    async fn handle_envelope_explicit_response_with_pending_wakes_caller() {
+        let mailbox = CapturingMailbox::new();
+        let pending = empty_pending();
+        let (tx, rx) = oneshot::channel();
+        pending
+            .write()
+            .await
+            .insert("req-resp".to_string(), (test_actor_id(7), tx));
+
+        let mut envelope = make_rpc_envelope("req-resp");
+        envelope.payload = Some(Bytes::from("resp"));
+        envelope.direction = Some(Direction::Response as i32);
+        let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
+
+        WebRtcGate::handle_envelope(
+            envelope,
+            vec![],
+            Bytes::from(data),
+            PayloadType::RpcReliable,
+            pending,
+            mailbox.clone(),
+        )
+        .await;
+
+        assert_eq!(mailbox.enqueue_count.load(Ordering::SeqCst), 0);
+        let result = rx
+            .await
+            .expect("oneshot must be resolved for explicit WebRTC Response");
+        assert!(result.is_ok());
     }
 }

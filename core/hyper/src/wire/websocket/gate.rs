@@ -23,7 +23,9 @@ use crate::wire::webrtc::SignalingClient;
 use crate::wire::webrtc::{HookCallback, HookEvent};
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{AIdCredential, ActrId, DataStream, IdentityClaims, PayloadType, RpcEnvelope};
+use actr_protocol::{
+    AIdCredential, ActrId, DataStream, Direction, IdentityClaims, PayloadType, RpcEnvelope,
+};
 use actr_protocol::{ActorResult, ActrError};
 use actr_runtime_mailbox::{Mailbox, MessagePriority};
 use ed25519_dalek::{Signature, Verifier as Ed25519Verifier};
@@ -36,6 +38,20 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 /// Pending requests map type: request_id → (target_actor_id, oneshot response sender)
 type PendingRequestsMap =
     Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>;
+
+/// Why an inbound `RpcEnvelope.direction` could not be routed.
+///
+/// `direction_for_routing` returns this so the caller can decode the peer
+/// (for diagnostics) only on the drop path, never on the happy path.
+#[derive(Debug)]
+enum DirectionError {
+    /// `direction` field absent from the envelope.
+    Missing,
+    /// `direction` present but `DIRECTION_UNSPECIFIED`.
+    Unspecified,
+    /// `direction` present but not a known variant.
+    Unknown,
+}
 
 /// WebSocket authentication context (optional)
 ///
@@ -126,7 +142,11 @@ impl WebSocketGate {
     /// (not an error) when no inbound connection from `peer` is known — the
     /// caller should fall back to another transport (e.g. `WebRtcGate`).
     /// Returns `Ok(true)` on a successful send.
-    pub async fn send_response(&self, peer: &ActrId, envelope: RpcEnvelope) -> ActorResult<bool> {
+    pub async fn send_response(
+        &self,
+        peer: &ActrId,
+        mut envelope: RpcEnvelope,
+    ) -> ActorResult<bool> {
         let sink_opt = {
             let map = self.inbound_sinks.read().await;
             map.get(peer).cloned()
@@ -136,6 +156,8 @@ impl WebSocketGate {
             Some(s) => s,
             None => return Ok(false),
         };
+
+        envelope.direction = Some(Direction::Response as i32);
 
         // Serialize envelope
         let mut payload_buf = Vec::new();
@@ -171,7 +193,9 @@ impl WebSocketGate {
         }
     }
 
-    /// Handle RpcEnvelope: Response wakes the waiting party, Request enqueues into Mailbox
+    /// Handle RpcEnvelope: explicit Response wakes the waiting party,
+    /// explicit Request enqueues into Mailbox. Missing, Unspecified, or
+    /// unknown direction values are invalid and dropped.
     async fn handle_envelope(
         envelope: RpcEnvelope,
         from_bytes: Vec<u8>,
@@ -181,6 +205,33 @@ impl WebSocketGate {
         mailbox: Arc<dyn Mailbox>,
     ) {
         let request_id = envelope.request_id.clone();
+
+        let direction = match Self::direction_for_routing(envelope.direction) {
+            Ok(direction) => direction,
+            Err(error) => {
+                // Drop path only: decode the peer lazily for diagnostics.
+                let peer = Self::peer_for_log(&from_bytes);
+                let reason = match error {
+                    DirectionError::Missing => "missing",
+                    DirectionError::Unspecified => "unspecified",
+                    DirectionError::Unknown => "unknown",
+                };
+                tracing::warn!(
+                    request_id = %request_id,
+                    peer = %peer,
+                    route_key = %envelope.route_key,
+                    direction = ?envelope.direction,
+                    reason = %reason,
+                    "rpc.invalid_direction_dropped: invalid RpcEnvelope.direction; dropping"
+                );
+                return;
+            }
+        };
+
+        if matches!(direction, Direction::Request) {
+            Self::enqueue_request(from_bytes, data, payload_type, mailbox, &request_id).await;
+            return;
+        }
 
         let mut pending = pending_requests.write().await;
         if let Some((target, response_tx)) = pending.remove(&request_id) {
@@ -204,24 +255,68 @@ impl WebSocketGate {
             let _ = response_tx.send(result);
         } else {
             drop(pending);
-            tracing::debug!("📥 WS Received RPC Request: request_id={}", request_id);
+            let peer = Self::peer_for_log(&from_bytes);
+            tracing::warn!(
+                request_id = %request_id,
+                peer = %peer,
+                route_key = %envelope.route_key,
+                "rpc.orphan_response_dropped: envelope marked Response has no pending request; dropping (late reply or peer-mislabeled request)"
+            );
+        }
+    }
 
-            let priority = match payload_type {
-                PayloadType::RpcSignal => MessagePriority::High,
-                _ => MessagePriority::Normal,
-            };
+    fn peer_for_log(from_bytes: &[u8]) -> String {
+        if from_bytes.is_empty() {
+            return "unavailable".to_string();
+        }
 
-            match mailbox.enqueue(from_bytes, data.to_vec(), priority).await {
-                Ok(msg_id) => {
-                    tracing::debug!(
-                        "✅ WS RPC message enqueued: msg_id={}, priority={:?}",
-                        msg_id,
-                        priority
-                    );
-                }
-                Err(e) => {
-                    tracing::error!("❌ WS Mailbox enqueue failed: {:?}", e);
-                }
+        ActrId::decode(from_bytes)
+            .map(|peer| peer.to_string_repr())
+            .unwrap_or_else(|e| format!("decode_failed:{e}"))
+    }
+
+    /// Classify an inbound `RpcEnvelope.direction` into a routable direction
+    /// or a `DirectionError`.
+    ///
+    /// Pure: performs no logging and no peer decode. The caller handles
+    /// diagnostics on the drop path so the happy path stays free of
+    /// `ActrId::decode` + `to_string_repr()`.
+    fn direction_for_routing(raw_direction: Option<i32>) -> Result<Direction, DirectionError> {
+        match raw_direction {
+            Some(raw) => match Direction::try_from(raw) {
+                Ok(direction @ (Direction::Request | Direction::Response)) => Ok(direction),
+                Ok(Direction::Unspecified) => Err(DirectionError::Unspecified),
+                Err(_) => Err(DirectionError::Unknown),
+            },
+            None => Err(DirectionError::Missing),
+        }
+    }
+
+    /// Enqueue an explicit inbound RPC request to the Mailbox.
+    async fn enqueue_request(
+        from_bytes: Vec<u8>,
+        data: Bytes,
+        payload_type: PayloadType,
+        mailbox: Arc<dyn Mailbox>,
+        request_id: &str,
+    ) {
+        tracing::debug!("📥 WS Received RPC Request: request_id={}", request_id);
+
+        let priority = match payload_type {
+            PayloadType::RpcSignal => MessagePriority::High,
+            _ => MessagePriority::Normal,
+        };
+
+        match mailbox.enqueue(from_bytes, data.to_vec(), priority).await {
+            Ok(msg_id) => {
+                tracing::debug!(
+                    "✅ WS RPC message enqueued: msg_id={}, priority={:?}",
+                    msg_id,
+                    priority
+                );
+            }
+            Err(e) => {
+                tracing::error!("❌ WS Mailbox enqueue failed: {:?}", e);
             }
         }
     }

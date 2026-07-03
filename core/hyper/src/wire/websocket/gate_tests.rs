@@ -373,6 +373,7 @@ fn make_rpc_envelope(request_id: &str) -> RpcEnvelope {
         route_key: "test".to_string(),
         payload: Some(bytes::Bytes::from("hello")),
         error: None,
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 5000,
         ..Default::default()
     }
@@ -435,6 +436,84 @@ async fn handle_envelope_rpc_signal_uses_high_priority() {
     );
 }
 
+/// Missing `direction` is invalid in the current wire protocol.
+#[tokio::test]
+async fn handle_envelope_missing_direction_is_dropped_not_enqueued() {
+    let mailbox = CapturingMailbox::new();
+    let pending = empty_pending();
+    let mut envelope = make_rpc_envelope("missing-direction");
+    envelope.direction = None;
+    let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
+
+    WebSocketGate::handle_envelope(
+        envelope,
+        vec![],
+        bytes::Bytes::from(data),
+        PayloadType::RpcReliable,
+        pending,
+        mailbox.clone(),
+    )
+    .await;
+
+    assert_eq!(
+        mailbox.enqueue_count.load(Ordering::SeqCst),
+        0,
+        "missing WS direction must be dropped"
+    );
+}
+
+/// `DIRECTION_UNSPECIFIED` is only the protobuf default sentinel.
+#[tokio::test]
+async fn handle_envelope_unspecified_direction_is_dropped_not_enqueued() {
+    let mailbox = CapturingMailbox::new();
+    let pending = empty_pending();
+    let mut envelope = make_rpc_envelope("unspecified-direction");
+    envelope.direction = Some(actr_protocol::Direction::Unspecified as i32);
+    let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
+
+    WebSocketGate::handle_envelope(
+        envelope,
+        vec![],
+        bytes::Bytes::from(data),
+        PayloadType::RpcReliable,
+        pending,
+        mailbox.clone(),
+    )
+    .await;
+
+    assert_eq!(
+        mailbox.enqueue_count.load(Ordering::SeqCst),
+        0,
+        "Unspecified WS direction must be dropped"
+    );
+}
+
+/// Unknown `direction` values are invalid rather than legacy fallback.
+#[tokio::test]
+async fn handle_envelope_unknown_direction_is_dropped_not_enqueued() {
+    let mailbox = CapturingMailbox::new();
+    let pending = empty_pending();
+    let mut envelope = make_rpc_envelope("unknown-direction");
+    envelope.direction = Some(99);
+    let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
+
+    WebSocketGate::handle_envelope(
+        envelope,
+        vec![],
+        bytes::Bytes::from(data),
+        PayloadType::RpcReliable,
+        pending,
+        mailbox.clone(),
+    )
+    .await;
+
+    assert_eq!(
+        mailbox.enqueue_count.load(Ordering::SeqCst),
+        0,
+        "unknown WS direction must be dropped"
+    );
+}
+
 /// RPC response with a matching pending request should wake the waiter and not enter the mailbox.
 #[tokio::test]
 async fn handle_envelope_response_resolves_pending_not_mailbox() {
@@ -450,6 +529,7 @@ async fn handle_envelope_response_resolves_pending_not_mailbox() {
 
     let mut envelope = make_rpc_envelope("req-2");
     envelope.payload = Some(bytes::Bytes::from("response-payload"));
+    envelope.direction = Some(actr_protocol::Direction::Response as i32);
     let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
 
     WebSocketGate::handle_envelope(
@@ -485,6 +565,7 @@ async fn handle_envelope_response_both_payload_and_error_gives_decode_failure() 
 
     let mut envelope = make_rpc_envelope("req-3");
     envelope.payload = Some(bytes::Bytes::from("x"));
+    envelope.direction = Some(actr_protocol::Direction::Response as i32);
     envelope.error = Some(actr_protocol::ErrorResponse {
         code: 500,
         message: "err".to_string(),
@@ -522,6 +603,7 @@ async fn handle_envelope_response_error_only_gives_unavailable() {
 
     let mut envelope = make_rpc_envelope("req-4");
     envelope.payload = None;
+    envelope.direction = Some(actr_protocol::Direction::Response as i32);
     envelope.error = Some(actr_protocol::ErrorResponse {
         code: 503,
         message: "unavailable".to_string(),
@@ -558,7 +640,8 @@ async fn handle_envelope_response_removes_pending_entry() {
         .await
         .insert("req-5".to_string(), (actor, tx));
 
-    let envelope = make_rpc_envelope("req-5");
+    let mut envelope = make_rpc_envelope("req-5");
+    envelope.direction = Some(actr_protocol::Direction::Response as i32);
     let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
 
     WebSocketGate::handle_envelope(
@@ -575,6 +658,108 @@ async fn handle_envelope_response_removes_pending_entry() {
         !pending.read().await.contains_key("req-5"),
         "pending entry must be removed after response"
     );
+}
+
+/// An explicit Response whose pending entry was already removed (caller
+/// timed out) must NOT be enqueued as a new request — the #255 fix.
+#[tokio::test]
+async fn handle_envelope_explicit_response_with_no_pending_is_dropped_not_enqueued() {
+    let mailbox = CapturingMailbox::new();
+    let pending = empty_pending();
+
+    let mut envelope = make_rpc_envelope("late-1");
+    envelope.direction = Some(actr_protocol::Direction::Response as i32);
+    let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
+
+    WebSocketGate::handle_envelope(
+        envelope,
+        vec![],
+        bytes::Bytes::from(data),
+        PayloadType::RpcReliable,
+        pending,
+        mailbox.clone(),
+    )
+    .await;
+
+    assert_eq!(
+        mailbox.enqueue_count.load(Ordering::SeqCst),
+        0,
+        "orphan late response must not be enqueued as a new request"
+    );
+}
+
+/// An explicit Request is enqueued even when a pending entry happens to
+/// exist for the same request_id — direction wins over pending inference.
+#[tokio::test]
+async fn handle_envelope_explicit_request_always_enqueues() {
+    let mailbox = CapturingMailbox::new();
+    let pending = empty_pending();
+    // A stale pending entry with the same id must NOT divert an explicit
+    // request into the response path, and must not be consumed.
+    let (tx, _rx) = oneshot::channel();
+    pending
+        .write()
+        .await
+        .insert("req-stale".to_string(), (test_actor_id(9), tx));
+
+    let mut envelope = make_rpc_envelope("req-stale");
+    envelope.direction = Some(actr_protocol::Direction::Request as i32);
+    let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
+
+    WebSocketGate::handle_envelope(
+        envelope,
+        vec![],
+        bytes::Bytes::from(data),
+        PayloadType::RpcReliable,
+        pending.clone(),
+        mailbox.clone(),
+    )
+    .await;
+
+    assert_eq!(
+        mailbox.enqueue_count.load(Ordering::SeqCst),
+        1,
+        "explicit Request must be enqueued"
+    );
+    assert!(
+        pending.read().await.contains_key("req-stale"),
+        "explicit Request must not consume the pending entry"
+    );
+}
+
+/// An explicit Response with a matching pending entry still wakes the
+/// caller — direction routing preserves the response fast path.
+#[tokio::test]
+async fn handle_envelope_explicit_response_with_pending_wakes_caller() {
+    let mailbox = CapturingMailbox::new();
+    let pending = empty_pending();
+    let actor = test_actor_id(7);
+    let (tx, rx) = oneshot::channel();
+    pending
+        .write()
+        .await
+        .insert("req-resp".to_string(), (actor, tx));
+
+    let mut envelope = make_rpc_envelope("req-resp");
+    envelope.payload = Some(bytes::Bytes::from("resp"));
+    envelope.direction = Some(actr_protocol::Direction::Response as i32);
+    let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
+
+    WebSocketGate::handle_envelope(
+        envelope,
+        vec![],
+        bytes::Bytes::from(data),
+        PayloadType::RpcReliable,
+        pending,
+        mailbox.clone(),
+    )
+    .await;
+
+    assert_eq!(mailbox.enqueue_count.load(Ordering::SeqCst), 0);
+    let result = rx
+        .await
+        .expect("oneshot must be resolved for explicit Response");
+    assert!(result.is_ok());
 }
 
 #[tokio::test]

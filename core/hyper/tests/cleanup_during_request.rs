@@ -65,6 +65,7 @@ async fn test_request_fails_during_cleanup() {
         request_id: "test_request_initial".to_string(),
         route_key: "test.PrepareClientStream".to_string(),
         payload: Some(bytes::Bytes::from(vec![1, 2, 3])),
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 5000,
         ..Default::default()
     };
@@ -150,6 +151,7 @@ async fn test_request_fails_during_cleanup() {
             request_id: "test_request_during_cleanup".to_string(),
             route_key: "test.PrepareClientStream".to_string(),
             payload: Some(bytes::Bytes::from(vec![4, 5, 6])),
+            direction: Some(actr_protocol::Direction::Request as i32),
             timeout_ms: 5000,
             ..Default::default()
         };
@@ -173,6 +175,7 @@ async fn test_request_fails_during_cleanup() {
             request_id: "test_request_after_reconnect".to_string(),
             route_key: "test.PrepareClientStream".to_string(),
             payload: Some(bytes::Bytes::from(vec![7, 8, 9])),
+            direction: Some(actr_protocol::Direction::Request as i32),
             timeout_ms: 5000,
             ..Default::default()
         };
@@ -345,6 +348,7 @@ async fn test_request_succeeds_after_cleanup() {
         request_id: "after_cleanup".to_string(),
         route_key: "test.PrepareClientStream".to_string(),
         payload: Some(bytes::Bytes::from(vec![7, 8, 9])),
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 5000,
         ..Default::default()
     };
@@ -430,6 +434,7 @@ async fn test_dest_transport_cache_not_cleaned() {
         request_id: "request_1".to_string(),
         route_key: "test.Echo".to_string(),
         payload: Some(bytes::Bytes::from(vec![1, 2, 3])),
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 3000,
         ..Default::default()
     };
@@ -497,6 +502,7 @@ async fn test_dest_transport_cache_not_cleaned() {
         request_id: "request_immediate".to_string(),
         route_key: "test.Echo".to_string(),
         payload: Some(bytes::Bytes::from(vec![9, 9, 9])),
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 3000,
         ..Default::default()
     };
@@ -543,6 +549,7 @@ async fn test_dest_transport_cache_not_cleaned() {
         request_id: "request_2".to_string(),
         route_key: "test.Echo".to_string(),
         payload: Some(bytes::Bytes::from(vec![4, 5, 6])),
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 3000,
         ..Default::default()
     };
@@ -644,6 +651,7 @@ async fn test_precise_log_reproduction() {
         request_id: "request_1".to_string(),
         route_key: "test.Echo".to_string(),
         payload: Some(bytes::Bytes::from(vec![1, 2, 3])),
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 3000,
         ..Default::default()
     };
@@ -713,6 +721,7 @@ async fn test_precise_log_reproduction() {
         request_id: "request_2".to_string(),
         route_key: "test.Echo".to_string(),
         payload: Some(bytes::Bytes::from(vec![4, 5, 6])),
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 3000,
         ..Default::default()
     };

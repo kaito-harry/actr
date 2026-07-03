@@ -33,7 +33,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActorResult, ActrError, ActrId, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, ActrId, Direction, RpcEnvelope};
 use bytes::Bytes;
 
 use crate::outbound::HostGate;
@@ -142,6 +142,7 @@ impl<W: Workload> ActrRef<W> {
             route_key: R::route_key().to_string(),
             payload: Some(payload),
             error: None,
+            direction: Some(Direction::Request as i32),
             traceparent: None,
             tracestate: None,
             request_id: format!("req-{}", js_sys::Math::random()),
@@ -190,6 +191,7 @@ impl<W: Workload> ActrRef<W> {
             route_key: R::route_key().to_string(),
             payload: Some(payload),
             error: None,
+            direction: Some(Direction::Request as i32),
             traceparent: None,
             tracestate: None,
             request_id: format!("req-{}", js_sys::Math::random()),

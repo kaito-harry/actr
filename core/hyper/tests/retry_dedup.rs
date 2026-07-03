@@ -376,6 +376,7 @@ async fn test_tell_has_no_pending_response_channel() {
         request_id: "tell_retry_test".into(),
         route_key: "test.tell".into(),
         payload: Some(bytes::Bytes::from("fire_and_forget")),
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 0,
         ..Default::default()
     };

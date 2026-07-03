@@ -15,6 +15,26 @@ message MetadataEntry {
     required string value = 2;
 }
 
+// Direction of an RpcEnvelope on the wire.
+//
+// Receivers route explicitly on this field instead of inferring
+// request-vs-response from pending-state. Absence, DIRECTION_UNSPECIFIED,
+// and unknown future values are invalid on the current wire protocol;
+// receivers should warn and drop instead of guessing from local pending state.
+//
+// Senders MUST set this on every envelope they construct.
+//
+// Receivers trust this label without cross-checking pending state, so a
+// mislabeled envelope is routed by its label: a request stamped Response is
+// dropped if its request_id isn't pending, and a response stamped Request is
+// enqueued as a new call. The orphan-drop log includes route_key to make
+// such mislabels diagnosable.
+enum Direction {
+    DIRECTION_UNSPECIFIED = 0;  // Invalid default / missing direction sentinel
+    DIRECTION_REQUEST = 1;      // A new RPC call addressed to a handler
+    DIRECTION_RESPONSE = 2;     // A reply (success payload or ErrorResponse) to a prior request
+}
+
 // RpcEnvelope wraps State Path RPC messages
 message RpcEnvelope {
     // Route key: "package.Service.Method"
@@ -28,6 +48,9 @@ message RpcEnvelope {
     // Examples: UnknownRoute, DeserializationError, Panic, InvalidStateTransition
     // Business errors should be in the response message payload
     optional ErrorResponse error = 3;
+
+    // Envelope direction: Request or Response. See `Direction` above.
+    optional Direction direction = 4;
 
     // W3C trace context header values (for distributed tracing)
     optional string traceparent = 100;  // W3C trace context header value

@@ -118,6 +118,7 @@ async fn answerer_failed_peer_does_not_keep_sending_on_stale_webrtc() {
         request_id: "answerer-failed-peer-should-not-use-stale-webrtc".to_string(),
         route_key: "test.ping".to_string(),
         payload: Some(bytes::Bytes::from_static(b"answerer-ping-after-failed")),
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 30_000,
         ..Default::default()
     };
@@ -216,6 +217,7 @@ async fn stale_failed_event_does_not_reblock_peer_after_same_session_recovers() 
         payload: Some(bytes::Bytes::from_static(
             b"answerer-ping-after-stale-failed",
         )),
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 30_000,
         ..Default::default()
     };

@@ -179,6 +179,7 @@ async fn test_pending_requests_cleanup_on_close() {
         request_id: "test_request_1".to_string(),
         route_key: "test.method".to_string(),
         payload: Some(bytes::Bytes::from(vec![1, 2, 3])),
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 30000,
         ..Default::default()
     };
@@ -282,6 +283,7 @@ async fn test_reconnect_and_send_after_close() {
         request_id: "test_request_1".to_string(),
         route_key: "test.method".to_string(),
         payload: Some(bytes::Bytes::from(vec![1, 2, 3])),
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 5000,
         ..Default::default()
     };
@@ -333,6 +335,7 @@ async fn test_reconnect_and_send_after_close() {
         request_id: "test_request_2".to_string(),
         route_key: "test.method".to_string(),
         payload: Some(bytes::Bytes::from(vec![4, 5, 6])),
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 5000,
         ..Default::default()
     };

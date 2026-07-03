@@ -1,6 +1,39 @@
 use super::*;
 use crate::transport::ConnType;
-use actr_protocol::ActrId;
+use actr_protocol::{ActrId, Direction, RpcEnvelope};
+
+fn envelope_with_direction(direction: Option<i32>) -> RpcEnvelope {
+    RpcEnvelope {
+        request_id: "req-direction".to_string(),
+        route_key: "pkg.Service.Method".to_string(),
+        direction,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn client_websocket_response_reader_accepts_only_response_direction() {
+    assert!(ClientWebSocketHandle::is_response_envelope(
+        &envelope_with_direction(Some(Direction::Response as i32)),
+        PayloadType::RpcReliable,
+    ));
+    assert!(!ClientWebSocketHandle::is_response_envelope(
+        &envelope_with_direction(Some(Direction::Request as i32)),
+        PayloadType::RpcReliable,
+    ));
+    assert!(!ClientWebSocketHandle::is_response_envelope(
+        &envelope_with_direction(Some(Direction::Unspecified as i32)),
+        PayloadType::RpcReliable,
+    ));
+    assert!(!ClientWebSocketHandle::is_response_envelope(
+        &envelope_with_direction(Some(99)),
+        PayloadType::RpcReliable,
+    ));
+    assert!(!ClientWebSocketHandle::is_response_envelope(
+        &envelope_with_direction(None),
+        PayloadType::RpcReliable,
+    ));
+}
 
 #[tokio::test]
 async fn test_no_ws_connection_without_discovery() {

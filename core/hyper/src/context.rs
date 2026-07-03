@@ -11,8 +11,8 @@ use crate::wire::webrtc::trace::inject_span_context_to_rpc;
 use actr_config::lock::LockFile;
 use actr_framework::{Bytes, Context, DataStream, Dest, MediaSample};
 use actr_protocol::{
-    AIdCredential, ActorResult, ActrError, ActrId, ActrType, ConnectionNotReadyInfo, PayloadType,
-    RouteCandidatesRequest, RpcEnvelope, RpcRequest, route_candidates_request,
+    AIdCredential, ActorResult, ActrError, ActrId, ActrType, ConnectionNotReadyInfo, Direction,
+    PayloadType, RouteCandidatesRequest, RpcEnvelope, RpcRequest, route_candidates_request,
 };
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
@@ -191,6 +191,7 @@ impl RuntimeContext {
             route_key,
             payload: Some(payload),
             error: None,
+            direction: Some(Direction::Request as i32),
             traceparent: None,
             tracestate: None,
             request_id: uuid::Uuid::new_v4().to_string(),
@@ -235,6 +236,7 @@ impl RuntimeContext {
             route_key,
             payload: Some(payload),
             error: None,
+            direction: Some(Direction::Request as i32),
             traceparent: None,
             tracestate: None,
             request_id: uuid::Uuid::new_v4().to_string(),
@@ -522,6 +524,7 @@ impl Context for RuntimeContext {
             route_key,
             payload: Some(payload),
             error: None,
+            direction: Some(Direction::Request as i32),
             traceparent: None,
             tracestate: None,
             request_id: uuid::Uuid::new_v4().to_string(), // Generate a new request_id.
@@ -575,6 +578,7 @@ impl Context for RuntimeContext {
             route_key,
             payload: Some(payload),
             error: None,
+            direction: Some(Direction::Request as i32),
             traceparent: None,
             tracestate: None,
             request_id: uuid::Uuid::new_v4().to_string(),

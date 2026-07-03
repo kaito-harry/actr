@@ -18,7 +18,7 @@ use actr_hyper::outbound::PeerGate;
 use actr_hyper::test_support::{TestHarness, install_test_crypto_provider};
 use actr_hyper::wire::webrtc::WebRtcCoordinator;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActrId, DataStream, PayloadType, RpcEnvelope};
+use actr_protocol::{ActrId, DataStream, Direction, PayloadType, RpcEnvelope};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy)]
@@ -753,6 +753,7 @@ fn spawn_rpc_router(
                         route_key: "response".to_string(),
                         payload: envelope.payload.clone(),
                         timeout_ms: 0,
+                        direction: Some(Direction::Response as i32),
                         ..Default::default()
                     };
 

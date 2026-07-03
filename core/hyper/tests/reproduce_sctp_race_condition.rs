@@ -123,6 +123,7 @@ async fn test_reproduce_sctp_race_after_ice_restart() {
                                 request_id: format!("test-{}-{}", send_attempts, i),
                                 route_key: "test.ping".to_string(),
                                 payload: Some(bytes::Bytes::from(format!("attempt {} msg {}", send_attempts, i))),
+                                direction: Some(actr_protocol::Direction::Request as i32),
                                 timeout_ms: 5000,
                                 ..Default::default()
                             };

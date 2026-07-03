@@ -72,7 +72,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 
 use actr_framework::Dest;
-use actr_protocol::{ActrError, ActrId, ActrType, RpcEnvelope};
+use actr_protocol::{ActrError, ActrId, ActrType, Direction, RpcEnvelope};
 use bytes::Bytes;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -668,6 +668,7 @@ pub(crate) fn envelope_from_parts(
         route_key: route_key.to_string(),
         payload: Some(Bytes::from(payload)),
         error: None,
+        direction: Some(Direction::Request as i32),
         traceparent: None,
         tracestate: None,
         metadata: vec![],

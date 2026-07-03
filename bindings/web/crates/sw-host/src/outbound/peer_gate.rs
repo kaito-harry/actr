@@ -4,7 +4,7 @@
 
 use crate::transport::PeerTransport;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, ActrId, Direction, PayloadType, RpcEnvelope};
 use actr_web_common::Dest;
 use bytes::Bytes;
 use parking_lot::Mutex;
@@ -56,8 +56,15 @@ impl PeerGate {
             .ok_or_else(|| ActrError::NotFound(format!("Actor not found: {:?}", actor_id)))
     }
 
+    fn stamp_envelope_direction(mut envelope: RpcEnvelope, direction: Direction) -> RpcEnvelope {
+        envelope.direction = Some(direction as i32);
+        envelope
+    }
+
     /// Send a request and wait for the response.
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
+        let envelope = Self::stamp_envelope_direction(envelope, Direction::Request);
+
         log::debug!(
             "PeerGate::send_request to {:?}, request_id={}",
             target,
@@ -93,6 +100,8 @@ impl PeerGate {
 
     /// Send a one-way message without waiting for a response.
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
+        let envelope = Self::stamp_envelope_direction(envelope, Direction::Request);
+
         log::debug!(
             "PeerGate::send_message to {:?}, request_id={}",
             target,
@@ -160,10 +169,32 @@ mod tests {
     use super::*;
     use crate::transport::WebWireBuilder;
 
+    fn envelope_with_direction(direction: Option<i32>) -> RpcEnvelope {
+        RpcEnvelope {
+            request_id: "req-direction".to_string(),
+            route_key: "pkg.Service.Method".to_string(),
+            direction,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn test_peer_gate_creation() {
         let wire_builder = Arc::new(WebWireBuilder::new());
         let manager = Arc::new(PeerTransport::new("test-sw".to_string(), wire_builder));
         let _gate = PeerGate::new(manager);
+    }
+
+    #[test]
+    fn stamp_envelope_direction_overwrites_missing_and_mismatched_values() {
+        let request =
+            PeerGate::stamp_envelope_direction(envelope_with_direction(None), Direction::Request);
+        assert_eq!(request.direction, Some(Direction::Request as i32));
+
+        let request = PeerGate::stamp_envelope_direction(
+            envelope_with_direction(Some(Direction::Response as i32)),
+            Direction::Request,
+        );
+        assert_eq!(request.direction, Some(Direction::Request as i32));
     }
 }

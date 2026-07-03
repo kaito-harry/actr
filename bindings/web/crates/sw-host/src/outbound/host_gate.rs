@@ -2,7 +2,7 @@
 //!
 //! Web-specific HostGate for communication between actors inside the Service Worker.
 
-use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, ActrId, Direction, PayloadType, RpcEnvelope};
 use bytes::Bytes;
 use futures::channel::oneshot;
 use parking_lot::Mutex;
@@ -77,12 +77,18 @@ impl HostGate {
     /// 2. Register the pending request
     /// 3. Invoke `message_handler` to deliver the request
     /// 4. Wait for the response
-    pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
+    pub async fn send_request(
+        &self,
+        target: &ActrId,
+        mut envelope: RpcEnvelope,
+    ) -> ActorResult<Bytes> {
         log::debug!(
             "HostGate::send_request to {:?}, request_id={}",
             target,
             envelope.request_id
         );
+
+        envelope.direction = Some(Direction::Request as i32);
 
         // 1. Create a oneshot channel.
         let (tx, rx) = oneshot::channel();
@@ -121,12 +127,18 @@ impl HostGate {
     }
 
     /// Send a one-way message without waiting for a response.
-    pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
+    pub async fn send_message(
+        &self,
+        target: &ActrId,
+        mut envelope: RpcEnvelope,
+    ) -> ActorResult<()> {
         log::debug!(
             "HostGate::send_message to {:?}, request_id={}",
             target,
             envelope.request_id
         );
+
+        envelope.direction = Some(Direction::Request as i32);
 
         // Fetch and invoke the message_handler.
         let guard = self.message_handler.lock();
@@ -164,6 +176,7 @@ impl HostGate {
             route_key: "__fast_path_data_stream__".to_string(),
             payload: Some(data),
             error: None,
+            direction: Some(Direction::Request as i32),
             traceparent: None,
             tracestate: None,
             request_id: format!("ds-{}", js_sys::Math::random()),
@@ -236,6 +249,8 @@ impl Default for HostGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     #[test]
     fn test_host_gate_creation() {
@@ -247,5 +262,35 @@ mod tests {
         let gate = HostGate::new();
         gate.handle_response("unknown-id", Bytes::from("test"));
         // This should only log a warning and must not panic.
+    }
+
+    #[test]
+    fn send_message_stamps_request_direction() {
+        futures::executor::block_on(async {
+            let gate = HostGate::new();
+            let captured = Rc::new(RefCell::new(None));
+            let captured_for_handler = captured.clone();
+            gate.set_message_handler(move |_target, envelope| {
+                *captured_for_handler.borrow_mut() = Some(envelope);
+            });
+
+            let mut envelope = RpcEnvelope {
+                request_id: "msg-direction".to_string(),
+                route_key: "pkg.Service.Method".to_string(),
+                direction: Some(Direction::Response as i32),
+                ..Default::default()
+            };
+            envelope.payload = Some(Bytes::from_static(b"request"));
+
+            gate.send_message(&ActrId::default(), envelope)
+                .await
+                .unwrap();
+
+            let received = captured
+                .borrow_mut()
+                .take()
+                .expect("message handler should receive envelope");
+            assert_eq!(received.direction, Some(Direction::Request as i32));
+        });
     }
 }

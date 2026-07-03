@@ -26,7 +26,8 @@
 use std::time::{Duration, UNIX_EPOCH};
 
 use actr_protocol::{
-    ActrError, ActrId, ConnectionNotReadyInfo, DataStream, MetadataEntry, Realm, RpcEnvelope,
+    ActrError, ActrId, ConnectionNotReadyInfo, DataStream, Direction, MetadataEntry, Realm,
+    RpcEnvelope,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -229,6 +230,7 @@ fn envelope_from_wit(envelope: wit::RpcEnvelope) -> RpcEnvelope {
         } else {
             Some(Bytes::from(envelope.payload))
         },
+        direction: Some(Direction::Request as i32),
         ..Default::default()
     }
 }

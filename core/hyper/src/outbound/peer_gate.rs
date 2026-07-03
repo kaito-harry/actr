@@ -16,7 +16,8 @@ use crate::wire::webrtc::{NETWORK_RECOVERY_TIMEOUT, NetworkRecoveryStatus, WebRt
 use actr_framework::{Bytes, MediaSample};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    ActorResult, ActrError, ActrId, Classify, ConnectionNotReadyInfo, PayloadType, RpcEnvelope,
+    ActorResult, ActrError, ActrId, Classify, ConnectionNotReadyInfo, Direction, PayloadType,
+    RpcEnvelope,
 };
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::sync::Arc;
@@ -667,6 +668,11 @@ impl PeerGate {
         envelope.encode_to_vec()
     }
 
+    fn stamp_envelope_direction(mut envelope: RpcEnvelope, direction: Direction) -> RpcEnvelope {
+        envelope.direction = Some(direction as i32);
+        envelope
+    }
+
     async fn clear_local_recovery_guard(&self, target: &ActrId, session_id: u64) {
         let mut recovering = self.recovering_peers.write().await;
         let should_remove = recovering
@@ -999,6 +1005,8 @@ impl PeerGate {
         payload_type: PayloadType,
         envelope: RpcEnvelope,
     ) -> ActorResult<Bytes> {
+        let envelope = Self::stamp_envelope_direction(envelope, Direction::Request);
+
         // 1. Convert ActrId to Dest and fail fast during recovery before
         // registering pending_requests.
         let dest = Self::actr_id_to_dest(target);
@@ -1098,6 +1106,7 @@ impl PeerGate {
     /// the request-oriented recovery preflight.
     #[cfg(feature = "test-utils")]
     pub async fn send_response(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
+        let envelope = Self::stamp_envelope_direction(envelope, Direction::Response);
         let data = Self::serialize_envelope(&envelope);
         let dest = Self::actr_id_to_dest(target);
         self.send_with_retry(&dest, PayloadType::RpcReliable, &data)
@@ -1122,6 +1131,7 @@ impl PeerGate {
         payload_type: PayloadType,
         envelope: RpcEnvelope,
     ) -> ActorResult<()> {
+        let envelope = Self::stamp_envelope_direction(envelope, Direction::Request);
         let data = Self::serialize_envelope(&envelope);
         let dest = Self::actr_id_to_dest(target);
         self.preflight_send(target, &dest).await?;
@@ -1303,5 +1313,32 @@ impl PeerGate {
 impl Drop for PeerGate {
     fn drop(&mut self) {
         tracing::debug!("PeerGate dropped");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn envelope_with_direction(direction: Option<i32>) -> RpcEnvelope {
+        RpcEnvelope {
+            request_id: "req-direction".to_string(),
+            route_key: "pkg.Service.Method".to_string(),
+            direction,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn stamp_envelope_direction_overwrites_missing_and_mismatched_values() {
+        let request =
+            PeerGate::stamp_envelope_direction(envelope_with_direction(None), Direction::Request);
+        assert_eq!(request.direction, Some(Direction::Request as i32));
+
+        let response = PeerGate::stamp_envelope_direction(
+            envelope_with_direction(Some(Direction::Request as i32)),
+            Direction::Response,
+        );
+        assert_eq!(response.direction, Some(Direction::Response as i32));
     }
 }

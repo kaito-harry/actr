@@ -463,6 +463,7 @@ fn envelope_with_timeout(request_id: &str, timeout_ms: i64) -> RpcEnvelope {
         request_id: request_id.to_string(),
         route_key: "test.retry".to_string(),
         payload: Some(Bytes::from_static(b"payload")),
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms,
         ..Default::default()
     }

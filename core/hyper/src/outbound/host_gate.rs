@@ -8,7 +8,7 @@
 use super::ensure_stream_payload_type;
 use crate::transport::HostTransport;
 use actr_framework::Bytes;
-use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, ActrId, Direction, PayloadType, RpcEnvelope};
 use std::sync::Arc;
 
 /// HostGate - Inproc transport adapter (outbound)
@@ -46,7 +46,7 @@ impl HostGate {
         _target: &ActrId,
         payload_type: PayloadType,
         identifier: Option<String>,
-        envelope: RpcEnvelope,
+        mut envelope: RpcEnvelope,
     ) -> ActorResult<Bytes> {
         tracing::debug!(
             "HostGate::send_request_with_type to {:?} (type={:?}, id={:?})",
@@ -55,6 +55,7 @@ impl HostGate {
             identifier
         );
 
+        envelope.direction = Some(Direction::Request as i32);
         self.transport
             .send_request(payload_type, identifier, envelope)
             .await
@@ -72,7 +73,7 @@ impl HostGate {
         _target: &ActrId,
         payload_type: PayloadType,
         identifier: Option<String>,
-        envelope: RpcEnvelope,
+        mut envelope: RpcEnvelope,
     ) -> ActorResult<()> {
         tracing::debug!(
             "HostGate::send_message_with_type to {:?} (type={:?}, id={:?})",
@@ -81,6 +82,7 @@ impl HostGate {
             identifier
         );
 
+        envelope.direction = Some(Direction::Request as i32);
         self.transport
             .send_message(payload_type, identifier, envelope)
             .await
@@ -96,13 +98,18 @@ impl HostGate {
     /// # Default behavior
     /// Uses PayloadType::RpcReliable with no identifier
     #[cfg(feature = "test-utils")]
-    pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
+    pub async fn send_request(
+        &self,
+        target: &ActrId,
+        mut envelope: RpcEnvelope,
+    ) -> ActorResult<Bytes> {
         tracing::info!(
             "HostGate::send_request to {:?}, request_id={}",
             target,
             envelope.request_id
         );
 
+        envelope.direction = Some(Direction::Request as i32);
         // Default to Reliable (no identifier)
         let result = self
             .transport
@@ -126,9 +133,14 @@ impl HostGate {
     /// # Default behavior
     /// Uses PayloadType::RpcReliable with no identifier
     #[cfg(feature = "test-utils")]
-    pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
+    pub async fn send_message(
+        &self,
+        target: &ActrId,
+        mut envelope: RpcEnvelope,
+    ) -> ActorResult<()> {
         tracing::debug!("HostGate::send_message to {}", target);
 
+        envelope.direction = Some(Direction::Request as i32);
         // Default to Reliable (no identifier)
         self.transport
             .send_message(PayloadType::RpcReliable, None, envelope)
@@ -167,6 +179,7 @@ impl HostGate {
             route_key: "fast_path.data_stream".to_string(),
             payload: Some(data),
             error: None,
+            direction: Some(Direction::Request as i32),
             traceparent: None,
             tracestate: None,
             request_id: uuid::Uuid::new_v4().to_string(),

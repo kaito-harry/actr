@@ -83,6 +83,7 @@ fn signal_envelope() -> RpcEnvelope {
         request_id: Uuid::new_v4().to_string(),
         route_key: "test/noop".to_string(),
         payload: Some(vec![0u8; 4].into()),
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 5000,
         ..Default::default()
     }

@@ -22,7 +22,7 @@ use crate::wire::webrtc::trace::{inject_span_context_to_rpc, set_parent_from_rpc
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, ActorResult, ActrError, ActrId, ConnectionNotReadyInfo, PayloadType,
+    AIdCredential, ActorResult, ActrError, ActrId, ConnectionNotReadyInfo, Direction, PayloadType,
     RegisterAuthMode, RegisterRequest, RpcEnvelope, TurnCredential, register_response,
 };
 use actr_runtime::check_acl_permission;
@@ -1921,6 +1921,7 @@ impl Inner {
                                                     route_key: envelope.route_key.clone(),
                                                     payload: Some(response_bytes),
                                                     error: None,
+                                                    direction: Some(Direction::Response as i32),
                                                     traceparent: None,
                                                     tracestate: None,
                                                     request_id: request_id.clone(),
@@ -1965,6 +1966,7 @@ impl Inner {
                                                     route_key: envelope.route_key.clone(),
                                                     payload: None,
                                                     error: Some(error_response),
+                                                    direction: Some(Direction::Response as i32),
                                                     traceparent: envelope.traceparent.clone(),
                                                     tracestate: envelope.tracestate.clone(),
                                                     request_id: request_id.clone(),
@@ -2351,6 +2353,7 @@ impl Inner {
                                                                     route_key: envelope.route_key.clone(),
                                                                     payload: Some(response_bytes),
                                                                     error: None,
+                                                                    direction: Some(Direction::Response as i32),
                                                                     traceparent: envelope.traceparent.clone(),
                                                                     tracestate: envelope.tracestate.clone(),
                                                                     metadata: Vec::new(),
@@ -2424,6 +2427,7 @@ impl Inner {
                                                                 route_key: envelope.route_key.clone(),
                                                                 payload: None,
                                                                 error: Some(error_response),
+                                                                direction: Some(Direction::Response as i32),
                                                                 traceparent: envelope.traceparent.clone(),
                                                                 tracestate: envelope.tracestate.clone(),
                                                                 metadata: Vec::new(),

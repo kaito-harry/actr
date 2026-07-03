@@ -16,7 +16,7 @@ use actr_hyper::test_support::{
 use actr_hyper::transport::{ConnectionEvent, ConnectionState};
 use actr_hyper::wire::webrtc::{HookCallback, HookEvent, WebRtcCoordinator};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActrError, ActrId, DataStream, PayloadType, RpcEnvelope};
+use actr_protocol::{ActrError, ActrId, DataStream, Direction, PayloadType, RpcEnvelope};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -188,6 +188,7 @@ fn spawn_rpc_router(
                         route_key: "response".to_string(),
                         payload: envelope.payload.clone(),
                         timeout_ms: 0,
+                        direction: Some(Direction::Response as i32),
                         ..Default::default()
                     };
 
@@ -246,6 +247,7 @@ async fn setup_mobile_to_server_with_serials(
             request_id: format!("mobile_setup_ping_{setup_attempt}"),
             route_key: "test.setup".to_string(),
             payload: Some(Bytes::from_static(b"ping")),
+            direction: Some(Direction::Request as i32),
             timeout_ms: 5_000,
             ..Default::default()
         };
@@ -293,6 +295,7 @@ fn spawn_large_request(
             request_id,
             route_key: "test.large_echo".to_string(),
             payload: Some(Bytes::from(data)),
+            direction: Some(Direction::Request as i32),
             timeout_ms,
             ..Default::default()
         };

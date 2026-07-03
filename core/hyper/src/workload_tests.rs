@@ -194,6 +194,7 @@ async fn adapter_dispatch_routes_to_workload_dispatcher() {
         request_id: "r1".to_string(),
         route_key: "echo".to_string(),
         payload: Some(Bytes::from_static(b"hello")),
+        direction: Some(actr_protocol::Direction::Request as i32),
         ..Default::default()
     };
     let resp = adapter
@@ -213,6 +214,7 @@ async fn adapter_dispatch_propagates_unknown_route_error() {
         request_id: "r2".to_string(),
         route_key: "does/not/exist".to_string(),
         payload: Some(Bytes::new()),
+        direction: Some(actr_protocol::Direction::Request as i32),
         ..Default::default()
     };
     let err = adapter

@@ -270,6 +270,7 @@ impl InprocHarness {
                             request_id,
                             route_key: "response".to_string(),
                             payload: Some(response_bytes),
+                            direction: Some(actr_protocol::Direction::Response as i32),
                             timeout_ms: 5000,
                             ..Default::default()
                         };
@@ -323,6 +324,7 @@ impl InprocHarness {
             traceparent: Some(traceparent.to_string()),
             tracestate: tracestate.map(|s| s.to_string()),
             request_id: uuid::Uuid::new_v4().to_string(),
+            direction: Some(actr_protocol::Direction::Request as i32),
             timeout_ms: 5000,
             ..Default::default()
         };
@@ -367,6 +369,7 @@ async fn inproc_no_traceparent_yields_empty() {
         traceparent: None,
         tracestate: None,
         request_id: uuid::Uuid::new_v4().to_string(),
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 5000,
         ..Default::default()
     };
@@ -432,6 +435,7 @@ fn spawn_trace_reflector(
                         request_id: request.request_id.clone(),
                         route_key: "response".to_string(),
                         payload: Some(Bytes::from(tp_bytes)),
+                        direction: Some(actr_protocol::Direction::Response as i32),
                         timeout_ms: 0,
                         ..Default::default()
                     };
@@ -555,6 +559,7 @@ async fn webrtc_traceparent_preserved_across_transport() {
         payload: Some(Bytes::from_static(b"probe")),
         traceparent: Some(TRACE_PARENT.to_string()),
         tracestate: Some(TRACE_STATE.to_string()),
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 20_000,
         ..Default::default()
     };
@@ -609,6 +614,7 @@ async fn webrtc_no_traceparent_yields_empty() {
         payload: Some(Bytes::from_static(b"no-trace")),
         traceparent: None,
         tracestate: None,
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 20_000,
         ..Default::default()
     };

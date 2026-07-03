@@ -17,7 +17,7 @@ use crate::outbound::PendingRequestsMap;
 use crate::wire::webrtc::WebRtcCoordinator;
 use crate::wire::websocket::WebSocketConnection;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActrError, ActrId, PayloadType, RpcEnvelope};
+use actr_protocol::{ActrError, ActrId, Direction, PayloadType, RpcEnvelope};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -194,6 +194,10 @@ impl ClientWebSocketHandle {
 
                     match RpcEnvelope::decode(&data[..]) {
                         Ok(envelope) => {
+                            if !ClientWebSocketHandle::is_response_envelope(&envelope, pt) {
+                                continue;
+                            }
+
                             let request_id = &envelope.request_id;
                             let mut guard = pending.write().await;
                             if let Some((_target, tx)) = guard.remove(request_id.as_str()) {
@@ -231,6 +235,53 @@ impl ClientWebSocketHandle {
 
                 tracing::debug!("ClientWebSocketHandle: response reader exited for {pt:?}");
             });
+        }
+    }
+
+    fn is_response_envelope(envelope: &RpcEnvelope, payload_type: PayloadType) -> bool {
+        match envelope.direction {
+            Some(raw) => match Direction::try_from(raw) {
+                Ok(Direction::Response) => true,
+                Ok(Direction::Request) => {
+                    tracing::warn!(
+                        request_id = %envelope.request_id,
+                        route_key = %envelope.route_key,
+                        payload_type = ?payload_type,
+                        direction = raw,
+                        "ClientWebSocketHandle: request-labeled envelope received on response reader, dropping"
+                    );
+                    false
+                }
+                Ok(Direction::Unspecified) => {
+                    tracing::warn!(
+                        request_id = %envelope.request_id,
+                        route_key = %envelope.route_key,
+                        payload_type = ?payload_type,
+                        direction = raw,
+                        "ClientWebSocketHandle: RpcEnvelope.direction is Unspecified on response reader, dropping"
+                    );
+                    false
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        request_id = %envelope.request_id,
+                        route_key = %envelope.route_key,
+                        payload_type = ?payload_type,
+                        direction = raw,
+                        "ClientWebSocketHandle: unknown RpcEnvelope.direction on response reader, dropping"
+                    );
+                    false
+                }
+            },
+            None => {
+                tracing::warn!(
+                    request_id = %envelope.request_id,
+                    route_key = %envelope.route_key,
+                    payload_type = ?payload_type,
+                    "ClientWebSocketHandle: missing RpcEnvelope.direction on response reader, dropping"
+                );
+                false
+            }
         }
     }
 }

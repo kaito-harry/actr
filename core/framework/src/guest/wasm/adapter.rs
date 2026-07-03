@@ -28,7 +28,7 @@
 
 use std::sync::OnceLock;
 
-use actr_protocol::{ActrError, RpcEnvelope};
+use actr_protocol::{ActrError, Direction, RpcEnvelope};
 use bytes::Bytes;
 
 use crate::workload::{
@@ -163,6 +163,7 @@ fn rpc_envelope_from_wit(envelope: wit_types::RpcEnvelope) -> RpcEnvelope {
         } else {
             Some(Bytes::from(envelope.payload))
         },
+        direction: Some(Direction::Request as i32),
         ..Default::default()
     }
 }

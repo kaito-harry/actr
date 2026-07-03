@@ -64,6 +64,25 @@ async fn send_message_with_type_reliable_succeeds() {
 }
 
 #[tokio::test]
+async fn send_message_with_type_stamps_request_direction() {
+    let transport = Arc::new(HostTransport::new());
+    let gate = HostGate::new(transport.clone());
+    let lane = transport
+        .get_lane(PayloadType::RpcReliable, None)
+        .await
+        .unwrap();
+    let mut env = envelope("msg-direction");
+    env.direction = Some(Direction::Response as i32);
+
+    gate.send_message_with_type(&ActrId::default(), PayloadType::RpcReliable, None, env)
+        .await
+        .unwrap();
+
+    let received = lane.recv_envelope().await.unwrap();
+    assert_eq!(received.direction, Some(Direction::Request as i32));
+}
+
+#[tokio::test]
 async fn send_message_with_type_unknown_stream_channel_errors() {
     let gate = gate();
     let err = gate

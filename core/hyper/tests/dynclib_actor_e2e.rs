@@ -50,6 +50,7 @@ fn make_envelope(route_key: &str, payload: Vec<u8>) -> Vec<u8> {
     let envelope = RpcEnvelope {
         route_key: route_key.to_string(),
         payload: Some(payload.into()),
+        direction: Some(actr_protocol::Direction::Request as i32),
         ..Default::default()
     };
     envelope.encode_to_vec()

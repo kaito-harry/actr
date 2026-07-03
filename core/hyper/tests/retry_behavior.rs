@@ -316,6 +316,7 @@ async fn test_concurrent_calls_share_dest_transport() {
                     request_id: "concurrent_1".into(),
                     route_key: "test.method".into(),
                     payload: Some(bytes::Bytes::from("req1")),
+                    direction: Some(actr_protocol::Direction::Request as i32),
                     timeout_ms: 15_000,
                     ..Default::default()
                 },
@@ -333,6 +334,7 @@ async fn test_concurrent_calls_share_dest_transport() {
                     request_id: "concurrent_2".into(),
                     route_key: "test.method".into(),
                     payload: Some(bytes::Bytes::from("req2")),
+                    direction: Some(actr_protocol::Direction::Request as i32),
                     timeout_ms: 15_000,
                     ..Default::default()
                 },
@@ -549,6 +551,7 @@ async fn test_tell_does_not_register_pending_requests() {
         request_id: "tell_no_pending".into(),
         route_key: "test.tell".into(),
         payload: Some(bytes::Bytes::from("fire_and_forget")),
+        direction: Some(actr_protocol::Direction::Request as i32),
         timeout_ms: 0, // tell semantics
         ..Default::default()
     };

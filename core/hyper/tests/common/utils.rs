@@ -273,6 +273,7 @@ pub fn spawn_echo_responder(
                                 route_key: "response".to_string(),
                                 payload: Some(bytes::Bytes::from("pong")),
                                 timeout_ms: 0,
+                                direction: Some(actr_protocol::Direction::Response as i32),
                                 ..Default::default()
                             };
 

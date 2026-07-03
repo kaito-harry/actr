@@ -16,7 +16,7 @@ use actr_hyper::outbound::PeerGate;
 use actr_hyper::test_support::{TestHarness, make_actor_id, spawn_response_receiver};
 use actr_hyper::wire::webrtc::WebRtcCoordinator;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActrId, RpcEnvelope};
+use actr_protocol::{ActrId, Direction, RpcEnvelope};
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -113,6 +113,7 @@ fn spawn_data_echo_responder(
                                 route_key: "response".to_string(),
                                 payload: request.payload.clone(),
                                 timeout_ms: 0,
+                                direction: Some(Direction::Response as i32),
                                 ..Default::default()
                             };
 
@@ -186,6 +187,7 @@ async fn setup_connected_peers(from_serial: u64, to_serial: u64) -> (TestHarness
         request_id: format!("setup_connect_{}_{}", from_serial, to_serial),
         route_key: "test.ping".to_string(),
         payload: Some(Bytes::from("ping")),
+        direction: Some(Direction::Request as i32),
         timeout_ms: 15_000,
         ..Default::default()
     };
@@ -237,6 +239,7 @@ async fn send_and_verify(
         request_id: request_id.to_string(),
         route_key: "test.large_echo".to_string(),
         payload: Some(Bytes::from(data.to_vec())),
+        direction: Some(Direction::Request as i32),
         timeout_ms: timeout.as_millis() as i64,
         ..Default::default()
     };
@@ -554,6 +557,7 @@ async fn test_bidirectional_large_data() {
         request_id: "bidir2_setup".to_string(),
         route_key: "test.ping".to_string(),
         payload: Some(Bytes::from("ping")),
+        direction: Some(Direction::Request as i32),
         timeout_ms: 15_000,
         ..Default::default()
     };

@@ -29,11 +29,11 @@ use std::sync::Arc;
 use actr_mailbox_web::{IndexedDbMailbox, Mailbox, MessageRecord};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, Acl, AclRule, ActrId, ActrToSignaling, ActrType, Ping, RegisterAuthMode,
-    RegisterRequest, RenewCredentialRequest, RoleNegotiation, RouteCandidatesRequest, RpcEnvelope,
-    ServiceAvailabilityState, SignalingEnvelope, acl_rule, actr_relay, actr_to_signaling,
-    renew_credential_response, route_candidates_request, session_description, signaling_envelope,
-    signaling_to_actr,
+    AIdCredential, Acl, AclRule, ActrId, ActrToSignaling, ActrType, Direction, Ping,
+    RegisterAuthMode, RegisterRequest, RenewCredentialRequest, RoleNegotiation,
+    RouteCandidatesRequest, RpcEnvelope, ServiceAvailabilityState, SignalingEnvelope, acl_rule,
+    actr_relay, actr_to_signaling, renew_credential_response, route_candidates_request,
+    session_description, signaling_envelope, signaling_to_actr,
 };
 use actr_protocol::{IceCandidate, SessionDescription, prost_types};
 use actr_web_common::{ExponentialBackoff, MessageFormat, PayloadType, RenewError, WebAisClient};
@@ -1691,14 +1691,24 @@ impl SwRuntime {
     /// Documented flow:
     /// `remote response -> handle_fast_path -> handle_rpc_response`
     /// `-> System.handle_remote_response -> HostGate.handle_response -> DOM response`
-    fn handle_rpc_response(&mut self, envelope: RpcEnvelope) -> Result<(), JsValue> {
+    fn handle_rpc_response(
+        &mut self,
+        envelope: RpcEnvelope,
+        peer_id: &str,
+        channel_id: u32,
+        stream_id: &str,
+    ) -> Result<(), JsValue> {
         let request_id = envelope.request_id.clone();
 
         // Check whether this response belongs to a request we sent.
         let Some(rpc_target) = self.pending_rpcs.remove(&request_id) else {
             log::warn!(
-                "[SW] Received response for unknown request_id: {}",
-                request_id
+                "[SW] rpc.orphan_response_dropped: envelope marked Response has no pending request request_id={} peer={} channel={} stream_id={} route_key={}; dropping (late reply or mislabeled request)",
+                request_id,
+                peer_id,
+                channel_id,
+                stream_id,
+                envelope.route_key,
             );
             return Ok(());
         };
@@ -2358,10 +2368,10 @@ impl SwRuntime {
     /// Handle fast-path data.
     ///
     /// Architectural split:
-    /// - RPC responses with a pending request -> handled directly (fast path, about 1-3 ms)
+    /// - Explicit RPC responses -> handled directly (or orphan-dropped) on the fast path
     /// - Inbound RPC requests -> `Mailbox` -> `MailboxProcessor` (state path, about 30-40 ms)
     fn handle_fast_path(&mut self, payload: FastPathPayload) -> Result<(), JsValue> {
-        let (_, channel_id) = parse_peer_and_channel(&payload.stream_id);
+        let (peer_id, channel_id) = parse_peer_and_channel(&payload.stream_id);
 
         if matches!(channel_id, 2 | 3) {
             return self.handle_data_stream(payload);
@@ -2370,16 +2380,19 @@ impl SwRuntime {
         let envelope = RpcEnvelope::decode(&payload.data[..])
             .map_err(|e| JsValue::from_str(&format!("Failed to decode RpcEnvelope: {e}")))?;
 
-        // Check whether this is a response to one of our outbound requests.
-        let is_response = self.pending_rpcs.contains_key(&envelope.request_id);
+        let Some(direction) =
+            direction_for_routing(&envelope, &peer_id, channel_id, &payload.stream_id)
+        else {
+            return Ok(());
+        };
 
-        if is_response {
+        if matches!(direction, Direction::Response) {
             // Fast path: process the response directly.
             log::debug!(
                 "[SW] Fast Path: response for request_id={}",
                 envelope.request_id
             );
-            self.handle_rpc_response(envelope)
+            self.handle_rpc_response(envelope, &peer_id, channel_id, &payload.stream_id)
         } else {
             // State path: route through `Dispatcher -> Mailbox -> MailboxProcessor -> ServiceHandler`.
             // By design, all inbound RPC requests must be persisted in the mailbox
@@ -2857,6 +2870,54 @@ fn parse_peer_and_channel(stream_id: &str) -> (String, u32) {
     }
 }
 
+fn direction_for_routing(
+    envelope: &RpcEnvelope,
+    peer_id: &str,
+    channel_id: u32,
+    stream_id: &str,
+) -> Option<Direction> {
+    match envelope.direction {
+        Some(raw) => match Direction::try_from(raw) {
+            Ok(direction @ (Direction::Request | Direction::Response)) => Some(direction),
+            Ok(Direction::Unspecified) => {
+                log::warn!(
+                    "[SW] rpc.invalid_direction_dropped: RpcEnvelope.direction is Unspecified request_id={} peer={} channel={} stream_id={} route_key={} direction={}; dropping",
+                    envelope.request_id,
+                    peer_id,
+                    channel_id,
+                    stream_id,
+                    envelope.route_key,
+                    raw
+                );
+                None
+            }
+            Err(_) => {
+                log::warn!(
+                    "[SW] rpc.invalid_direction_dropped: unknown RpcEnvelope.direction request_id={} peer={} channel={} stream_id={} route_key={} direction={}; dropping",
+                    envelope.request_id,
+                    peer_id,
+                    channel_id,
+                    stream_id,
+                    envelope.route_key,
+                    raw
+                );
+                None
+            }
+        },
+        None => {
+            log::warn!(
+                "[SW] rpc.invalid_direction_dropped: missing RpcEnvelope.direction request_id={} peer={} channel={} stream_id={} route_key={}; dropping",
+                envelope.request_id,
+                peer_id,
+                channel_id,
+                stream_id,
+                envelope.route_key
+            );
+            None
+        }
+    }
+}
+
 fn decode_stream_payload(data: &[u8]) -> Result<(String, Bytes), JsValue> {
     if data.len() < 4 {
         return Err(JsValue::from_str(
@@ -3136,6 +3197,7 @@ pub async fn register_client(
                                 route_key: route_key.clone(),
                                 payload: Some(Bytes::from(response_bytes)),
                                 error: None,
+                                direction: Some(Direction::Response as i32),
                                 traceparent: None,
                                 tracestate: None,
                                 request_id: request_id.clone(),
@@ -3156,6 +3218,7 @@ pub async fn register_client(
                                     code: 500,
                                     message: err,
                                 }),
+                                direction: Some(Direction::Response as i32),
                                 traceparent: None,
                                 tracestate: None,
                                 request_id: request_id.clone(),
@@ -3552,6 +3615,7 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
             route_key: route_key.clone(),
             payload: Some(Bytes::from(payload_bytes)),
             error: None,
+            direction: Some(Direction::Request as i32),
             traceparent: None,
             tracestate: None,
             request_id: request_id.clone(),

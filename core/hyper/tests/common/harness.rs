@@ -103,6 +103,7 @@ impl TestPeer {
             request_id: request_id.to_string(),
             route_key: "test.method".to_string(),
             payload: Some(bytes::Bytes::from("test_payload")),
+            direction: Some(actr_protocol::Direction::Request as i32),
             timeout_ms: timeout_ms as i64,
             ..Default::default()
         };
@@ -330,6 +331,7 @@ impl TestHarness {
             request_id: request_id.clone(),
             route_key: "test.ping".to_string(),
             payload: Some(bytes::Bytes::from("ping")),
+            direction: Some(actr_protocol::Direction::Request as i32),
             timeout_ms: timeout.as_millis() as i64,
             ..Default::default()
         };
