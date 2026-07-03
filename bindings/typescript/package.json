@@ -1,6 +1,6 @@
 {
   "name": "@actrium/actr",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "description": "TypeScript/Node.js bindings for the ACTR (Actor-RTC) framework",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -73,12 +73,12 @@
     "access": "public"
   },
   "optionalDependencies": {
-    "@actrium/actr-darwin-x64": "0.4.8",
-    "@actrium/actr-darwin-arm64": "0.4.8",
-    "@actrium/actr-linux-x64-gnu": "0.4.8",
-    "@actrium/actr-linux-x64-musl": "0.4.8",
-    "@actrium/actr-linux-arm64-gnu": "0.4.8",
-    "@actrium/actr-linux-arm64-musl": "0.4.8",
-    "@actrium/actr-win32-x64-msvc": "0.4.8"
+    "@actrium/actr-darwin-x64": "0.4.9",
+    "@actrium/actr-darwin-arm64": "0.4.9",
+    "@actrium/actr-linux-x64-gnu": "0.4.9",
+    "@actrium/actr-linux-x64-musl": "0.4.9",
+    "@actrium/actr-linux-arm64-gnu": "0.4.9",
+    "@actrium/actr-linux-arm64-musl": "0.4.9",
+    "@actrium/actr-win32-x64-msvc": "0.4.9"
   }
 }

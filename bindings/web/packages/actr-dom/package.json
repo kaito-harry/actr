@@ -1,6 +1,6 @@
 {
   "name": "@actrium/actr-dom",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "description": "Actrium browser DOM-side fixed forwarding layer",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
