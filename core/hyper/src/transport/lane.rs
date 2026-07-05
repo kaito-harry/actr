@@ -52,6 +52,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_state::RTCDataChannelState;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 
 // ── WebRTC DataChannel fragmentation constants ────────────────────────────────
 
@@ -515,6 +516,35 @@ fn classify_data_channel_send_error(
     }
 }
 
+/// Classify a peer-connection operation failure (e.g. `create_data_channel`)
+/// into a structured `NetworkError`.
+///
+/// The webrtc error variant is checked before the peer-connection state:
+/// the state is sampled after the failure and may still read a transitional
+/// value (e.g. `Connecting`/`Disconnected`) when webrtc already reported the
+/// connection as closed, so relying on the state alone would misclassify a
+/// dead connection as a generic `WebRtcError`.
+pub(crate) fn classify_peer_connection_error(
+    error: webrtc::Error,
+    state: RTCPeerConnectionState,
+) -> NetworkError {
+    let is_closed = matches!(
+        &error,
+        webrtc::Error::ErrConnectionClosed | webrtc::Error::ErrClosedPipe
+    );
+
+    if is_closed
+        || matches!(
+            state,
+            RTCPeerConnectionState::Closed | RTCPeerConnectionState::Failed
+        )
+    {
+        NetworkError::PeerConnectionClosed(format!("{state:?}: {error}"))
+    } else {
+        NetworkError::WebRtcError(error.to_string())
+    }
+}
+
 #[async_trait]
 impl DataLane for WebRtcDataLane {
     async fn send(&self, data: bytes::Bytes) -> NetworkResult<()> {
@@ -529,6 +559,13 @@ impl DataLane for WebRtcDataLane {
                 return Err(NetworkError::DataChannelClosed(format!("{state:?}")));
             }
             if start.elapsed() > INITIAL_CONNECTION_TIMEOUT {
+                // Deliberately not a closed-like variant: treating a stuck
+                // Connecting channel as closed would make the stale-candidate
+                // retry path wait a full INITIAL_CONNECTION_TIMEOUT per cycle
+                // and risks evict loops on slow networks. Genuinely dead
+                // channels are caught structurally by
+                // `classify_data_channel_send_error` and by
+                // `ConnectionEvent::DataChannelClosed`-driven cleanup.
                 return Err(NetworkError::DataChannelError(format!(
                     "DataChannel open timeout: {state:?}"
                 )));

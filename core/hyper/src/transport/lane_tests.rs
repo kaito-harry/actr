@@ -39,6 +39,43 @@ fn test_unrelated_send_error_remains_data_channel_error_while_open() {
     assert!(!classified.is_closed_like());
 }
 
+// ── classify_peer_connection_error ─────────────────────────────────────────
+
+#[test]
+fn test_closed_peer_connection_error_wins_over_stale_state() {
+    // The state read races the failure: webrtc can report the connection
+    // closed while the sampled state still shows a transitional value.
+    for state in [
+        RTCPeerConnectionState::Connecting,
+        RTCPeerConnectionState::Disconnected,
+    ] {
+        let classified = classify_peer_connection_error(webrtc::Error::ErrConnectionClosed, state);
+
+        assert!(matches!(classified, NetworkError::PeerConnectionClosed(_)));
+        assert!(classified.is_closed_like());
+    }
+}
+
+#[test]
+fn test_closed_peer_state_wins_over_generic_error() {
+    let classified = classify_peer_connection_error(
+        webrtc::Error::ErrUnknownType,
+        RTCPeerConnectionState::Failed,
+    );
+
+    assert!(matches!(classified, NetworkError::PeerConnectionClosed(_)));
+    assert!(classified.is_closed_like());
+}
+
+#[test]
+fn test_unrelated_peer_connection_error_remains_webrtc_error() {
+    let classified =
+        classify_peer_connection_error(webrtc::Error::ErrUnknownType, RTCPeerConnectionState::New);
+
+    assert!(matches!(classified, NetworkError::WebRtcError(_)));
+    assert!(!classified.is_closed_like());
+}
+
 // ── Fragment header encode / decode ───────────────────────────────────────
 
 #[test]

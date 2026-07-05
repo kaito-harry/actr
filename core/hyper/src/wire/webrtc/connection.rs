@@ -1,5 +1,6 @@
 //! WebRTC P2P Connection implementation
 
+use crate::transport::lane::classify_peer_connection_error;
 use crate::transport::session::ConnectionSession;
 use crate::transport::{
     ConnType, DataLane, NetworkError, NetworkResult, WebRtcDataLane, WireHandle,
@@ -531,15 +532,7 @@ impl WebRtcConnection {
             .create_data_channel(label, Some(dc_config))
             .await
             .map_err(|e| {
-                let state = self.peer_connection.connection_state();
-                if matches!(
-                    state,
-                    RTCPeerConnectionState::Closed | RTCPeerConnectionState::Failed
-                ) {
-                    NetworkError::PeerConnectionClosed(format!("{state:?}: {e}"))
-                } else {
-                    NetworkError::WebRtcError(e.to_string())
-                }
+                classify_peer_connection_error(e, self.peer_connection.connection_state())
             })?;
 
         // Register on_open callback to send DataChannelOpened event

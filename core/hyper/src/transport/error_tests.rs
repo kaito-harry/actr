@@ -319,6 +319,37 @@ fn from_anyhow_into_network_error() {
 }
 
 #[test]
+fn from_webrtc_closed_error_into_peer_connection_closed() {
+    for err in [
+        webrtc::Error::ErrConnectionClosed,
+        webrtc::Error::ErrClosedPipe,
+    ] {
+        let e: NetworkError = err.into();
+        assert!(matches!(e, NetworkError::PeerConnectionClosed(_)));
+        assert!(e.is_closed_like());
+    }
+}
+
+#[test]
+fn from_webrtc_not_open_error_into_data_channel_not_open() {
+    for err in [
+        webrtc::Error::ErrDataChannelNotOpen,
+        webrtc::Error::ErrSCTPNotEstablished,
+    ] {
+        let e: NetworkError = err.into();
+        assert!(matches!(e, NetworkError::DataChannelNotOpen(_)));
+        assert!(e.is_closed_like());
+    }
+}
+
+#[test]
+fn from_generic_webrtc_error_stays_webrtc_error() {
+    let e: NetworkError = webrtc::Error::ErrUnknownType.into();
+    assert!(matches!(e, NetworkError::WebRtcError(_)));
+    assert!(!e.is_closed_like());
+}
+
+#[test]
 fn from_actr_id_error_into_invalid_argument() {
     // An unparseable actr-id string yields ActrIdError, which maps to InvalidArgument.
     let id_err = actr_protocol::ActrId::from_string_repr("").unwrap_err();
