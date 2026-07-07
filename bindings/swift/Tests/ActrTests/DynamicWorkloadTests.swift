@@ -31,6 +31,10 @@ private final class StaticWorkloadProbe: Workload, @unchecked Sendable {
     func onError(ctx _: Context, event _: ErrorEvent) async throws {}
 
     func dispatch(ctx _: Context, envelope: RpcEnvelope) async throws -> Data {
+        guard !envelope.routeKey.isEmpty else {
+            throw ActrError.UnknownRoute(msg: envelope.routeKey)
+        }
+
         await recorder.append(DispatchRecord(routeKey: envelope.routeKey, payload: envelope.payload))
 
         let payload = String(data: envelope.payload, encoding: .utf8) ?? ""

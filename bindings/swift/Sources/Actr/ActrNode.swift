@@ -19,29 +19,33 @@ public final class ActrNode: Sendable {
 
     /// Creates a package-backed node from config and package file paths.
     public static func from(packageConfig configPath: String, packagePath: String, observers: RuntimeObservers? = nil) async throws -> ActrNode {
-        let wrapper: ActrBindings.ActrNode
-        if let observers {
-            wrapper = try await ActrBindings.ActrNode.newFromPackageFileWithObservers(
-                configPath: configPath,
-                packagePath: packagePath,
-                observers: observers
+        do {
+            let wrapper: ActrBindings.ActrNode
+            if let observers {
+                wrapper = try await ActrBindings.ActrNode.newFromPackageFileWithObservers(
+                    configPath: configPath,
+                    packagePath: packagePath,
+                    observers: observers.bridge
+                )
+            } else {
+                wrapper = try await ActrBindings.ActrNode.newFromPackageFile(
+                    configPath: configPath,
+                    packagePath: packagePath
+                )
+            }
+            let handle = try wrapper.createNetworkEventHandle()
+            let monitor = NetworkEventMonitor(handle: handle)
+            let lifecycleMonitor = AppLifecycleMonitor(handle: handle, networkEventMonitor: monitor)
+            return ActrNode(
+                inner: wrapper,
+                networkEventMonitor: monitor,
+                appLifecycleMonitor: lifecycleMonitor,
+                retainedWorkload: nil,
+                retainedObservers: observers
             )
-        } else {
-            wrapper = try await ActrBindings.ActrNode.newFromPackageFile(
-                configPath: configPath,
-                packagePath: packagePath
-            )
+        } catch {
+            throw ActrError(error: error)
         }
-        let handle = try wrapper.createNetworkEventHandle()
-        let monitor = NetworkEventMonitor(handle: handle)
-        let lifecycleMonitor = AppLifecycleMonitor(handle: handle, networkEventMonitor: monitor)
-        return ActrNode(
-            inner: wrapper,
-            networkEventMonitor: monitor,
-            appLifecycleMonitor: lifecycleMonitor,
-            retainedWorkload: nil,
-            retainedObservers: observers
-        )
     }
 
     /// Creates a package-backed node from config and package file URLs.
@@ -57,21 +61,25 @@ public final class ActrNode: Sendable {
 
     /// Creates a linked/static node from config, explicit actor identity, and a Swift-provided workload.
     public static func linked(config configPath: String, type actorType: ActrType, workload: DynamicWorkload) async throws -> ActrNode {
-        let wrapper = try await ActrBindings.ActrNode.newFromLinkedWorkload(
-            configPath: configPath,
-            actorType: actorType,
-            workload: workload
-        )
-        let handle = try wrapper.createNetworkEventHandle()
-        let monitor = NetworkEventMonitor(handle: handle)
-        let lifecycleMonitor = AppLifecycleMonitor(handle: handle, networkEventMonitor: monitor)
-        return ActrNode(
-            inner: wrapper,
-            networkEventMonitor: monitor,
-            appLifecycleMonitor: lifecycleMonitor,
-            retainedWorkload: workload,
-            retainedObservers: nil
-        )
+        do {
+            let wrapper = try await ActrBindings.ActrNode.newFromLinkedWorkload(
+                configPath: configPath,
+                actorType: actorType.bridge,
+                workload: workload.bridge
+            )
+            let handle = try wrapper.createNetworkEventHandle()
+            let monitor = NetworkEventMonitor(handle: handle)
+            let lifecycleMonitor = AppLifecycleMonitor(handle: handle, networkEventMonitor: monitor)
+            return ActrNode(
+                inner: wrapper,
+                networkEventMonitor: monitor,
+                appLifecycleMonitor: lifecycleMonitor,
+                retainedWorkload: workload,
+                retainedObservers: nil
+            )
+        } catch {
+            throw ActrError(error: error)
+        }
     }
 
     /// Creates a linked/static node from a config file URL, explicit actor identity, and a Swift-provided workload.
@@ -84,8 +92,12 @@ public final class ActrNode: Sendable {
 
     /// Starts the package-backed actor and returns a running reference.
     public func start() async throws -> ActrRef {
-        let refWrapper = try await inner.start()
-        return ActrRef(inner: refWrapper, retainedWorkload: retainedWorkload, retainedObservers: retainedObservers)
+        do {
+            let refWrapper = try await inner.start()
+            return ActrRef(inner: refWrapper, retainedWorkload: retainedWorkload, retainedObservers: retainedObservers)
+        } catch {
+            throw ActrError(error: error)
+        }
     }
 
     fileprivate init(

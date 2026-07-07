@@ -3,19 +3,18 @@ import Foundation
 import PackageDescription
 
 // Binary distribution:
-// - Default: fetch ActrFFI.xcframework from GitHub Release.
-// - Local override: set ACTR_BINARY_PATH to a local xcframework path when developing.
+// - This monorepo package is for local development and CI validation only.
+// - External SwiftPM consumers should use the published actr-swift package.
 let env = ProcessInfo.processInfo.environment
 let bindingsPath = env["ACTR_BINDINGS_PATH"] ?? "ActrBindings"
 let overrideBinaryPath = env["ACTR_BINARY_PATH"]
+let distBinaryPath = "dist/ActrFFI.xcframework"
 let localBinaryPath = "ActrFFI.xcframework"
 
-let releaseTag = env["ACTR_BINARY_TAG"] ?? "v0.2.0"
-let remoteBinaryURL = "https://github.com/Actrium/actr-swift-package-sync/releases/download/\(releaseTag)/ActrFFI.xcframework.zip"
-let remoteBinaryChecksum = env["ACTR_BINARY_CHECKSUM"] ?? "33020bdcfababe2049763c8bbbb6e539bc04f4fed2127b97c291b4c3ce7d7654"
-
 let manifestDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
-let localBinaryAbsolutePath = URL(fileURLWithPath: localBinaryPath, relativeTo: URL(fileURLWithPath: manifestDir)).path
+let packageRootURL = URL(fileURLWithPath: manifestDir, isDirectory: true)
+let distBinaryAbsolutePath = packageRootURL.appendingPathComponent(distBinaryPath).path
+let localBinaryAbsolutePath = packageRootURL.appendingPathComponent(localBinaryPath).path
 
 func binaryPathRelativeToPackageRoot(_ path: String) -> String? {
     if path.hasPrefix("/") {
@@ -34,39 +33,46 @@ if let overrideBinaryPath {
             path: relativeBinaryPath
         )
     } else {
-        actrBinaryTarget = .binaryTarget(
-            name: "ActrFFILib",
-            url: remoteBinaryURL,
-            checksum: remoteBinaryChecksum
-        )
+        fatalError("ACTR_BINARY_PATH must point inside the bindings/swift package root.")
     }
+} else if FileManager.default.fileExists(atPath: distBinaryAbsolutePath) {
+    actrBinaryTarget = .binaryTarget(
+        name: "ActrFFILib",
+        path: distBinaryPath
+    )
 } else if FileManager.default.fileExists(atPath: localBinaryAbsolutePath) {
     actrBinaryTarget = .binaryTarget(
         name: "ActrFFILib",
         path: localBinaryPath
     )
 } else {
-    actrBinaryTarget = .binaryTarget(
-        name: "ActrFFILib",
-        url: remoteBinaryURL,
-        checksum: remoteBinaryChecksum
-    )
+    fatalError("""
+    Missing local ActrFFI.xcframework for repository-local Swift validation.
+    Build it first with:
+      ACTR_BINDINGS_PATH=dist/ActrBindings ACTR_BINARY_PATH=dist/ActrFFI.xcframework ./build-xcframework.sh
+    Then run Swift commands with:
+      ACTR_BINDINGS_PATH=dist/ActrBindings ACTR_BINARY_PATH=dist/ActrFFI.xcframework swift test
+    External SwiftPM consumers should depend on the published actr-swift package instead.
+    """)
 }
 
 let package = Package(
     name: "actr-swift",
     platforms: [
         .iOS(.v15),
-        .macOS(.v12),
+        .macOS(.v12)
     ],
     products: [
         .library(
             name: "Actr",
             targets: ["Actr"]
-        ),
+        )
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-protobuf.git", .upToNextMinor(from: "1.32.0")),
+        .package(
+            url: "https://github.com/apple/swift-protobuf.git",
+            .upToNextMinor(from: "1.32.0")
+        )
     ],
     targets: [
         actrBinaryTarget,
@@ -89,15 +95,19 @@ let package = Package(
                 "ActrFFI",
                 "ActrBindings",
                 "ActrFFILib",
-                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+                .product(name: "SwiftProtobuf", package: "swift-protobuf")
             ],
             linkerSettings: [
-                .linkedFramework("SystemConfiguration"),
+                .linkedFramework("SystemConfiguration")
             ]
         ),
         .testTarget(
             name: "ActrTests",
-            dependencies: ["Actr"]
-        ),
+            dependencies: [
+                "Actr",
+                "ActrBindings",
+                .product(name: "SwiftProtobuf", package: "swift-protobuf")
+            ]
+        )
     ]
 )

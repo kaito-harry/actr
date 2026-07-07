@@ -60,10 +60,15 @@ Targets that need the SDK should depend on `Actr`.
 
 ### Local development without a published binary
 
+For source-tree validation, use a locally built XCFramework that matches the
+checked-out Swift bindings. A bare `swift build` or `swift test` in the monorepo
+will fail fast unless a local binary exists. External SwiftPM consumers should
+depend on the published `actr-swift` package instead of this monorepo package.
+
 Set an environment override to point the package at a locally built XCFramework:
 
 ```bash
-ACTR_BINARY_PATH=/absolute/path/to/ActrFFI.xcframework swift build
+ACTR_BINARY_PATH=ActrFFI.xcframework swift build
 ```
 
 To build fresh bindings/binaries without dirtying the git worktree, point outputs to an ignored directory:
@@ -76,7 +81,12 @@ Then consume the package with the same environment variables:
 
 ```bash
 ACTR_BINDINGS_PATH=dist/ActrBindings ACTR_BINARY_PATH=dist/ActrFFI.xcframework swift build
+ACTR_BINDINGS_PATH=dist/ActrBindings ACTR_BINARY_PATH=dist/ActrFFI.xcframework swift test
 ```
+
+`Package.swift` also auto-detects `dist/ActrFFI.xcframework` when it exists, but
+passing both environment variables keeps generated bindings and the binary
+artifact paired during local validation.
 
 ## Build (maintainers)
 
