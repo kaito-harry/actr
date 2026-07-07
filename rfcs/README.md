@@ -11,7 +11,7 @@ rfcs/
 ├── 0000-template.md               # Template for new RFCs
 ├── README.md                      # Process and conventions
 ├── text/                          # RFC documents in Markdown
-│   └── NNNN-short-name.zh.md
+│   └── NNNN-short-name.md
 └── media/                         # Media referenced by RFCs
     └── <asset>
 ```
@@ -37,7 +37,7 @@ An RFC is not required when a change does any of the following:
 
 ## Submitting a new RFC
 
-1. Copy `0000-template.md` to `text/<id>-<short-name>.md`, following the [OpenClaw RFC naming convention](https://github.com/openclaw/rfcs/tree/main#naming). Use a zero-padded four-digit ID that is one greater than the highest ID already used in either the RFC index or any RFC pull request; start with `0001` when no RFC exists. Once a pull request is opened, its ID remains reserved even if the proposal is later closed. Append a language code before `.md` for a non-English version, for example `0001-explicit-reply.zh.md`.
+1. Copy `0000-template.md` to `text/<id>-<short-name>.md`. Use a zero-padded four-digit ID that is one greater than the highest ID already used in either the RFC index or any RFC pull request; start with `0001` when no RFC exists. Once a pull request is opened, its ID remains reserved even if the proposal is later closed. Append a language code before `.md` for a non-English version, for example `0001-explicit-reply.zh.md`.
 2. Complete every section. Cite concrete code paths such as `core/.../file.rs` and relevant issue or pull request URLs. The `Alternatives` section must describe genuine rejected options; this requirement distinguishes an RFC from a regular design document.
 3. Add the RFC to the index with `Proposed` status and open a pull request titled `docs: add RFC-NNNN <name>`. After GitHub assigns the pull request number, fill in the RFC PR metadata with its URL. Keep the tracking issue empty while the proposal is under review. A proposed RFC must not be merged.
 4. Address review feedback and ensure CI passes. If the proposal is rejected or withdrawn, close the pull request without merging it.
