@@ -371,12 +371,15 @@ fn network_error_display_and_to_actr_error_for_other() {
 // ── From<NetworkError> for ActrError: kind() fallback arms ──────────────
 
 #[test]
-fn client_kind_error_without_precise_mapping_becomes_not_found() {
-    // InvalidOperation is Client-kind but not in the precise NotFound map
-    // (NoRoute/ConnectionNotFound/ChannelNotFound/ServiceDiscovery), so it
-    // falls through to `ErrorKind::Client => ActrError::NotFound`.
+fn invalid_client_inputs_keep_precise_actr_error_variants() {
+    let e: ActrError = NetworkError::InvalidArgument("bad arg".into()).into();
+    assert!(matches!(e, ActrError::InvalidArgument(_)));
+
     let e: ActrError = NetworkError::InvalidOperation("bad op".into()).into();
-    assert!(matches!(e, ActrError::NotFound(_)));
+    assert!(matches!(e, ActrError::InvalidArgument(_)));
+
+    let e: ActrError = NetworkError::ConfigurationError("bad config".into()).into();
+    assert!(matches!(e, ActrError::Internal(_)));
 }
 
 #[test]

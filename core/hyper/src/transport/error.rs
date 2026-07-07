@@ -404,6 +404,12 @@ impl From<NetworkError> for ActrError {
             | NetworkError::ServiceDiscoveryError(msg) => {
                 return ActrError::NotFound(msg.clone());
             }
+            NetworkError::InvalidArgument(msg) | NetworkError::InvalidOperation(msg) => {
+                return ActrError::InvalidArgument(msg.clone());
+            }
+            NetworkError::ConfigurationError(msg) => {
+                return ActrError::Internal(msg.clone());
+            }
             _ => {}
         }
         match err.kind() {
