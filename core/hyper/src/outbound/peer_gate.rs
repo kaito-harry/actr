@@ -34,6 +34,16 @@ pub(crate) type PendingRequestsMap =
 /// this prevents a stalled WebRTC DataChannel send from holding the mobile
 /// caller forever during unrecoverable network loss.
 const DATA_STREAM_SEND_TIMEOUT: Duration = Duration::from_secs(15);
+/// Total budget for fire-and-forget RPC sends, including transient retries.
+///
+/// `tell` does not wait for a response, so it is bounded by the transport
+/// send budget rather than a caller RPC deadline (`timeout_ms` is 0 for tell).
+/// In practice tell dispatches via `RpcReliable`, whose retry policy is
+/// 5 attempts with a 1s→2s→4s→5s backoff (4 retries, 12s cumulative delay);
+/// this timeout covers that full backoff plus a small margin for the send
+/// attempts themselves, so a reliable tell can still complete all retries
+/// while a stalled transport is capped instead of hanging indefinitely.
+const TELL_SEND_TIMEOUT: Duration = Duration::from_secs(13);
 const RECOVERY_REASON_PEER_DISCONNECTED: &str = "peer state Disconnected";
 const RECOVERY_REASON_PEER_FAILED: &str = "peer state Failed";
 const RECOVERY_REASON_ICE_NETWORK_STARTED: &str = "ice/network recovery started";
@@ -1141,17 +1151,47 @@ impl PeerGate {
             )
         )
     )]
+    #[cfg(any(test, feature = "test-utils"))]
     pub async fn send_message_with_type(
         &self,
         target: &ActrId,
         payload_type: PayloadType,
         envelope: RpcEnvelope,
     ) -> ActorResult<()> {
+        self.send_message_with_type_inner(target, payload_type, envelope, None)
+            .await
+    }
+
+    pub(crate) async fn send_tell_with_type(
+        &self,
+        target: &ActrId,
+        payload_type: PayloadType,
+        envelope: RpcEnvelope,
+    ) -> ActorResult<()> {
+        self.send_message_with_type_inner(target, payload_type, envelope, Some(TELL_SEND_TIMEOUT))
+            .await
+    }
+
+    async fn send_message_with_type_inner(
+        &self,
+        target: &ActrId,
+        payload_type: PayloadType,
+        envelope: RpcEnvelope,
+        send_timeout: Option<Duration>,
+    ) -> ActorResult<()> {
         let envelope = Self::stamp_envelope_direction(envelope, Direction::Request);
         let data = Self::serialize_envelope(&envelope);
         let dest = Self::actr_id_to_dest(target);
         self.preflight_send(target, &dest).await?;
-        self.send_with_retry(&dest, payload_type, &data).await
+        let send = self.send_with_retry(&dest, payload_type, &data);
+        if let Some(send_timeout) = send_timeout {
+            match tokio::time::timeout(send_timeout, send).await {
+                Ok(result) => result,
+                Err(_) => Err(ActrError::TimedOut),
+            }
+        } else {
+            send.await
+        }
     }
 
     /// Send media sample via WebRTC native track
@@ -1335,6 +1375,11 @@ impl Drop for PeerGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::{
+        ConnType, DataLane, NetworkError, NetworkResult, WireBuilder, WireHandle,
+    };
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn envelope_with_direction(direction: Option<i32>) -> RpcEnvelope {
         RpcEnvelope {
@@ -1356,5 +1401,100 @@ mod tests {
             Direction::Response,
         );
         assert_eq!(response.direction, Some(Direction::Response as i32));
+    }
+
+    #[derive(Debug)]
+    struct RetryFailingLane {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl DataLane for RetryFailingLane {
+        async fn send(&self, _data: bytes::Bytes) -> NetworkResult<()> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            Err(NetworkError::ConnectionError(
+                "send still unavailable".into(),
+            ))
+        }
+
+        fn lane_type(&self) -> &'static str {
+            "retry-failing"
+        }
+    }
+
+    #[derive(Debug)]
+    struct ReadyWebSocketWire {
+        lane: Arc<RetryFailingLane>,
+    }
+
+    #[async_trait]
+    impl WireHandle for ReadyWebSocketWire {
+        fn connection_type(&self) -> ConnType {
+            ConnType::WebSocket
+        }
+
+        fn priority(&self) -> u8 {
+            1
+        }
+
+        async fn connect(&self) -> NetworkResult<()> {
+            Ok(())
+        }
+
+        fn is_connected(&self) -> bool {
+            true
+        }
+
+        async fn close(&self) -> NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn get_lane(&self, _payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
+            Ok(self.lane.clone())
+        }
+    }
+
+    struct RetryFailingWireBuilder {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl WireBuilder for RetryFailingWireBuilder {
+        async fn create_connections(
+            &self,
+            _dest: &Dest,
+        ) -> NetworkResult<Vec<Arc<dyn WireHandle>>> {
+            Ok(vec![Arc::new(ReadyWebSocketWire {
+                lane: Arc::new(RetryFailingLane {
+                    attempts: self.attempts.clone(),
+                }),
+            })])
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_message_with_type_times_out_before_reliable_retry_backoff_completes() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let transport = Arc::new(PeerTransport::new(
+            ActrId::default(),
+            Arc::new(RetryFailingWireBuilder {
+                attempts: attempts.clone(),
+            }),
+        ));
+        let gate = PeerGate::new(transport, None);
+        let target = ActrId::default();
+
+        let err = gate
+            .send_message_with_type_inner(
+                &target,
+                PayloadType::RpcReliable,
+                envelope_with_direction(None),
+                Some(Duration::from_millis(250)),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, ActrError::TimedOut), "got {err:?}");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 }

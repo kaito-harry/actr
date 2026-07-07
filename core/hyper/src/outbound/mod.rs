@@ -96,7 +96,7 @@ impl Gate {
                     .await
             }
             Gate::Peer(gate) => {
-                gate.send_message_with_type(target, payload_type, envelope)
+                gate.send_tell_with_type(target, payload_type, envelope)
                     .await
             }
         }
