@@ -699,7 +699,7 @@ impl PeerGate {
             elapsed_ms = status.elapsed_ms(),
             recovery_reason = status.reason.as_str(),
             source,
-            "Connection recovery timed out; closing stale transport",
+            "Connection recovery timed out; closing stale WebRTC transport",
         );
 
         self.clear_local_recovery_guard(target, status.session_id)
@@ -711,13 +711,29 @@ impl PeerGate {
                 .await;
         }
 
-        if let Err(e) = self.transport_manager.close_transport(dest).await {
-            tracing::warn!(
+        match self
+            .transport_manager
+            .close_webrtc_transport_if_session(dest, target, status.session_id)
+            .await
+        {
+            Ok(true) => tracing::debug!(
                 peer = ?target,
                 session_id = status.session_id,
-                "Failed to close transport after recovery timeout: {}",
-                e,
-            );
+                "Closed timed-out WebRTC recovery session; WebSocket fallback kept alive"
+            ),
+            Ok(false) => tracing::debug!(
+                peer = ?target,
+                session_id = status.session_id,
+                "Skipped recovery-timeout close because WebRTC session was replaced"
+            ),
+            Err(e) => {
+                tracing::warn!(
+                    peer = ?target,
+                    session_id = status.session_id,
+                    "Failed to close WebRTC transport after recovery timeout: {}",
+                    e,
+                );
+            }
         }
 
         tracing::debug!(

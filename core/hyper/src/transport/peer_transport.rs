@@ -398,6 +398,10 @@ impl PeerTransport {
     /// Session-guarded close of only the WebRTC connection for the specified
     /// Dest, leaving the WebSocket connection (if any) alive.
     ///
+    /// Close **only** the WebRTC connection for `dest` when its session still
+    /// matches `(peer_id, session_id)`, leaving the WebSocket fallback lane
+    /// (and any in-flight RPC responses it carries) intact.
+    ///
     /// Returns `Ok(true)` when the WebRTC connection was actually closed.
     /// Returns `Ok(false)` when the event is stale (identity mismatch) or the
     /// transport state has already changed — in that case **no** pending
@@ -408,6 +412,13 @@ impl PeerTransport {
     /// WebSocket response-reader tasks are not inadvertently terminated when a
     /// WebRTC peer disconnects.  The WebSocket connection will be cleaned up
     /// separately by `spawn_ready_monitor` once it too drops.
+    ///
+    /// # Naming hazard
+    ///
+    /// The near-identical name [`close_transport_if_webrtc_session`] (below)
+    /// has the **opposite** teardown scope: it performs a *full* close
+    /// (including WebSocket) under the same session guard. The two are easily
+    /// confused — pick by the teardown scope you want, not by gut.
     pub(crate) async fn close_webrtc_transport_if_session(
         &self,
         dest: &Dest,
