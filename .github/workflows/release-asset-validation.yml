@@ -346,7 +346,10 @@ jobs:
             echo "Packaging ${package}"
             (
               cd "$(package_workspace_dir "$package")"
-              cargo package -p "$package" --locked --allow-dirty --target-dir "$GITHUB_WORKSPACE/target/release-validation"
+              # --no-verify: prerelease path deps (e.g. actr-protocol 0.4.12-rc.1)
+              # are not on crates.io, so tarball build verification pulls stale
+              # stable versions and fails. Real `cargo publish` verifies later.
+              cargo package -p "$package" --locked --allow-dirty --no-verify --target-dir "$GITHUB_WORKSPACE/target/release-validation"
             )
           done
           find target/release-validation/package -maxdepth 1 -type f -name '*.crate' -print0 |
@@ -647,6 +650,18 @@ jobs:
           rsync -a --delete source/bindings/swift/Sources/ swift-sync/Sources/
           rsync -a --delete source/bindings/swift/dist/ActrBindings/ swift-sync/ActrBindings/
 
+          # Build with the sync repo's CURRENT Package.swift (still pointing at the
+          # last published binary) to verify the synced Sources compile. This MUST
+          # run BEFORE we rewrite Package.swift to the not-yet-uploaded prerelease
+          # binary, otherwise swift build tries to download a release that doesn't
+          # exist yet (404). Mirrors actr-swift-package-sync release.yml ordering.
+          (
+            cd swift-sync
+            ACTR_BINDINGS_PATH=ActrBindings \
+            ACTR_BINARY_PATH="$GITHUB_WORKSPACE/source/bindings/swift/dist/ActrFFI.xcframework" \
+            swift build
+          )
+
           checksum=$(python3 - <<'PY'
           from pathlib import Path
 
@@ -712,10 +727,6 @@ jobs:
 
           (
             cd swift-sync
-            ACTR_BINDINGS_PATH=ActrBindings \
-            ACTR_BINARY_PATH="$GITHUB_WORKSPACE/source/bindings/swift/dist/ActrFFI.xcframework" \
-            swift build
-
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add Package.swift Sources ActrBindings release-metadata.json
