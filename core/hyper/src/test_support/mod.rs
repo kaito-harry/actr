@@ -866,9 +866,10 @@ pub struct TestNativeConcurrentDispatcher {
 impl TestNativeConcurrentDispatcher {
     /// Wire a native `Linked` workload behind the production gate-on shape: a
     /// conflict-key scheduler (budget `C` / queue cap `M`) in front of an
-    /// interleaved runner. `dispatch_timeout` is accepted for signature parity
-    /// with the WASM path; the native `run_loop_interleaved` does not currently
-    /// honour a per-dispatch deadline (M6 P5 is WASM-only, pending decision).
+    /// interleaved runner. `dispatch_timeout` arms the same per-dispatch deadline
+    /// the WASM path uses; the native `run_loop_interleaved` now honours it (M6
+    /// P5 — a timed-out dispatch is cleanly cancelled, resolves `TimedOut`, and
+    /// frees its conflict key), so both bases are isomorphic on timeout too.
     pub fn spawn<W: actr_framework::Workload>(
         workload: W,
         spec: crate::dispatch::ConflictKeySpec,
@@ -975,6 +976,194 @@ impl ConcurrentDispatch for TestNativeConcurrentDispatcher {
 
     async fn shutdown(&self) {
         TestNativeConcurrentDispatcher::shutdown(self).await
+    }
+}
+
+/// Strategy-A **keyless serial** driver (WASM V2): a `RunnerMode::Serial` runner
+/// with NO conflict-key scheduler in front — the exact shape the node builds for
+/// a keyless actor under default-on. It exposes the same [`ConcurrentDispatch`]
+/// interface as the gate-on dispatchers so one generic property body can assert
+/// that, keyless, even distinct callers never interleave (MAX_SEEN == 1). There
+/// is deliberately no conflict-key projection here: a keyless actor never
+/// projects keys at all.
+#[cfg(feature = "wasm-engine")]
+pub struct TestSerialDispatcher {
+    handle: Arc<crate::executor::ActorHandle>,
+    next_request_id: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(feature = "wasm-engine")]
+impl TestWasmWorkload {
+    /// Wire this workload behind the keyless default-on path: a serial runner,
+    /// no scheduler. See [`TestSerialDispatcher`].
+    pub fn into_serial_dispatcher(self) -> TestSerialDispatcher {
+        let handle = crate::executor::spawn_runner_with_mode(
+            crate::workload::Workload::Wasm(self.inner),
+            crate::executor::RunnerMode::Serial,
+            None,
+        );
+        TestSerialDispatcher {
+            handle: Arc::new(handle),
+            next_request_id: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
+
+#[cfg(feature = "wasm-engine")]
+impl TestSerialDispatcher {
+    fn scratch_ctx() -> crate::context::RuntimeContext {
+        runtime_context_with_host_transport(
+            ActrId::default(),
+            Arc::new(crate::transport::HostTransport::new()),
+        )
+    }
+
+    /// Dispatch one RPC straight through the serial runner (no scheduler). The
+    /// `caller_id` still rides the envelope for parity, but with no scheduler it
+    /// cannot buy any concurrency — the runner is serial by construction.
+    pub async fn dispatch(
+        &self,
+        route_key: &str,
+        payload: Vec<u8>,
+        caller_id: Option<ActrId>,
+        host_abi: &HostAbiFn,
+    ) -> actr_protocol::ActorResult<actr_framework::Bytes> {
+        use std::sync::atomic::Ordering;
+        let rid = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        let request_id = format!("serial-req-{rid}");
+        let payload_bytes = actr_framework::Bytes::from(payload);
+        let envelope = actr_protocol::RpcEnvelope {
+            route_key: route_key.to_string(),
+            payload: Some(payload_bytes),
+            request_id: request_id.clone(),
+            direction: Some(actr_protocol::Direction::Request as i32),
+            ..Default::default()
+        };
+        let invocation = InvocationContext {
+            self_id: ActrId::default(),
+            caller_id,
+            request_id,
+        };
+        self.handle
+            .dispatch_envelope(envelope, Self::scratch_ctx(), invocation, host_abi)
+            .await
+    }
+
+    /// Deterministically tear down the runner.
+    pub async fn shutdown(&self) {
+        self.handle.shutdown().await;
+    }
+}
+
+#[cfg(feature = "wasm-engine")]
+#[async_trait::async_trait]
+impl ConcurrentDispatch for TestSerialDispatcher {
+    async fn dispatch(
+        &self,
+        route_key: &str,
+        payload: Vec<u8>,
+        caller_id: Option<ActrId>,
+        host_abi: &HostAbiFn,
+    ) -> actr_protocol::ActorResult<actr_framework::Bytes> {
+        TestSerialDispatcher::dispatch(self, route_key, payload, caller_id, host_abi).await
+    }
+
+    async fn shutdown(&self) {
+        TestSerialDispatcher::shutdown(self).await
+    }
+}
+
+/// Native mirror of [`TestSerialDispatcher`]: a `RunnerMode::Serial` runner over
+/// a `Workload::Linked` in-process guest, NO scheduler — the native keyless
+/// default-on path. Guest `ctx.call_raw` suspension points travel the shared
+/// [`crate::transport::HostTransport`] exactly as in
+/// [`TestNativeConcurrentDispatcher`], so the same native gate harness drives it.
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+pub struct TestNativeSerialDispatcher {
+    handle: Arc<crate::executor::ActorHandle>,
+    transport: Arc<crate::transport::HostTransport>,
+    next_request_id: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+impl TestNativeSerialDispatcher {
+    /// Wire a native `Linked` workload behind the keyless default-on path: a
+    /// serial runner, no scheduler.
+    pub fn spawn<W: actr_framework::Workload>(workload: W) -> Self {
+        let adapter: Arc<dyn crate::workload::LinkedWorkloadHandle> =
+            crate::workload::WorkloadAdapter::new(workload);
+        let handle = crate::executor::spawn_runner_with_mode(
+            crate::workload::Workload::Linked(adapter),
+            crate::executor::RunnerMode::Serial,
+            None,
+        );
+        Self {
+            handle: Arc::new(handle),
+            transport: Arc::new(crate::transport::HostTransport::new()),
+            next_request_id: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// The shared host transport backing every dispatch's `RuntimeContext` (the
+    /// native gate drains it — the same shape as [`TestNativeConcurrentDispatcher`]).
+    pub fn host_transport(&self) -> Arc<crate::transport::HostTransport> {
+        self.transport.clone()
+    }
+
+    fn ctx(&self) -> crate::context::RuntimeContext {
+        runtime_context_with_host_transport(ActrId::default(), self.transport.clone())
+    }
+
+    /// Dispatch one RPC straight through the serial native runner (no scheduler).
+    pub async fn dispatch(
+        &self,
+        route_key: &str,
+        payload: Vec<u8>,
+        caller_id: Option<ActrId>,
+        host_abi: &HostAbiFn,
+    ) -> actr_protocol::ActorResult<actr_framework::Bytes> {
+        use std::sync::atomic::Ordering;
+        let rid = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        let request_id = format!("native-serial-req-{rid}");
+        let payload_bytes = actr_framework::Bytes::from(payload);
+        let envelope = actr_protocol::RpcEnvelope {
+            route_key: route_key.to_string(),
+            payload: Some(payload_bytes),
+            request_id: request_id.clone(),
+            direction: Some(actr_protocol::Direction::Request as i32),
+            ..Default::default()
+        };
+        let invocation = InvocationContext {
+            self_id: ActrId::default(),
+            caller_id,
+            request_id,
+        };
+        self.handle
+            .dispatch_envelope(envelope, self.ctx(), invocation, host_abi)
+            .await
+    }
+
+    /// Deterministically tear down the runner.
+    pub async fn shutdown(&self) {
+        self.handle.shutdown().await;
+    }
+}
+
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+#[async_trait::async_trait]
+impl ConcurrentDispatch for TestNativeSerialDispatcher {
+    async fn dispatch(
+        &self,
+        route_key: &str,
+        payload: Vec<u8>,
+        caller_id: Option<ActrId>,
+        host_abi: &HostAbiFn,
+    ) -> actr_protocol::ActorResult<actr_framework::Bytes> {
+        TestNativeSerialDispatcher::dispatch(self, route_key, payload, caller_id, host_abi).await
+    }
+
+    async fn shutdown(&self) {
+        TestNativeSerialDispatcher::shutdown(self).await
     }
 }
 

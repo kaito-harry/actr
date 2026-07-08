@@ -24,9 +24,10 @@
 //! | P1 distinct keys interleave (MAX_SEEN≥2)   | ✅ `p1::native` | ✅ `p1::wasm` |
 //! | P2 same key strictly serial (MAX_SEEN==1)  | ✅ `p2::native` | ✅ `p2::wasm` |
 //! | P3 concurrency capped at budget C          | ✅ `p3::native` | ✅ `p3::wasm` |
+//! | P5 per-dispatch timeout ⇒ TimedOut+free key | ✅ `p5::native` | ✅ `p5::wasm` |
 //! | P6 keyless ⇒ degenerate serial (MAX_SEEN==1)| ✅ `p6::native` | ✅ `p6::wasm` |
+//! | SA default-on keyless ⇒ serial, no scheduler| ✅ `sa::native` | ✅ `sa::wasm` |
 //! | P4 fault does not orphan siblings (WEAK)   | ⚠️ different form — see below |
-//! | P5 per-dispatch timeout                     | ⛔ absent (see below) | ✅ (`wasm_open_concurrency::dispatch_timeout_*`) |
 //!
 //! ### P4 — a DESIGN difference, not a bug
 //!
@@ -49,15 +50,28 @@
 //! whereas WASM siblings all FAIL and a follow-up probe sees a fresh MAX_SEEN==1
 //! (rebuilt linear memory). Do NOT "unify" these — they are both correct.
 //!
-//! ### P5 — WASM-only, pending decision
+//! ### P5 — per-dispatch timeout, now dual-basis (M6 §1)
 //!
-//! A per-dispatch timeout is enforced *inside* the WASM `run_interleaved` region
-//! (`spawn_runner_with_mode(.., dispatch_timeout)`), covered end-to-end by
-//! `wasm_open_concurrency::dispatch_timeout_cancels_frees_key_and_survives` and
-//! its same-key sealing companion. The native `run_loop_interleaved` does NOT
-//! currently honour a per-dispatch deadline; whether native should grow one is a
-//! pending design decision. This suite does NOT pretend to cover native P5 — it
-//! is honestly marked absent above and no native timeout test is emitted.
+//! A per-dispatch deadline is enforced identically on both bases: inside the
+//! WASM `run_interleaved` region and, as of M6 §1, inside the native
+//! `run_loop_interleaved` (each in-flight future wrapped in
+//! `tokio::time::timeout`). On expiry the in-flight dispatch future is **dropped**
+//! — a clean cancel on either basis (a native `&self` future shares no poisoned
+//! state; the WASM cancel is the spike-validated T8/R1 clean drop) — the caller's
+//! reply resolves `TimedOut`, the freed conflict key lets the next same-key
+//! dispatch start, and the instance survives. `prop_dispatch_timeout` asserts all
+//! four of those on both bases; the WASM region also has the deeper sealing /
+//! store-health coverage in `wasm_open_concurrency::dispatch_timeout_*`.
+//!
+//! ### SA — strategy-A default-on keyless serialization (M6 §1)
+//!
+//! Default-on turns the dispatch gate on by default, but a keyless actor must
+//! stay bit-for-bit serial with NO scheduler spawned. The routing decision is
+//! unit-tested (`lifecycle::node_tests::scheduler_engaged_*`); the *behaviour* is
+//! proven here on both bases via `prop_default_on_keyless_serial`, which drives a
+//! scheduler-less `RunnerMode::Serial` runner (the exact keyless default-on
+//! shape) and asserts distinct callers still never interleave (MAX_SEEN == 1).
+//! A stress variant runs it 25× to catch any nondeterministic concurrency leak.
 
 #![cfg(all(
     feature = "wasm-engine",
@@ -66,6 +80,7 @@
 ))]
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use actr_hyper::ConflictKeySpec;
 use actr_hyper::test_support::concurrency::{
@@ -74,7 +89,7 @@ use actr_hyper::test_support::concurrency::{
 };
 use actr_hyper::test_support::{
     ConcurrentDispatch, TestConcurrentDispatcher, TestNativeConcurrentDispatcher,
-    instantiate_wasm_workload,
+    TestNativeSerialDispatcher, TestSerialDispatcher, instantiate_wasm_workload,
 };
 use actr_hyper::wasm::WasmHost;
 use actr_hyper::workload::{HostAbiFn, HostOperationResult};
@@ -118,17 +133,36 @@ fn keyless_spec() -> ConflictKeySpec {
 #[async_trait::async_trait]
 trait Basis {
     type Dispatcher: ConcurrentDispatch + 'static;
+    /// The scheduler-less serial runner this basis builds for the keyless
+    /// default-on path (strategy A).
+    type SerialDispatcher: ConcurrentDispatch + 'static;
     /// Human-readable label used in assertion messages.
     const NAME: &'static str;
 
     /// Build a dispatcher (budgeted conflict-key scheduler → interleaved runner)
-    /// over `spec`, plus the guest→host bridge and the [`GateControls`] a test
-    /// uses to hold guest calls suspended and release them deterministically.
+    /// over `spec` with an optional per-dispatch deadline, plus the guest→host
+    /// bridge and the [`GateControls`] a test uses to hold guest calls suspended
+    /// and release them deterministically.
+    async fn build_with_timeout(
+        spec: ConflictKeySpec,
+        budget: usize,
+        queue_cap: usize,
+        dispatch_timeout: Option<Duration>,
+    ) -> (Arc<Self::Dispatcher>, HostAbiFn, GateControls);
+
+    /// Convenience: [`Self::build_with_timeout`] with no deadline. (Kept as a
+    /// required method rather than a provided default so `async_trait` does not
+    /// impose an extra `Self: Send` bound on generic callers.)
     async fn build(
         spec: ConflictKeySpec,
         budget: usize,
         queue_cap: usize,
     ) -> (Arc<Self::Dispatcher>, HostAbiFn, GateControls);
+
+    /// Build the keyless default-on shape: a `RunnerMode::Serial` runner with NO
+    /// scheduler, plus the same gate harness. Proves default-on keyless stays
+    /// serial (strategy A) behaviourally, per basis.
+    async fn build_serial() -> (Arc<Self::SerialDispatcher>, HostAbiFn, GateControls);
 }
 
 /// WASM V2 basis — a resident `run_concurrent` region.
@@ -137,16 +171,35 @@ struct WasmBasis;
 #[async_trait::async_trait]
 impl Basis for WasmBasis {
     type Dispatcher = TestConcurrentDispatcher;
+    type SerialDispatcher = TestSerialDispatcher;
     const NAME: &'static str = "wasm";
+
+    async fn build_with_timeout(
+        spec: ConflictKeySpec,
+        budget: usize,
+        queue_cap: usize,
+        dispatch_timeout: Option<Duration>,
+    ) -> (Arc<Self::Dispatcher>, HostAbiFn, GateControls) {
+        let host = WasmHost::compile(fixture_bytes()).expect("compile v2 fixture");
+        let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+        let dispatcher =
+            Arc::new(wl.into_concurrent_dispatcher(spec, budget, queue_cap, dispatch_timeout));
+        let (bridge, ctl) = gate_bridge();
+        (dispatcher, bridge, ctl)
+    }
 
     async fn build(
         spec: ConflictKeySpec,
         budget: usize,
         queue_cap: usize,
     ) -> (Arc<Self::Dispatcher>, HostAbiFn, GateControls) {
+        Self::build_with_timeout(spec, budget, queue_cap, None).await
+    }
+
+    async fn build_serial() -> (Arc<Self::SerialDispatcher>, HostAbiFn, GateControls) {
         let host = WasmHost::compile(fixture_bytes()).expect("compile v2 fixture");
         let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
-        let dispatcher = Arc::new(wl.into_concurrent_dispatcher(spec, budget, queue_cap, None));
+        let dispatcher = Arc::new(wl.into_serial_dispatcher());
         let (bridge, ctl) = gate_bridge();
         (dispatcher, bridge, ctl)
     }
@@ -158,22 +211,41 @@ struct NativeBasis;
 #[async_trait::async_trait]
 impl Basis for NativeBasis {
     type Dispatcher = TestNativeConcurrentDispatcher;
+    type SerialDispatcher = TestNativeSerialDispatcher;
     const NAME: &'static str = "native";
 
-    async fn build(
+    async fn build_with_timeout(
         spec: ConflictKeySpec,
         budget: usize,
         queue_cap: usize,
+        dispatch_timeout: Option<Duration>,
     ) -> (Arc<Self::Dispatcher>, HostAbiFn, GateControls) {
         let dispatcher = Arc::new(TestNativeConcurrentDispatcher::spawn(
             fixture_native::DoubleActor::default(),
             spec,
             budget,
             queue_cap,
-            None,
+            dispatch_timeout,
         ));
         // The gate reads the shared HostTransport; the `HostAbiFn` is ignored by
         // the native runner and supplied only for signature parity.
+        let ctl = spawn_native_gate(dispatcher.host_transport());
+        let bridge: HostAbiFn = Arc::new(|_| Box::pin(async { HostOperationResult::Done }));
+        (dispatcher, bridge, ctl)
+    }
+
+    async fn build(
+        spec: ConflictKeySpec,
+        budget: usize,
+        queue_cap: usize,
+    ) -> (Arc<Self::Dispatcher>, HostAbiFn, GateControls) {
+        Self::build_with_timeout(spec, budget, queue_cap, None).await
+    }
+
+    async fn build_serial() -> (Arc<Self::SerialDispatcher>, HostAbiFn, GateControls) {
+        let dispatcher = Arc::new(TestNativeSerialDispatcher::spawn(
+            fixture_native::DoubleActor::default(),
+        ));
         let ctl = spawn_native_gate(dispatcher.host_transport());
         let bridge: HostAbiFn = Arc::new(|_| Box::pin(async { HostOperationResult::Done }));
         (dispatcher, bridge, ctl)
@@ -327,6 +399,115 @@ async fn prop_keyless_serial<B: Basis>() {
     d.shutdown().await;
 }
 iso_test!(p6_keyless_serial, prop_keyless_serial);
+
+// ── P5 — per-dispatch timeout: clean cancel, bounded, frees key, survives ────
+//
+// Now isomorphic (M6 §1): the deadline is enforced identically on both bases. A
+// parked-forever dispatch must resolve `TimedOut` within its deadline (never
+// hang), its conflict key must be freed so a same-key follow-up advances, and
+// the instance must survive (a fresh dispatch succeeds). No sleeps: the gate
+// bridge parks guest calls forever and the deadline does the releasing.
+
+async fn prop_dispatch_timeout<B: Basis>() {
+    // 300ms per-dispatch deadline, enforced inside the interleaved runner.
+    let (d, bridge, mut ctl) =
+        B::build_with_timeout(probe_spec(), 8, 256, Some(Duration::from_millis(300))).await;
+
+    // Two distinct-key dispatches park at the gate FOREVER (never released).
+    // Each must independently hit its deadline even while the other is co-resident.
+    let a = spawn_dispatch(&d, PROBE, vec![], caller(1), &bridge);
+    let b = spawn_dispatch(&d, PROBE, vec![], caller(2), &bridge);
+    wait_entered(&mut ctl.gate_entered, 2).await;
+
+    // Bounded resolution to TimedOut — a real hang trips the await watchdog.
+    let ra = await_dispatch(a, "p5 A").await;
+    let rb = await_dispatch(b, "p5 B").await;
+    assert!(
+        matches!(ra, Err(actr_protocol::ActrError::TimedOut)),
+        "[{}] parked dispatch A must resolve TimedOut, got {ra:?}",
+        B::NAME
+    );
+    assert!(
+        matches!(rb, Err(actr_protocol::ActrError::TimedOut)),
+        "[{}] parked dispatch B must resolve TimedOut, got {rb:?}",
+        B::NAME
+    );
+
+    // The timed-out dispatch truly left and freed its key: a NEW same-key (as A)
+    // dispatch on the un-gated ECHO route must complete promptly (bounded), which
+    // is only possible if the cancelled dispatch released the key AND the
+    // instance was not left poisoned. ECHO has no host import, so it isolates
+    // same-key advance + instance survival from the still-parked gate.
+    let payload = b"post-timeout".to_vec();
+    let recovered = tokio::time::timeout(
+        Duration::from_secs(5),
+        d.dispatch(ECHO, payload.clone(), caller(1), &bridge),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("[{}] same-key dispatch after a timeout must not hang", B::NAME))
+    .unwrap_or_else(|e| panic!("[{}] same-key dispatch after a timeout must succeed: {e:?}", B::NAME));
+    assert_eq!(
+        recovered.as_ref(),
+        payload.as_slice(),
+        "[{}] the recovered dispatch must round-trip on the surviving instance",
+        B::NAME
+    );
+    d.shutdown().await;
+}
+iso_test!(p5_dispatch_timeout, prop_dispatch_timeout);
+
+// ── SA — strategy-A default-on keyless: serial, no scheduler (MAX_SEEN == 1) ──
+//
+// Default-on turns the gate on, but a keyless actor must stay bit-for-bit the
+// M4 serial runner with NO scheduler. This drives that exact shape (a
+// scheduler-less `RunnerMode::Serial` runner) and proves distinct callers still
+// never interleave — the strategy-A promise, behaviourally, per basis.
+
+async fn prop_default_on_keyless_serial<B: Basis>() {
+    let (d, bridge, mut ctl) = B::build_serial().await;
+
+    // DISTINCT callers (would be distinct keys under a scheduler), yet the
+    // keyless serial runner processes one at a time — so neither may overlap.
+    let a = spawn_dispatch(&d, PROBE, vec![], caller(1), &bridge);
+    let b = spawn_dispatch(&d, PROBE, vec![], caller(2), &bridge);
+
+    // Release strictly by the guest's real entry order (never spawn order): the
+    // serial runner admits one at a time, so exactly one enters, we release it,
+    // it replies, then the next enters. Awaiting a fixed handle between releases
+    // could deadlock if the runner ran the other first.
+    for _ in 0..2 {
+        wait_entered(&mut ctl.gate_entered, 1).await;
+        ctl.gate_release.add_permits(1);
+    }
+    let first = read_u32(&await_dispatch(a, "sa A").await.expect("A ok"));
+    let second = read_u32(&await_dispatch(b, "sa B").await.expect("B ok"));
+
+    assert_eq!(
+        first, 1,
+        "[{}] default-on keyless must never overlap (A) — strategy-A promise",
+        B::NAME
+    );
+    assert_eq!(
+        second, 1,
+        "[{}] default-on keyless must never overlap (B) — strategy-A promise",
+        B::NAME
+    );
+    d.shutdown().await;
+}
+iso_test!(sa_default_on_keyless_serial, prop_default_on_keyless_serial);
+
+// Stress the keyless serial face: repeat the strategy-A serialization proof 25×
+// per basis. A default-on concurrency leak would be nondeterministic, so a
+// single pass could miss it; a MAX_SEEN>1 on any iteration fails the run.
+async fn stress_default_on_keyless_serial<B: Basis>() {
+    for _ in 0..25 {
+        prop_default_on_keyless_serial::<B>().await;
+    }
+}
+iso_test!(
+    sa_default_on_keyless_serial_stress,
+    stress_default_on_keyless_serial
+);
 
 // ── P4 — fault containment (WEAK: two DIFFERENT correct forms per basis) ─────
 //
