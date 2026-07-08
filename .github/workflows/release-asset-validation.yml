@@ -1,0 +1,966 @@
+name: Release Asset Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      pre_release_version:
+        description: SemVer pre-release version to validate, for example 0.4.13-rc.1.
+        required: true
+        type: string
+      source_ref:
+        description: Source ref to validate. Defaults to the workflow ref selected at dispatch time.
+        required: false
+        type: string
+      publish_package_sync:
+        description: Publish Swift/Kotlin pre-release packages to matching package-sync repositories.
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - never
+          - require
+      package_sync_owner:
+        description: GitHub owner for actr-swift-package-sync and actr-kotlin-package-sync. Defaults to this repository owner.
+        required: false
+        type: string
+      replace_assets:
+        description: Replace existing GitHub Release assets when re-running the same validation version.
+        required: true
+        default: true
+        type: boolean
+      notes:
+        description: Optional notes to append to the validation release.
+        required: false
+        type: string
+
+concurrency:
+  group: release-asset-validation-${{ inputs.pre_release_version }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: write
+  id-token: write
+  packages: write
+
+env:
+  PROTOC_VERSION: "29.3"
+
+jobs:
+  context:
+    name: Resolve validation context
+    runs-on: ubuntu-latest
+    outputs:
+      base_version: ${{ steps.resolve.outputs.base_version }}
+      pre_release_version: ${{ steps.resolve.outputs.pre_release_version }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      source_ref: ${{ steps.resolve.outputs.source_ref }}
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
+      short_sha: ${{ steps.resolve.outputs.short_sha }}
+      repository: ${{ steps.resolve.outputs.repository }}
+      repository_owner: ${{ steps.resolve.outputs.repository_owner }}
+      package_sync_owner: ${{ steps.resolve.outputs.package_sync_owner }}
+      swift_sync_repo: ${{ steps.resolve.outputs.swift_sync_repo }}
+      kotlin_sync_repo: ${{ steps.resolve.outputs.kotlin_sync_repo }}
+    steps:
+      - name: Checkout source ref
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref != '' && inputs.source_ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve context
+        id: resolve
+        env:
+          PRE_RELEASE_VERSION: ${{ inputs.pre_release_version }}
+          INPUT_SOURCE_REF: ${{ inputs.source_ref }}
+          INPUT_PACKAGE_SYNC_OWNER: ${{ inputs.package_sync_owner }}
+        run: |
+          set -euo pipefail
+          [[ "$PRE_RELEASE_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*$ ]] || {
+            echo "::error::pre_release_version must be SemVer pre-release X.Y.Z-<id>, got ${PRE_RELEASE_VERSION}"
+            exit 1
+          }
+          base_version="${BASH_REMATCH[1]}"
+          workspace_version=$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          with Path("Cargo.toml").open("rb") as fh:
+              data = tomllib.load(fh)
+          print(data["workspace"]["package"]["version"])
+          PY
+          )
+          [[ "$workspace_version" == "$base_version" ]] || {
+            echo "::error::workspace version ${workspace_version} does not match pre-release base ${base_version}"
+            exit 1
+          }
+
+          source_sha=$(git rev-parse HEAD)
+          short_sha=$(git rev-parse --short=12 HEAD)
+          source_ref="${INPUT_SOURCE_REF:-${GITHUB_REF_NAME:-${source_sha}}}"
+          package_sync_owner="${INPUT_PACKAGE_SYNC_OWNER:-${GITHUB_REPOSITORY_OWNER}}"
+          release_tag="validation-v${PRE_RELEASE_VERSION}"
+
+          {
+            echo "base_version=${base_version}"
+            echo "pre_release_version=${PRE_RELEASE_VERSION}"
+            echo "release_tag=${release_tag}"
+            echo "source_ref=${source_ref}"
+            echo "source_sha=${source_sha}"
+            echo "short_sha=${short_sha}"
+            echo "repository=${GITHUB_REPOSITORY}"
+            echo "repository_owner=${GITHUB_REPOSITORY_OWNER}"
+            echo "package_sync_owner=${package_sync_owner}"
+            echo "swift_sync_repo=${package_sync_owner}/actr-swift-package-sync"
+            echo "kotlin_sync_repo=${package_sync_owner}/actr-kotlin-package-sync"
+          } >> "$GITHUB_OUTPUT"
+
+  prepare-validation-source:
+    name: Prepare prerelease validation source
+    needs: context
+    runs-on: ubuntu-latest
+    outputs:
+      validation_sha: ${{ steps.prepare.outputs.validation_sha }}
+    steps:
+      - name: Checkout requested source commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.context.outputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+          version: ${{ env.PROTOC_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          scope: "@actrium"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+
+      - name: Cache wasm-pack
+        id: cache-wasm-pack
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-pack
+          key: cargo-tools-v1-${{ runner.os }}-wp0.13.1
+
+      - name: Install wasm-pack
+        if: steps.cache-wasm-pack.outputs.cache-hit != 'true'
+        run: cargo install wasm-pack --version 0.13.1 --locked
+
+      - name: Prepare prerelease version commit
+        id: prepare
+        env:
+          VERSION: ${{ needs.context.outputs.pre_release_version }}
+          TAG: ${{ needs.context.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}" >/dev/null 2>&1 || true
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+            source_sha=$(git rev-parse HEAD)
+            validation_sha=$(git rev-parse "refs/tags/${TAG}^{commit}")
+            validation_parent=$(git rev-parse "${validation_sha}^" 2>/dev/null || true)
+            [[ "$validation_parent" == "$source_sha" ]] || {
+              echo "::error::Validation tag ${TAG} points to ${validation_sha}, whose parent is ${validation_parent}; expected source ${source_sha}"
+              exit 1
+            }
+            echo "Reusing existing validation tag ${TAG} at ${validation_sha}"
+          else
+            scripts/release-train.sh --version "$VERSION" --prepare-only --pre-release
+            validation_sha=$(git rev-parse HEAD)
+            git tag "$TAG" "$validation_sha"
+            git push origin "refs/tags/${TAG}"
+          fi
+          echo "validation_sha=${validation_sha}" >> "$GITHUB_OUTPUT"
+
+  create-validation-release:
+    name: Create validation release
+    needs:
+      - context
+      - prepare-validation-source
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout validation source commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.context.outputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Create or verify validation tag
+        env:
+          TAG: ${{ needs.context.outputs.release_tag }}
+          SOURCE_SHA: ${{ needs.prepare-validation-source.outputs.validation_sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}" >/dev/null 2>&1 || true
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+            tag_sha=$(git rev-parse "refs/tags/${TAG}^{commit}")
+            [[ "$tag_sha" == "$SOURCE_SHA" ]] || {
+              echo "::error::Validation tag ${TAG} already points to ${tag_sha}, expected ${SOURCE_SHA}"
+              exit 1
+            }
+            echo "Validation tag ${TAG} already points to ${SOURCE_SHA}"
+          else
+            git tag "$TAG" "$SOURCE_SHA"
+            git push origin "refs/tags/${TAG}"
+          fi
+
+      - name: Create or update GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.context.outputs.release_tag }}
+          VERSION: ${{ needs.context.outputs.pre_release_version }}
+          SOURCE_REF: ${{ needs.context.outputs.source_ref }}
+          SOURCE_SHA: ${{ needs.context.outputs.source_sha }}
+          VALIDATION_SHA: ${{ needs.prepare-validation-source.outputs.validation_sha }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<EOF
+          Release-equivalent asset validation.
+
+          This is not a stable Actrium release. It validates packaging and
+          release asset completeness for a pre-release source commit.
+
+          - Source repository: https://github.com/${GITHUB_REPOSITORY}
+          - Source ref: ${SOURCE_REF}
+          - Source sha: ${SOURCE_SHA}
+          - Validation source sha: ${VALIDATION_SHA}
+          - Pre-release version: ${VERSION}
+          - Validation tag: ${TAG}
+          EOF
+          if [[ -n "$NOTES" ]]; then
+            {
+              echo ""
+              echo "Additional notes:"
+              echo "$NOTES"
+            } >> release-notes.md
+          fi
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" \
+              --notes-file release-notes.md \
+              --prerelease
+          else
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$VALIDATION_SHA" \
+              --title "$TAG" \
+              --notes-file release-notes.md \
+              --prerelease
+          fi
+
+  rust-package-assets:
+    name: Package Rust crate assets
+    needs:
+      - context
+      - prepare-validation-source
+      - create-validation-release
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+    steps:
+      - name: Checkout source commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.context.outputs.release_tag }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+          version: ${{ env.PROTOC_VERSION }}
+
+      - name: Cache wasm-pack
+        id: cache-wasm-pack
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-pack
+          key: cargo-tools-v1-${{ runner.os }}-wp0.13.1
+
+      - name: Install wasm-pack
+        if: steps.cache-wasm-pack.outputs.cache-hit != 'true'
+        run: cargo install wasm-pack --version 0.13.1 --locked
+
+      - name: Package publishable crates
+        env:
+          BASE_VERSION: ${{ needs.context.outputs.base_version }}
+        run: |
+          set -euo pipefail
+          bash bindings/web/scripts/sync-cli-assets.sh --build
+          mkdir -p release/validation/crates
+          packages=(
+            actr-protocol
+            actr-service-compat
+            actr-config
+            actr-web-abi
+            actr-framework
+            actr-runtime-mailbox
+            actr-runtime
+            actr-platform-traits
+            actr-pack
+            actr-mock-actrix
+            actr-hyper
+            actr-platform-native
+            actr-framework-protoc-codegen
+            actr-web-protoc-codegen
+            actr
+            actr-cli
+          )
+          package_workspace_dir() {
+            case "$1" in
+              actr-web-abi) printf '%s\n' bindings/web ;;
+              *) printf '%s\n' . ;;
+            esac
+          }
+          for package in "${packages[@]}"; do
+            echo "Packaging ${package}"
+            (
+              cd "$(package_workspace_dir "$package")"
+              cargo package -p "$package" --locked --allow-dirty --target-dir "$GITHUB_WORKSPACE/target/release-validation"
+            )
+          done
+          find target/release-validation/package -maxdepth 1 -type f -name '*.crate' -print0 |
+            sort -z |
+            xargs -0 -I{} cp {} release/validation/crates/
+          (cd release/validation/crates && for asset in *.crate; do sha256sum "$asset" > "$asset.sha256"; done)
+          test "$(find release/validation/crates -name '*.crate' | wc -l | tr -d ' ')" -eq "${#packages[@]}"
+
+      - name: Upload Rust crate assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.context.outputs.release_tag }}
+          REPLACE_ASSETS: ${{ inputs.replace_assets }}
+        run: |
+          set -euo pipefail
+          args=(--repo "$GITHUB_REPOSITORY")
+          [[ "$REPLACE_ASSETS" == "true" ]] && args+=(--clobber)
+          find release/validation/crates -type f -print0 |
+            sort -z |
+            xargs -0 -r gh release upload "$TAG" "${args[@]}"
+
+  npm-package-assets:
+    name: Package npm assets
+    needs:
+      - context
+      - prepare-validation-source
+      - create-validation-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.context.outputs.release_tag }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          scope: "@actrium"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+
+      - name: Package web and TypeScript npm artifacts
+        run: |
+          set -euo pipefail
+          dist="$GITHUB_WORKSPACE/release/validation/npm"
+          mkdir -p "$dist"
+
+          (
+            cd bindings/web
+            PUPPETEER_SKIP_DOWNLOAD=true \
+            PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+            pnpm install --frozen-lockfile
+            pnpm run build:packages
+            for pkg in packages/actr-dom packages/web-sdk packages/web-react; do
+              (cd "$pkg" && npm pack --pack-destination "$dist")
+            done
+          )
+
+          (
+            cd bindings/typescript/actr-workload
+            npm ci
+            npm run build
+            npm pack --pack-destination "$dist"
+          )
+
+          (
+            cd bindings/typescript
+            npm install
+            npm run compile:ts
+            npm pack --pack-destination "$dist" --ignore-scripts
+          )
+
+          (cd "$dist" && for asset in *.tgz; do sha256sum "$asset" > "$asset.sha256"; done)
+
+      - name: Upload npm assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.context.outputs.release_tag }}
+          REPLACE_ASSETS: ${{ inputs.replace_assets }}
+        run: |
+          set -euo pipefail
+          args=(--repo "$GITHUB_REPOSITORY")
+          [[ "$REPLACE_ASSETS" == "true" ]] && args+=(--clobber)
+          find release/validation/npm -type f -print0 |
+            sort -z |
+            xargs -0 -r gh release upload "$TAG" "${args[@]}"
+
+  python-package-assets:
+    name: Package Python assets
+    needs:
+      - context
+      - prepare-validation-source
+      - create-validation-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.context.outputs.release_tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build Python distribution
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip build twine
+          rm -rf tools/protoc-gen/python/dist tools/protoc-gen/python/build tools/protoc-gen/python/*.egg-info
+          python -m build tools/protoc-gen/python
+          python -m twine check tools/protoc-gen/python/dist/*
+          mkdir -p release/validation/python
+          cp tools/protoc-gen/python/dist/* release/validation/python/
+          (cd release/validation/python && for asset in *; do sha256sum "$asset" > "$asset.sha256"; done)
+
+      - name: Upload Python assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.context.outputs.release_tag }}
+          REPLACE_ASSETS: ${{ inputs.replace_assets }}
+        run: |
+          set -euo pipefail
+          args=(--repo "$GITHUB_REPOSITORY")
+          [[ "$REPLACE_ASSETS" == "true" ]] && args+=(--clobber)
+          find release/validation/python -type f -print0 |
+            sort -z |
+            xargs -0 -r gh release upload "$TAG" "${args[@]}"
+
+  cli-assets:
+    name: Build actr CLI validation assets
+    needs:
+      - context
+      - prepare-validation-source
+      - create-validation-release
+    uses: ./.github/workflows/_actr-cli-release.yml
+    with:
+      tag: ${{ needs.context.outputs.release_tag }}
+      source_ref: ${{ needs.context.outputs.release_tag }}
+      publish: true
+      replace_assets: ${{ inputs.replace_assets }}
+      allow_validation_tag: true
+      release_version: ${{ needs.context.outputs.pre_release_version }}
+    secrets: inherit
+
+  actrix-assets:
+    name: Build actrix validation assets
+    needs:
+      - context
+      - prepare-validation-source
+      - create-validation-release
+    uses: ./.github/workflows/_actrix-release.yml
+    with:
+      tag: ${{ needs.context.outputs.release_tag }}
+      source_ref: ${{ needs.context.outputs.release_tag }}
+      publish: true
+      replace_assets: ${{ inputs.replace_assets }}
+      allow_validation_tag: true
+      release_version: ${{ needs.context.outputs.pre_release_version }}
+    secrets: inherit
+
+  protoc-plugin-assets:
+    name: Build protoc plugin validation assets
+    needs:
+      - context
+      - prepare-validation-source
+      - create-validation-release
+    uses: ./.github/workflows/_protoc-plugins-release.yml
+    with:
+      tag: ${{ needs.context.outputs.release_tag }}
+      source_ref: ${{ needs.context.outputs.release_tag }}
+      publish: true
+      replace_assets: ${{ inputs.replace_assets }}
+      allow_validation_tag: true
+      release_version: ${{ needs.context.outputs.pre_release_version }}
+    secrets: inherit
+
+  swift-package:
+    name: Build Swift package validation assets
+    needs:
+      - context
+      - prepare-validation-source
+      - create-validation-release
+    runs-on: macos-latest
+    steps:
+      - name: Checkout source commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.context.outputs.release_tag }}
+          path: source
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-apple-darwin
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+          version: ${{ env.PROTOC_VERSION }}
+
+      - name: Cache UniFFI bindgen
+        id: cache-uniffi
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/uniffi-bindgen*
+          key: uniffi-bindgen-0.31.1-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install UniFFI bindgen
+        if: steps.cache-uniffi.outputs.cache-hit != 'true'
+        run: cargo install --locked uniffi --version 0.31.1 --features cli --bin uniffi-bindgen
+
+      - name: Install native dependencies
+        run: brew install opus
+
+      - name: Build and package Swift XCFramework
+        working-directory: source/bindings/swift
+        env:
+          ACTR_BUILD_PROFILE: release
+          ACTR_BINDINGS_PATH: dist/ActrBindings
+          ACTR_BINARY_PATH: dist/ActrFFI.xcframework
+          ACTR_RELEASE_REPOSITORY: ${{ github.repository }}
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        run: |
+          ./build-xcframework.sh
+          ./scripts/package-binary.sh "${{ needs.context.outputs.release_tag }}"
+
+      - name: Upload Swift validation assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.context.outputs.release_tag }}
+          REPLACE_ASSETS: ${{ inputs.replace_assets }}
+        run: |
+          set -euo pipefail
+          args=(--repo "$GITHUB_REPOSITORY")
+          [[ "$REPLACE_ASSETS" == "true" ]] && args+=(--clobber)
+          gh release upload "$TAG" \
+            source/bindings/swift/dist/ActrFFI.xcframework.zip \
+            source/bindings/swift/dist/release.txt \
+            "${args[@]}"
+
+      - name: Probe Swift package-sync publishing
+        id: probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_SYNC_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
+          MODE: ${{ inputs.publish_package_sync }}
+          SYNC_REPO: ${{ needs.context.outputs.swift_sync_repo }}
+        run: |
+          set -euo pipefail
+          publish=false
+          reason=""
+          if [[ "$MODE" == "never" ]]; then
+            reason="disabled"
+          elif ! gh repo view "$SYNC_REPO" >/dev/null 2>&1; then
+            reason="sync_repo_missing"
+          elif [[ -z "$PACKAGE_SYNC_TOKEN" ]]; then
+            reason="package_sync_token_missing"
+          else
+            publish=true
+            reason="enabled"
+          fi
+          if [[ "$MODE" == "require" && "$publish" != "true" ]]; then
+            echo "::error::Swift package-sync publishing required but ${reason}"
+            exit 1
+          fi
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
+          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Swift package-sync repository
+        if: steps.probe.outputs.publish == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ needs.context.outputs.swift_sync_repo }}
+          token: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
+          ref: main
+          path: swift-sync
+          fetch-depth: 0
+
+      - name: Publish Swift package-sync prerelease
+        if: steps.probe.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
+          PRE_VERSION: ${{ needs.context.outputs.pre_release_version }}
+          SYNC_REPO: ${{ needs.context.outputs.swift_sync_repo }}
+          SOURCE_REPO: ${{ needs.context.outputs.repository }}
+          SOURCE_SHA: ${{ needs.prepare-validation-source.outputs.validation_sha }}
+          SOURCE_TAG: ${{ needs.context.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p swift-sync/Sources
+          rsync -a --delete source/bindings/swift/Sources/ swift-sync/Sources/
+          rsync -a --delete source/bindings/swift/dist/ActrBindings/ swift-sync/ActrBindings/
+
+          checksum=$(python3 - <<'PY'
+          from pathlib import Path
+
+          text = Path("source/bindings/swift/dist/release.txt").read_text()
+          for line in text.splitlines():
+              if line.startswith("SHA256 checksum:"):
+                  print(line.split(":", 1)[1].strip())
+                  break
+          else:
+              raise SystemExit("checksum not found")
+          PY
+          )
+
+          python3 - "$checksum" <<'PY'
+          from __future__ import annotations
+
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          checksum = sys.argv[1]
+          version = os.environ["PRE_VERSION"]
+          repo = os.environ["SYNC_REPO"]
+          path = Path("swift-sync/Package.swift")
+          text = path.read_text()
+          text = re.sub(
+              r'let releaseTag = env\["ACTR_BINARY_TAG"\] \?\? "v[^"]+"',
+              f'let releaseTag = env["ACTR_BINARY_TAG"] ?? "v{version}"',
+              text,
+          )
+          text = re.sub(
+              r'let remoteBinaryURL = "https://github\.com/[^"]+/ActrFFI\.xcframework\.zip"',
+              f'let remoteBinaryURL = "https://github.com/{repo}/releases/download/\\(releaseTag)/ActrFFI.xcframework.zip"',
+              text,
+          )
+          text = re.sub(
+              r'let remoteBinaryChecksum = env\["ACTR_BINARY_CHECKSUM"\] \?\? "[^"]+"',
+              f'let remoteBinaryChecksum = env["ACTR_BINARY_CHECKSUM"] ?? "{checksum}"',
+              text,
+          )
+          path.write_text(text)
+          PY
+
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          payload = {
+              "version": os.environ["PRE_VERSION"],
+              "source_repository": f"https://github.com/{os.environ['SOURCE_REPO']}",
+              "source_tag": os.environ["SOURCE_TAG"],
+              "source_sha": os.environ["SOURCE_SHA"],
+              "generated_at": datetime.now(timezone.utc).isoformat(),
+              "prerelease": True,
+          }
+          Path("swift-sync/release-metadata.json").write_text(json.dumps(payload, indent=2) + "\n")
+          PY
+
+          (
+            cd swift-sync
+            ACTR_BINDINGS_PATH=ActrBindings \
+            ACTR_BINARY_PATH="$GITHUB_WORKSPACE/source/bindings/swift/dist/ActrFFI.xcframework" \
+            swift build
+
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Package.swift Sources ActrBindings release-metadata.json
+            git commit -m "chore(release): publish v${PRE_VERSION}" || true
+            git push origin main
+            sync_sha=$(git rev-parse HEAD)
+            remote_tag_sha=$(git ls-remote --tags origin "refs/tags/v${PRE_VERSION}" | awk '{print $1}')
+            if [[ -n "$remote_tag_sha" ]]; then
+              [[ "$remote_tag_sha" == "$sync_sha" ]] || {
+                echo "::error::Tag v${PRE_VERSION} already points to ${remote_tag_sha}, expected ${sync_sha}"
+                exit 1
+              }
+            else
+              git tag "v${PRE_VERSION}" "$sync_sha"
+              git push origin "v${PRE_VERSION}"
+            fi
+          )
+
+          cat > swift-release-notes.md <<EOF
+          Source repository: https://github.com/${SOURCE_REPO}
+          Source tag: ${SOURCE_TAG}
+          Source sha: ${SOURCE_SHA}
+          EOF
+          if gh release view "v${PRE_VERSION}" --repo "$SYNC_REPO" >/dev/null 2>&1; then
+            gh release edit "v${PRE_VERSION}" \
+              --repo "$SYNC_REPO" \
+              --title "v${PRE_VERSION}" \
+              --notes-file swift-release-notes.md \
+              --prerelease
+            gh release upload "v${PRE_VERSION}" \
+              "source/bindings/swift/dist/ActrFFI.xcframework.zip" \
+              --repo "$SYNC_REPO" \
+              --clobber
+          else
+            gh release create "v${PRE_VERSION}" \
+              "source/bindings/swift/dist/ActrFFI.xcframework.zip" \
+              --repo "$SYNC_REPO" \
+              --title "v${PRE_VERSION}" \
+              --notes-file swift-release-notes.md \
+              --prerelease
+          fi
+
+  kotlin-package:
+    name: Build Kotlin package validation assets
+    needs:
+      - context
+      - prepare-validation-source
+      - create-validation-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.context.outputs.release_tag }}
+          path: source
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;25.2.9519653"
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+          version: ${{ env.PROTOC_VERSION }}
+
+      - name: Cache UniFFI bindgen
+        id: cache-uniffi
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/uniffi-bindgen
+          key: uniffi-bindgen-0.31.1-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install UniFFI bindgen
+        if: steps.cache-uniffi.outputs.cache-hit != 'true'
+        run: cargo install --locked uniffi --version 0.31.1 --features cli --bin uniffi-bindgen
+
+      - name: Build Kotlin Android package
+        working-directory: source/bindings/kotlin
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}/ndk/25.2.9519653
+        run: |
+          ./build-android.sh
+          ./gradlew :actr-kotlin:assembleRelease \
+            --no-daemon \
+            -PactrGroup=io.actrium \
+            -PactrVersion=${{ needs.context.outputs.pre_release_version }}
+          ACTR_RELEASE_REPOSITORY="$GITHUB_REPOSITORY" \
+            ./scripts/package-binary.sh "${{ needs.context.outputs.release_tag }}"
+          mkdir -p "$GITHUB_WORKSPACE/release/validation/kotlin"
+          cp actr-kotlin/build/outputs/aar/actr-kotlin-release.aar "$GITHUB_WORKSPACE/release/validation/kotlin/"
+          cp dist/actr-kotlin-native.zip "$GITHUB_WORKSPACE/release/validation/kotlin/"
+          cp dist/release.txt "$GITHUB_WORKSPACE/release/validation/kotlin/kotlin-release.txt"
+          (
+            cd "$GITHUB_WORKSPACE/release/validation/kotlin"
+            for asset in *.aar *.zip; do sha256sum "$asset" > "$asset.sha256"; done
+          )
+
+      - name: Upload Kotlin validation assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.context.outputs.release_tag }}
+          REPLACE_ASSETS: ${{ inputs.replace_assets }}
+        run: |
+          set -euo pipefail
+          args=(--repo "$GITHUB_REPOSITORY")
+          [[ "$REPLACE_ASSETS" == "true" ]] && args+=(--clobber)
+          find release/validation/kotlin -type f -print0 |
+            sort -z |
+            xargs -0 -r gh release upload "$TAG" "${args[@]}"
+
+      - name: Probe Kotlin package-sync publishing
+        id: probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_SYNC_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
+          MODE: ${{ inputs.publish_package_sync }}
+          SYNC_REPO: ${{ needs.context.outputs.kotlin_sync_repo }}
+        run: |
+          set -euo pipefail
+          publish=false
+          reason=""
+          if [[ "$MODE" == "never" ]]; then
+            reason="disabled"
+          elif ! gh repo view "$SYNC_REPO" >/dev/null 2>&1; then
+            reason="sync_repo_missing"
+          elif [[ -z "$PACKAGE_SYNC_TOKEN" ]]; then
+            reason="package_sync_token_missing"
+          else
+            publish=true
+            reason="enabled"
+          fi
+          if [[ "$MODE" == "require" && "$publish" != "true" ]]; then
+            echo "::error::Kotlin package-sync publishing required but ${reason}"
+            exit 1
+          fi
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
+          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Kotlin package-sync repository
+        if: steps.probe.outputs.publish == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ needs.context.outputs.kotlin_sync_repo }}
+          token: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
+          ref: main
+          path: kotlin-sync
+          fetch-depth: 0
+
+      - name: Publish Kotlin package-sync prerelease
+        if: steps.probe.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
+          PRE_VERSION: ${{ needs.context.outputs.pre_release_version }}
+          SYNC_REPO: ${{ needs.context.outputs.kotlin_sync_repo }}
+          SOURCE_REPO: ${{ needs.context.outputs.repository }}
+          SOURCE_SHA: ${{ needs.prepare-validation-source.outputs.validation_sha }}
+          SOURCE_TAG: ${{ needs.context.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          (
+            cd source/bindings/kotlin
+            ACTR_RELEASE_REPOSITORY="$SYNC_REPO" ./scripts/package-binary.sh "v${PRE_VERSION}"
+            ./gradlew :actr-kotlin:publish \
+              --no-daemon \
+              -PactrGroup=io.actrium \
+              -PactrVersion="${PRE_VERSION}" \
+              -PactrPublishUrl="https://maven.pkg.github.com/${SYNC_REPO}"
+          )
+
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          payload = {
+              "version": os.environ["PRE_VERSION"],
+              "source_repository": f"https://github.com/{os.environ['SOURCE_REPO']}",
+              "source_tag": os.environ["SOURCE_TAG"],
+              "source_sha": os.environ["SOURCE_SHA"],
+              "coordinate": f"io.actrium:actr:{os.environ['PRE_VERSION']}",
+              "android_abis": ["arm64-v8a", "x86_64"],
+              "generated_at": datetime.now(timezone.utc).isoformat(),
+              "prerelease": True,
+          }
+          Path("kotlin-sync/release-metadata.json").write_text(json.dumps(payload, indent=2) + "\n")
+          PY
+
+          (
+            cd kotlin-sync
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add release-metadata.json
+            git commit -m "chore(release): publish v${PRE_VERSION}" || true
+            git push origin main
+            sync_sha=$(git rev-parse HEAD)
+            remote_tag_sha=$(git ls-remote --tags origin "refs/tags/v${PRE_VERSION}" | awk '{print $1}')
+            if [[ -n "$remote_tag_sha" ]]; then
+              [[ "$remote_tag_sha" == "$sync_sha" ]] || {
+                echo "::error::Tag v${PRE_VERSION} already points to ${remote_tag_sha}, expected ${sync_sha}"
+                exit 1
+              }
+            else
+              git tag "v${PRE_VERSION}" "$sync_sha"
+              git push origin "v${PRE_VERSION}"
+            fi
+          )
+
+          if gh release view "v${PRE_VERSION}" --repo "$SYNC_REPO" >/dev/null 2>&1; then
+            gh release edit "v${PRE_VERSION}" \
+              --repo "$SYNC_REPO" \
+              --title "v${PRE_VERSION}" \
+              --notes-file kotlin-sync/release-metadata.json \
+              --prerelease
+            gh release upload "v${PRE_VERSION}" \
+              source/bindings/kotlin/dist/actr-kotlin-native.zip \
+              source/bindings/kotlin/actr-kotlin/build/outputs/aar/actr-kotlin-release.aar \
+              --repo "$SYNC_REPO" \
+              --clobber
+          else
+            gh release create "v${PRE_VERSION}" \
+              source/bindings/kotlin/dist/actr-kotlin-native.zip \
+              source/bindings/kotlin/actr-kotlin/build/outputs/aar/actr-kotlin-release.aar \
+              --repo "$SYNC_REPO" \
+              --title "v${PRE_VERSION}" \
+              --notes-file kotlin-sync/release-metadata.json \
+              --prerelease
+          fi
