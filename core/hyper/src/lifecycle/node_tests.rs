@@ -63,17 +63,17 @@ impl LinkedWorkloadHandle for DummyLinkedHandle {}
 
 async fn harness() -> (
     crate::context::RuntimeContext,
-    Arc<tokio::sync::Mutex<Workload>>,
+    Arc<crate::executor::ActorHandle>,
 ) {
     let ctx =
         runtime_context_with_host_transport(ActrId::default(), Arc::new(HostTransport::new()));
     let wl = Workload::Linked(Arc::new(DummyLinkedHandle) as Arc<dyn LinkedWorkloadHandle>);
-    (ctx, Arc::new(tokio::sync::Mutex::new(wl)))
+    (ctx, Arc::new(crate::executor::spawn_runner(wl)))
 }
 
 async fn actorless_harness() -> (
     crate::context::RuntimeContext,
-    Arc<tokio::sync::Mutex<Workload>>,
+    Arc<crate::executor::ActorHandle>,
 ) {
     use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
     use crate::outbound::{Gate, HostGate};
@@ -104,7 +104,7 @@ async fn actorless_harness() -> (
         0,
     );
     let wl = Workload::Linked(Arc::new(DummyLinkedHandle) as Arc<dyn LinkedWorkloadHandle>);
-    (ctx, Arc::new(tokio::sync::Mutex::new(wl)))
+    (ctx, Arc::new(crate::executor::spawn_runner(wl)))
 }
 
 fn expect_error_code(res: HostOperationResult, expected: i32) {

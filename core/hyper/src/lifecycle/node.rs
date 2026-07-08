@@ -146,19 +146,18 @@ pub(crate) struct Inner {
     pub(crate) discovered_ws_addresses:
         Arc<tokio::sync::RwLock<std::collections::HashMap<ActrId, String>>>,
 
-    /// Runtime workload (WASM, dynclib, etc.)
+    /// Handle to the per-actor serial command runner.
     ///
-    /// `handle_incoming` dispatches through this workload.
-    ///
-    /// The `Mutex` serializes dispatch into a single guest actor instance:
-    /// `WasmWorkload::handle` and `DynClibWorkload::handle` both take
-    /// `&mut self` because the underlying Wasmtime `Store` / native guest
-    /// ABI is single-threaded, so concurrent dispatch through the same
-    /// instance would be unsound. Lifecycle hooks also take this lock because
-    /// package-backed WASM / dynclib workloads expose them on the same guest
-    /// instance; transport and other observation hooks reach linked workloads
-    /// through `hook_observer` without holding this lock.
-    pub(crate) workload_dispatch: Arc<Mutex<crate::workload::Workload>>,
+    /// `handle_incoming` dispatches through this handle. The runner owns the
+    /// `Workload` (WASM `Store` / native guest ABI) and processes commands one
+    /// at a time, run-to-completion, so the single-threaded guest instance is
+    /// never entered concurrently — the same invariant the old node-global
+    /// `Arc<Mutex<Workload>>` provided, now enforced by a single-consumer
+    /// command channel instead of a shared lock. Dispatch, data-stream, hook,
+    /// and lifecycle commands all travel the same channel (= the old single
+    /// lock); transport and other observation hooks reach linked workloads
+    /// through `hook_observer` without touching this handle.
+    pub(crate) workload_dispatch: Arc<crate::executor::ActorHandle>,
 
     /// Optional shell-side observer that receives linked-workload transport /
     /// credential / mailbox hook invocations.
@@ -250,7 +249,7 @@ impl CredentialState {
 /// Called by the workload dispatch path in `handle_incoming`.
 async fn host_operation_handler(
     ctx: crate::context::RuntimeContext,
-    workload_dispatch: Arc<Mutex<crate::workload::Workload>>,
+    workload_dispatch: Arc<crate::executor::ActorHandle>,
     pending: crate::workload::HostOperation,
 ) -> crate::workload::HostOperationResult {
     use crate::workload::{HostOperation, HostOperationResult, decode_dest};
@@ -371,8 +370,11 @@ async fn host_operation_handler(
                                     stream_callback_host_operation_handler(ctx, pending).await
                                 })
                             });
-                        let mut guard = workload_dispatch.lock().await;
-                        guard
+                        // Self-lock elimination: this callback fires later (on
+                        // chunk arrival), never during the dispatch that
+                        // registered it, so appending a DataStream command to
+                        // the runner's channel and awaiting it cannot deadlock.
+                        workload_dispatch
                             .dispatch_data_stream(chunk, sender, invocation, &call_executor)
                             .await
                     })
@@ -443,7 +445,7 @@ fn lifecycle_invocation(
 
 pub(crate) fn lifecycle_host_abi(
     ctx: crate::context::RuntimeContext,
-    workload_dispatch: Arc<Mutex<crate::workload::Workload>>,
+    workload_dispatch: Arc<crate::executor::ActorHandle>,
 ) -> crate::workload::HostAbiFn {
     std::sync::Arc::new(move |pending| {
         let ctx = ctx.clone();
@@ -816,8 +818,8 @@ impl Inner {
             Box::pin(async move { host_operation_handler(ctx, workload_dispatch, pending).await })
         });
 
-        let mut guard = self.workload_dispatch.lock().await;
-        let result = guard
+        let result = self
+            .workload_dispatch
             .dispatch_envelope(envelope.clone(), ctx.clone(), dispatch_ctx, &call_executor)
             .await;
 
@@ -836,7 +838,11 @@ impl Inner {
             ),
         }
 
-        // 3. Store completed result in dedup cache before returning
+        // 3. Store completed result in dedup cache before returning.
+        // This runs at the dispatch completion point (the runner's reply has
+        // resolved), so the write-back timing is unchanged from the old inline
+        // lock model. B2 will hang the "deliver, then complete on callback"
+        // logic here once dispatch returns before the guest finishes.
         self.dedup_state
             .lock()
             .await
@@ -969,7 +975,7 @@ impl Inner {
             discovered_ws_addresses: Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
-            workload_dispatch: Arc::new(Mutex::new(workload)),
+            workload_dispatch: Arc::new(crate::executor::spawn_runner(workload)),
             hook_observer: None,
             mailbox_backpressure_threshold,
             credential_expiry_warning,
@@ -1510,10 +1516,10 @@ impl Inner {
                 let invocation = lifecycle_invocation(&actor_id, "lifecycle:on_start");
                 let call_executor =
                     lifecycle_host_abi(startup_ctx.clone(), self.workload_dispatch.clone());
-                let mut workload = self.workload_dispatch.lock().await;
                 crate::lifecycle::hooks::call_lifecycle_hook(
                     "on_start",
-                    workload.on_start(startup_ctx, invocation, &call_executor),
+                    self.workload_dispatch
+                        .on_start(startup_ctx, invocation, &call_executor),
                 )
                 .await?;
             }
@@ -1821,10 +1827,10 @@ impl Inner {
                 let invocation = lifecycle_invocation(&actor_id, "lifecycle:on_stop");
                 let call_executor =
                     lifecycle_host_abi(stop_ctx.clone(), node.workload_dispatch.clone());
-                let mut workload = node.workload_dispatch.lock().await;
                 if let Err(e) = crate::lifecycle::hooks::call_lifecycle_hook(
                     "on_stop",
-                    workload.on_stop(stop_ctx, invocation, &call_executor),
+                    node.workload_dispatch
+                        .on_stop(stop_ctx, invocation, &call_executor),
                 )
                 .await
                 {
@@ -2563,10 +2569,11 @@ impl Inner {
             let invocation = lifecycle_invocation(&actor_id, "lifecycle:on_ready");
             let call_executor =
                 lifecycle_host_abi(ready_ctx.clone(), node_ref.workload_dispatch.clone());
-            let mut workload = node_ref.workload_dispatch.lock().await;
             if let Err(e) = crate::lifecycle::hooks::call_lifecycle_hook(
                 "on_ready",
-                workload.on_ready(ready_ctx, invocation, &call_executor),
+                node_ref
+                    .workload_dispatch
+                    .on_ready(ready_ctx, invocation, &call_executor),
             )
             .await
             {

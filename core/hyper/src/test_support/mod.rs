@@ -216,7 +216,7 @@ pub struct TestPackageHookObserver {
 #[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
 impl TestPackageHookObserver {
     fn from_workload(workload: crate::workload::Workload) -> Self {
-        let workload_dispatch = Arc::new(tokio::sync::Mutex::new(workload));
+        let workload_dispatch = Arc::new(crate::executor::spawn_runner(workload));
         Self {
             observer: crate::workload::PackageHookObserver { workload_dispatch },
         }
@@ -596,4 +596,73 @@ pub fn instantiate_dynclib_workload(
     Ok(TestDynclibWorkload {
         inner: crate::dynclib::DynClibWorkload::new(host, instance),
     })
+}
+
+/// Test-only driver that exercises a workload **through the per-actor serial
+/// command runner** (the production dispatch path), rather than calling the
+/// engine workload's `&mut self` methods directly. Lets integration tests
+/// assert that dispatch / lifecycle / trap-recovery behave identically once
+/// funneled through the command channel.
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+pub struct TestWorkloadRunner {
+    handle: crate::executor::ActorHandle,
+}
+
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+impl TestWorkloadRunner {
+    /// Spawn a serial runner owning `workload`. Crate-internal because
+    /// `Workload` is a `pub(crate)` type; integration tests obtain a runner via
+    /// [`TestWasmWorkload::into_workload_runner`].
+    pub(crate) fn spawn(workload: crate::workload::Workload) -> Self {
+        Self {
+            handle: crate::executor::spawn_runner(workload),
+        }
+    }
+
+    fn scratch_ctx() -> crate::context::RuntimeContext {
+        runtime_context_with_host_transport(
+            ActrId::default(),
+            Arc::new(crate::transport::HostTransport::new()),
+        )
+    }
+
+    /// Dispatch one encoded RPC envelope through the runner.
+    pub async fn dispatch(
+        &self,
+        envelope_bytes: &[u8],
+        invocation: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> actr_protocol::ActorResult<actr_framework::Bytes> {
+        use actr_protocol::prost::Message as _;
+        let envelope = actr_protocol::RpcEnvelope::decode(envelope_bytes)
+            .map_err(|e| actr_protocol::ActrError::DecodeFailure(e.to_string()))?;
+        self.handle
+            .dispatch_envelope(envelope, Self::scratch_ctx(), invocation, host_abi)
+            .await
+    }
+
+    /// Drive the `on_start` lifecycle hook through the runner.
+    pub async fn on_start(
+        &self,
+        invocation: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> actr_protocol::ActorResult<()> {
+        self.handle
+            .on_start(Self::scratch_ctx(), invocation, host_abi)
+            .await
+    }
+
+    /// Deterministically stop the runner and wait for its task to finish.
+    pub async fn shutdown(&self) {
+        self.handle.shutdown().await;
+    }
+}
+
+#[cfg(feature = "wasm-engine")]
+impl TestWasmWorkload {
+    /// Move this workload behind a serial command runner for tests that drive
+    /// the production dispatch path (see [`TestWorkloadRunner`]).
+    pub fn into_workload_runner(self) -> TestWorkloadRunner {
+        TestWorkloadRunner::spawn(crate::workload::Workload::Wasm(self.inner))
+    }
 }

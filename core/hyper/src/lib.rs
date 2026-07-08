@@ -117,6 +117,11 @@ pub mod context;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod workload;
 
+// Per-actor serial command runner: replaces the node-global
+// `Arc<Mutex<Workload>>` with a command channel feeding one owning task.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod executor;
+
 // ServiceSpec derivation from a verified package (native-only; pulls
 // actr-service-compat/proto-fingerprint).
 #[cfg(not(target_arch = "wasm32"))]

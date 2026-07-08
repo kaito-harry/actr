@@ -399,7 +399,7 @@ where
     }
 }
 
-fn extract_panic_info(payload: Box<dyn std::any::Any + Send>) -> String {
+pub(crate) fn extract_panic_info(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_string()
     } else if let Some(s) = payload.downcast_ref::<String>() {

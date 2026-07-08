@@ -473,3 +473,165 @@ async fn component_model_call_on_start_does_not_trap() {
         .expect("dispatch after on_start should succeed");
     assert_eq!(reply, b"after-on-start");
 }
+
+// ─── M2-B1 — dispatch through the per-actor serial command runner ────────────
+//
+// These drive the *same* wasm fixture through `TestWorkloadRunner`, i.e. the
+// production `spawn_runner` command-channel path that replaced the node-global
+// `Arc<Mutex<Workload>>`. They prove behavioural equivalence at the runner
+// seam: B0's trap→rebuild still fires on the next command, and concurrently
+// submitted commands run strictly one at a time on the single guest instance.
+
+/// A guest trap poisons the store; the runner's *next* command must trigger
+/// B0's lazy rebuild and recover — proving the runner reuses the underlying
+/// `WasmWorkload` (with its `ensure_instance` / `trap_poison` logic) unchanged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runner_trap_then_next_cmd_rebuilds() {
+    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
+    let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let runner = wl.into_workload_runner();
+
+    // Command 1: trap. The bridge answers the pre-panic call_raw, then the
+    // guest panics; the trap surfaces through the runner as an Internal error.
+    let (bridge, counter) = doubling_bridge(None);
+    let boom = make_envelope("test/boom-after-await", 1i32.to_le_bytes().to_vec());
+    let err = runner
+        .dispatch(&boom, test_ctx(), &bridge)
+        .await
+        .expect_err("boom command must fail through the runner");
+    let msg = err.to_string().to_lowercase();
+    assert!(
+        msg.contains("trap") || msg.contains("instance"),
+        "trap must surface through the runner, got: {msg}"
+    );
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "bridge must have serviced the pre-panic call_raw once"
+    );
+
+    // Command 2: the next command on the same runner must recover on a freshly
+    // rebuilt instance. A poisoned (non-rebuilt) store would fail here.
+    let payload = b"recovered-via-runner".to_vec();
+    let echo = make_envelope("test/echo", payload.clone());
+    let reply = runner
+        .dispatch(&echo, test_ctx(), &unreachable_bridge())
+        .await
+        .expect("echo command after trap must succeed on the rebuilt instance");
+    assert_eq!(reply.as_ref(), payload.as_slice());
+
+    runner.shutdown().await;
+}
+
+/// Two commands submitted concurrently to one runner must execute serially on
+/// the single guest instance: while command A is suspended inside a host
+/// import, command B must not have entered the guest (its bridge is untouched).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn runner_concurrent_dispatch_stays_serial_with_real_guest() {
+    use std::sync::atomic::AtomicU64;
+    use tokio::sync::{Semaphore, mpsc};
+
+    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
+    let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let runner = Arc::new(wl.into_workload_runner());
+
+    // Gating bridge: the FIRST call signals entry and blocks on a semaphore;
+    // later calls pass straight through. Shared by both dispatches, so it also
+    // counts total guest→host crossings.
+    let calls = Arc::new(AtomicU64::new(0));
+    let (entered_tx, mut entered_rx) = mpsc::unbounded_channel();
+    let release = Arc::new(Semaphore::new(0));
+    let bridge: HostAbiFn = {
+        let calls = calls.clone();
+        let release = release.clone();
+        Arc::new(move |op| {
+            let calls = calls.clone();
+            let release = release.clone();
+            let entered_tx = entered_tx.clone();
+            Box::pin(async move {
+                let n = calls.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    let _ = entered_tx.send(());
+                    release.acquire().await.expect("open").forget();
+                }
+                match op {
+                    HostOperation::CallRaw(req) if req.route_key == "test/double_impl" => {
+                        let x = i32::from_le_bytes([
+                            req.payload[0],
+                            req.payload[1],
+                            req.payload[2],
+                            req.payload[3],
+                        ]);
+                        HostOperationResult::Bytes((x * 2).to_le_bytes().to_vec())
+                    }
+                    _ => HostOperationResult::Error(-1),
+                }
+            })
+        })
+    };
+
+    // Command A: enters the guest, calls the bridge, and suspends there.
+    let a = {
+        let runner = runner.clone();
+        let bridge = bridge.clone();
+        tokio::spawn(async move {
+            let req = make_envelope("test/double", 7i32.to_le_bytes().to_vec());
+            runner.dispatch(&req, test_ctx(), &bridge).await
+        })
+    };
+
+    // Wait until A is parked inside the host import.
+    tokio::time::timeout(Duration::from_secs(5), entered_rx.recv())
+        .await
+        .expect("watchdog: command A did not reach the host bridge")
+        .expect("entered channel open");
+
+    // Command B is now submitted; the runner is busy with A, so B queues.
+    let b = {
+        let runner = runner.clone();
+        let bridge = bridge.clone();
+        tokio::spawn(async move {
+            let req = make_envelope("test/double", 11i32.to_le_bytes().to_vec());
+            runner.dispatch(&req, test_ctx(), &bridge).await
+        })
+    };
+
+    // Serial guarantee: B cannot have entered the guest (let alone the bridge)
+    // while A holds the runner. A concurrent runner would let B reach the
+    // bridge and bump the counter past 1.
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "command B must not enter the guest while A occupies the runner"
+    );
+
+    // Release A; both commands now complete in order.
+    release.add_permits(1);
+
+    let reply_a = tokio::time::timeout(Duration::from_secs(5), a)
+        .await
+        .expect("watchdog: A")
+        .expect("A task")
+        .expect("A dispatch ok");
+    let reply_b = tokio::time::timeout(Duration::from_secs(5), b)
+        .await
+        .expect("watchdog: B")
+        .expect("B task")
+        .expect("B dispatch ok");
+
+    assert_eq!(
+        i32::from_le_bytes([reply_a[0], reply_a[1], reply_a[2], reply_a[3]]),
+        14
+    );
+    assert_eq!(
+        i32::from_le_bytes([reply_b[0], reply_b[1], reply_b[2], reply_b[3]]),
+        22
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "each command crosses to the host bridge exactly once"
+    );
+
+    runner.shutdown().await;
+}

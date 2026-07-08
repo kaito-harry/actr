@@ -366,7 +366,7 @@ impl crate::lifecycle::hooks::WorkloadHookObserver for LinkedHandleObserver {
 /// forward observation events into Wasm / DynClib guests through the same
 /// workload ABI used by lifecycle and dispatch entrypoints.
 pub(crate) struct PackageHookObserver {
-    pub(crate) workload_dispatch: Arc<tokio::sync::Mutex<Workload>>,
+    pub(crate) workload_dispatch: Arc<crate::executor::ActorHandle>,
 }
 
 impl PackageHookObserver {
@@ -385,8 +385,10 @@ impl PackageHookObserver {
         };
         let call_executor =
             crate::lifecycle::node::lifecycle_host_abi(ctx.clone(), self.workload_dispatch.clone());
-        let mut workload = self.workload_dispatch.lock().await;
-        if let Err(e) = workload
+        // Serialized behind the runner's command channel, still awaited to
+        // completion — equivalent to the old "hold the lock, await the hook".
+        if let Err(e) = self
+            .workload_dispatch
             .dispatch_hook_event(event, invocation, &call_executor)
             .await
         {
