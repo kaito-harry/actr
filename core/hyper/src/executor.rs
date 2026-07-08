@@ -354,6 +354,9 @@ pub(crate) fn spawn_runner(workload: Workload) -> ActorHandle {
 ///
 /// * `Workload::Linked` — `dispatch` takes `&self`, so distinct-key dispatches
 ///   run concurrently in a `FuturesUnordered` (B2 native concurrency).
+///   `dispatch_timeout` arms a per-dispatch deadline on each in-flight native
+///   future (dropping it on expiry is a clean cancel), the native mirror of the
+///   WASM region deadline.
 /// * `Workload::Wasm(V2)` — the 0.2.0 async world drives a **resident**
 ///   `Store::run_concurrent` region ([`crate::wasm::WasmWorkloadV2::run_interleaved`]),
 ///   interleaving distinct-key dispatches at their host-import `.await` points
@@ -363,8 +366,10 @@ pub(crate) fn spawn_runner(workload: Workload) -> ActorHandle {
 /// Every other packaged workload (`Wasm(V1)` 0.1.0 sync world, `DynClib`) falls
 /// back to the serial `run_loop` even when `Interleaved` is requested, so the
 /// single-`Store` / `&mut` guest-ABI contract is never violated — the conflict
-/// key is a no-op routing hint there. This keeps `gate off` a bit-for-bit B1
-/// degradation.
+/// key is a no-op routing hint there. Combined with the node's strategy-A gate
+/// (`Interleaved` is only ever requested for a *keyed* actor), this keeps every
+/// keyless or serial-only workload a bit-for-bit B1 degradation even though the
+/// dispatch gate now defaults on.
 pub(crate) fn spawn_runner_with_mode(
     workload: Workload,
     mode: RunnerMode,
@@ -373,7 +378,7 @@ pub(crate) fn spawn_runner_with_mode(
     let (tx, rx) = mpsc::channel(RUNNER_QUEUE_CAPACITY);
     let join = match (mode, workload) {
         (RunnerMode::Interleaved, Workload::Linked(handle)) => {
-            tokio::spawn(run_loop_interleaved(handle, rx))
+            tokio::spawn(run_loop_interleaved(handle, rx, dispatch_timeout))
         }
         #[cfg(feature = "wasm-engine")]
         (RunnerMode::Interleaved, Workload::Wasm(kernel)) if kernel.is_v2() => match kernel {
@@ -482,12 +487,24 @@ async fn run_loop(mut workload: Workload, mut rx: mpsc::Receiver<ActorCmd>) {
 /// in-flight dispatches, runs the barrier command alone, then resumes. This
 /// keeps lifecycle ordering and the single-runner guarantee intact.
 ///
+/// `dispatch_timeout`, when set, arms a per-dispatch deadline on every in-flight
+/// dispatch — the native mirror of the WASM `run_interleaved` deadline. On
+/// expiry the in-flight native `dispatch` future is **dropped** (a clean cancel:
+/// unlike a poisoned wasm linear memory, a native `&self` future leaves no
+/// shared state mid-mutation, so dropping it is a complete cancel), the caller's
+/// reply resolves [`ActrError::TimedOut`], and the freed conflict key lets the
+/// next same-key dispatch start. Because the reply is sent from *inside* the
+/// in-flight future — only after `tokio::time::timeout` has dropped the guest
+/// future — the upstream scheduler frees the key strictly after the timed-out
+/// dispatch has truly left, keeping same-key FIFO airtight across a timeout.
+///
 /// The shape (`select!` over `cmd_rx` + a `FuturesUnordered`) deliberately
 /// mirrors the M5 `store.run_concurrent` evolution path documented above so M5
 /// swaps only the execution kernel, not this skeleton.
 async fn run_loop_interleaved(
     handle: Arc<dyn LinkedWorkloadHandle>,
     mut rx: mpsc::Receiver<ActorCmd>,
+    dispatch_timeout: Option<std::time::Duration>,
 ) {
     let mut inflight: FuturesUnordered<Pin<Box<dyn std::future::Future<Output = ()> + Send>>> =
         FuturesUnordered::new();
@@ -501,7 +518,21 @@ async fn run_loop_interleaved(
                         let handle = handle.clone();
                         inflight.push(Box::pin(async move {
                             let fut = handle.dispatch(envelope, Arc::new(ctx));
-                            let result = guarded("dispatch", fut).instrument(span).await;
+                            // Instrument the guest call so it stays a child of the
+                            // caller's span, then (optionally) arm the deadline
+                            // around the instrumented future.
+                            let guarded_fut = guarded("dispatch", fut).instrument(span);
+                            let result = match dispatch_timeout {
+                                // Layer 2 (real cancel): on expiry `timeout`
+                                // drops the in-flight native dispatch future — a
+                                // clean cancel — and the reply resolves TimedOut,
+                                // freeing the key for the next same-key dispatch.
+                                Some(d) => match tokio::time::timeout(d, guarded_fut).await {
+                                    Ok(result) => result,
+                                    Err(_elapsed) => Err(ActrError::TimedOut),
+                                },
+                                None => guarded_fut.await,
+                            };
                             let _ = reply.send(result);
                         }));
                     }
