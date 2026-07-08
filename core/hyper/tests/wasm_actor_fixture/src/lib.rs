@@ -21,7 +21,7 @@
 //! All other routes surface `ActrError::UnknownRoute(route_key)`,
 //! exercising guest→host structured error propagation.
 
-use actr_framework::{entry, Context, MessageDispatcher, Workload};
+use actr_framework::{Context, MessageDispatcher, Workload, entry};
 use actr_protocol::{ActorResult, ActrError, RpcEnvelope};
 use async_trait::async_trait;
 use bytes::Bytes;
