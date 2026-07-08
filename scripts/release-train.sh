@@ -410,7 +410,7 @@ parse_args() {
 
 validate_version() {
   if [[ "$PRE_RELEASE" == true ]]; then
-    [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[a-zA-Z0-9.]+$ ]] || fail "Pre-release version must follow semver X.Y.Z-<id> format"
+    [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*$ ]] || fail "Pre-release version must follow semver X.Y.Z-<id> format"
   else
     [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Version must be a stable semver in X.Y.Z format"
   fi

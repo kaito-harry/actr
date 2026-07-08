@@ -66,7 +66,30 @@ repository_name() {
 }
 
 release_url() {
-  printf 'https://github.com/%s/releases/tag/v%s' "$(repository_name)" "$VERSION"
+  printf 'https://github.com/%s/releases/tag/%s' "$(repository_name)" "$(release_tag)"
+}
+
+release_tag() {
+  if [[ -n "${TAG:-}" ]]; then
+    printf '%s' "$TAG"
+  elif [[ -n "${ACTR_RELEASE_TAG:-}" ]]; then
+    printf '%s' "$ACTR_RELEASE_TAG"
+  else
+    printf 'v%s' "$VERSION"
+  fi
+}
+
+version_from_release_tag() {
+  local tag=$1
+  if [[ "$tag" =~ ^validation-v(.+)$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return
+  fi
+  if [[ "$tag" =~ ^v(.+)$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return
+  fi
+  fail "Unsupported release tag: $tag"
 }
 
 use_zigbuild() {
@@ -217,7 +240,7 @@ command_publish() {
   done
   [[ -n "$TAG" && -n "$ASSETS_DIR" && -n "$STATE_FILE" ]] ||
     fail "publish requires --tag, --assets, and --state-file"
-  VERSION=${TAG#v}
+  VERSION=$(version_from_release_tag "$TAG")
   local url
   url=$(release_url)
   if [[ "$DRY_RUN" == true ]]; then
