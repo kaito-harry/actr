@@ -70,11 +70,13 @@ use actr_framework::guest::dynclib_abi::{
 
 /// Build a wasmtime [`Config`] enabling the Component Model async path.
 ///
-/// `wasm_component_model_async(true)` is load-bearing even when the WIT
-/// functions are declared sync — wit-bindgen 0.57 with `async: true` on
-/// the guest emits `context.get` (async-ABI primitive), and the host
-/// engine must recognise that opcode to validate the component. See the
-/// Phase 0.5 spike REPORT for details.
+/// Guests are lifted synchronously since M3 (wit-bindgen 0.58 without
+/// `async: true`), so `wasm_component_model_async(true)` is no longer needed
+/// to validate guest custom sections. On wasmtime 46 the component-model
+/// async validation is on by default anyway; we still set it explicitly to
+/// pin behaviour against upstream default drift and as forward wiring for the
+/// M4 async world. Host-side asynchrony (fiber suspension across host calls)
+/// comes from the `async` Cargo feature + `call_async`, independent of this.
 fn build_engine() -> WasmResult<Engine> {
     let mut config = Config::new();
     // `async_support(true)` was required before wasmtime 43; since then
@@ -585,13 +587,28 @@ impl WasmHost {
     /// module saved in a pre-Phase-1 `.actr` package) — callers get a
     /// clear `LoadFailed` in that case and should surface the migration
     /// guidance up to the `.actr` loader.
+    ///
+    /// A second class of legacy input is a package built by an old SDK
+    /// (wit-bindgen <= 0.57 with the async-lift ABI). wasmtime 46 rejects
+    /// the `async` canonical option on a synchronous WIT function type, so
+    /// those binaries fail here; we map that to an actionable rebuild hint.
     pub fn compile(wasm_bytes: &[u8]) -> WasmResult<Self> {
         let engine = build_engine()?;
         let component = Component::from_binary(&engine, wasm_bytes).map_err(|e| {
+            let raw = format!("{e:#}");
+            if raw.contains("`async` canonical option requires an async function type") {
+                return WasmError::LoadFailed(format!(
+                    "this .actr package was built by an old SDK (wit-bindgen \
+                     <= 0.57 async-lift ABI), which wasmtime 46 rejects per \
+                     the Component Model spec. Rebuild it with the current SDK \
+                     (synchronous-lift packages run on both new and old hosts). \
+                     wasmtime reported: {raw}"
+                ));
+            }
             WasmError::LoadFailed(format!(
                 "wasm bytes did not load as a Component (this host \
                  requires Component Model binaries as of .actr format \
-                 bump; wasmtime reported: {e})"
+                 bump; wasmtime reported: {raw})"
             ))
         })?;
         tracing::info!(wasm_bytes = wasm_bytes.len(), "wasm Component compiled");

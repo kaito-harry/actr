@@ -77,7 +77,7 @@ pub mod __wasm_macro_support {
     // here so the macro has a single stable `$crate::guest::__wasm_macro_support::*`
     // prefix to poke at.
     pub use super::wasm::adapter::{
-        WorkloadCell, run_dispatch, run_on_credential_expiring, run_on_credential_renewed,
+        WorkloadCell, complete_sync, run_dispatch, run_on_credential_expiring, run_on_credential_renewed,
         run_on_data_stream, run_on_error, run_on_mailbox_backpressure, run_on_ready,
         run_on_signaling_connected, run_on_signaling_connecting, run_on_signaling_disconnected,
         run_on_start, run_on_stop, run_on_webrtc_connected, run_on_webrtc_connecting,
@@ -165,169 +165,155 @@ macro_rules! entry {
             struct __ActrEntryAdapter;
 
             impl $crate::guest::__wasm_macro_support::Guest for __ActrEntryAdapter {
-                async fn dispatch(
+                fn dispatch(
                     envelope: $crate::guest::__wasm_macro_support::WitRpcEnvelope,
                 ) -> ::core::result::Result<
                     ::std::vec::Vec<u8>,
                     $crate::guest::__wasm_macro_support::WitActrError,
                 > {
-                    $crate::guest::__wasm_macro_support::run_dispatch(
+                    $crate::guest::__wasm_macro_support::complete_sync($crate::guest::__wasm_macro_support::run_dispatch(
                         __actr_workload(),
                         envelope,
-                    )
-                    .await
+                    ))
                 }
 
-                async fn on_start() -> ::core::result::Result<
+                fn on_start() -> ::core::result::Result<
                     (),
                     $crate::guest::__wasm_macro_support::WitActrError,
                 > {
-                    $crate::guest::__wasm_macro_support::run_on_start(__actr_workload()).await
+                    $crate::guest::__wasm_macro_support::complete_sync($crate::guest::__wasm_macro_support::run_on_start(__actr_workload()))
                 }
 
-                async fn on_ready() -> ::core::result::Result<
+                fn on_ready() -> ::core::result::Result<
                     (),
                     $crate::guest::__wasm_macro_support::WitActrError,
                 > {
-                    $crate::guest::__wasm_macro_support::run_on_ready(__actr_workload()).await
+                    $crate::guest::__wasm_macro_support::complete_sync($crate::guest::__wasm_macro_support::run_on_ready(__actr_workload()))
                 }
 
-                async fn on_stop() -> ::core::result::Result<
+                fn on_stop() -> ::core::result::Result<
                     (),
                     $crate::guest::__wasm_macro_support::WitActrError,
                 > {
-                    $crate::guest::__wasm_macro_support::run_on_stop(__actr_workload()).await
+                    $crate::guest::__wasm_macro_support::complete_sync($crate::guest::__wasm_macro_support::run_on_stop(__actr_workload()))
                 }
 
-                async fn on_error(
+                fn on_error(
                     event: $crate::guest::__wasm_macro_support::WitErrorEvent,
                 ) -> ::core::result::Result<
                     (),
                     $crate::guest::__wasm_macro_support::WitActrError,
                 > {
-                    $crate::guest::__wasm_macro_support::run_on_error(__actr_workload(), event)
-                        .await
+                    $crate::guest::__wasm_macro_support::complete_sync($crate::guest::__wasm_macro_support::run_on_error(__actr_workload(), event))
                 }
 
-                async fn on_signaling_connecting() {
-                    $crate::guest::__wasm_macro_support::run_on_signaling_connecting(
+                fn on_signaling_connecting() {
+                    $crate::guest::__wasm_macro_support::complete_sync($crate::guest::__wasm_macro_support::run_on_signaling_connecting(
                         __actr_workload(),
-                    )
-                    .await
+                    ))
                 }
 
-                async fn on_signaling_connected() {
-                    $crate::guest::__wasm_macro_support::run_on_signaling_connected(
+                fn on_signaling_connected() {
+                    $crate::guest::__wasm_macro_support::complete_sync($crate::guest::__wasm_macro_support::run_on_signaling_connected(
                         __actr_workload(),
-                    )
-                    .await
+                    ))
                 }
 
-                async fn on_signaling_disconnected() {
-                    $crate::guest::__wasm_macro_support::run_on_signaling_disconnected(
+                fn on_signaling_disconnected() {
+                    $crate::guest::__wasm_macro_support::complete_sync($crate::guest::__wasm_macro_support::run_on_signaling_disconnected(
                         __actr_workload(),
-                    )
-                    .await
+                    ))
                 }
 
-                async fn on_websocket_connecting(
+                fn on_websocket_connecting(
                     event: $crate::guest::__wasm_macro_support::WitPeerEvent,
                 ) {
-                    $crate::guest::__wasm_macro_support::run_on_websocket_connecting(
+                    $crate::guest::__wasm_macro_support::complete_sync($crate::guest::__wasm_macro_support::run_on_websocket_connecting(
                         __actr_workload(),
                         event,
-                    )
-                    .await
+                    ))
                 }
 
-                async fn on_websocket_connected(
+                fn on_websocket_connected(
                     event: $crate::guest::__wasm_macro_support::WitPeerEvent,
                 ) {
-                    $crate::guest::__wasm_macro_support::run_on_websocket_connected(
+                    $crate::guest::__wasm_macro_support::complete_sync($crate::guest::__wasm_macro_support::run_on_websocket_connected(
                         __actr_workload(),
                         event,
-                    )
-                    .await
+                    ))
                 }
 
-                async fn on_websocket_disconnected(
+                fn on_websocket_disconnected(
                     event: $crate::guest::__wasm_macro_support::WitPeerEvent,
                 ) {
-                    $crate::guest::__wasm_macro_support::run_on_websocket_disconnected(
+                    $crate::guest::__wasm_macro_support::complete_sync($crate::guest::__wasm_macro_support::run_on_websocket_disconnected(
                         __actr_workload(),
                         event,
-                    )
-                    .await
+                    ))
                 }
 
-                async fn on_webrtc_connecting(
+                fn on_webrtc_connecting(
                     event: $crate::guest::__wasm_macro_support::WitPeerEvent,
                 ) {
-                    $crate::guest::__wasm_macro_support::run_on_webrtc_connecting(
+                    $crate::guest::__wasm_macro_support::complete_sync($crate::guest::__wasm_macro_support::run_on_webrtc_connecting(
                         __actr_workload(),
                         event,
-                    )
-                    .await
+                    ))
                 }
 
-                async fn on_webrtc_connected(
+                fn on_webrtc_connected(
                     event: $crate::guest::__wasm_macro_support::WitPeerEvent,
                 ) {
-                    $crate::guest::__wasm_macro_support::run_on_webrtc_connected(
+                    $crate::guest::__wasm_macro_support::complete_sync($crate::guest::__wasm_macro_support::run_on_webrtc_connected(
                         __actr_workload(),
                         event,
-                    )
-                    .await
+                    ))
                 }
 
-                async fn on_webrtc_disconnected(
+                fn on_webrtc_disconnected(
                     event: $crate::guest::__wasm_macro_support::WitPeerEvent,
                 ) {
-                    $crate::guest::__wasm_macro_support::run_on_webrtc_disconnected(
+                    $crate::guest::__wasm_macro_support::complete_sync($crate::guest::__wasm_macro_support::run_on_webrtc_disconnected(
                         __actr_workload(),
                         event,
-                    )
-                    .await
+                    ))
                 }
 
-                async fn on_credential_renewed(
+                fn on_credential_renewed(
                     event: $crate::guest::__wasm_macro_support::WitCredentialEvent,
                 ) {
-                    $crate::guest::__wasm_macro_support::run_on_credential_renewed(
+                    $crate::guest::__wasm_macro_support::complete_sync($crate::guest::__wasm_macro_support::run_on_credential_renewed(
                         __actr_workload(),
                         event,
-                    )
-                    .await
+                    ))
                 }
 
-                async fn on_credential_expiring(
+                fn on_credential_expiring(
                     event: $crate::guest::__wasm_macro_support::WitCredentialEvent,
                 ) {
-                    $crate::guest::__wasm_macro_support::run_on_credential_expiring(
+                    $crate::guest::__wasm_macro_support::complete_sync($crate::guest::__wasm_macro_support::run_on_credential_expiring(
                         __actr_workload(),
                         event,
-                    )
-                    .await
+                    ))
                 }
 
-                async fn on_mailbox_backpressure(
+                fn on_mailbox_backpressure(
                     event: $crate::guest::__wasm_macro_support::WitBackpressureEvent,
                 ) {
-                    $crate::guest::__wasm_macro_support::run_on_mailbox_backpressure(
+                    $crate::guest::__wasm_macro_support::complete_sync($crate::guest::__wasm_macro_support::run_on_mailbox_backpressure(
                         __actr_workload(),
                         event,
-                    )
-                    .await
+                    ))
                 }
 
-                async fn on_data_stream(
+                fn on_data_stream(
                     chunk: $crate::guest::__wasm_macro_support::WitDataStream,
                     sender: $crate::guest::__wasm_macro_support::WitActrId,
                 ) -> ::core::result::Result<
                     (),
                     $crate::guest::__wasm_macro_support::WitActrError,
                 > {
-                    $crate::guest::__wasm_macro_support::run_on_data_stream(chunk, sender).await
+                    $crate::guest::__wasm_macro_support::complete_sync($crate::guest::__wasm_macro_support::run_on_data_stream(chunk, sender))
                 }
             }
 

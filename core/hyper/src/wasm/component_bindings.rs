@@ -10,10 +10,17 @@
 //!
 //! Host-side imports are generated as `async fn` via
 //! `imports: { default: async | trappable }` and guest exports as `async
-//! fn` via `exports: { default: async }`. The underlying WIT is plain
-//! sync `func` — this is the Phase 0.5-validated combination that keeps
-//! actr's single-threaded-actor invariant while still driving real I/O
-//! through tokio.
+//! fn` via `exports: { default: async }`. This is a *host-side* choice: it
+//! lets the host await real I/O (a downstream RPC) inside an import while a
+//! wasmtime fiber suspends the guest, keeping actr's single-threaded-actor
+//! invariant while still driving I/O through tokio.
+//!
+//! This is orthogonal to how the guest is *lifted*. Since M3 the guest is
+//! lifted synchronously (wit-bindgen without `async: true`), because
+//! wasmtime 46 rejects the async canonical option on the plain-`func` WIT
+//! world. Guest-side asynchrony is emulated on the guest by driving each
+//! `async fn` hook to completion; host-side asynchrony (this bindgen shape)
+//! is unchanged.
 //!
 //! # Why `async | trappable`
 //!

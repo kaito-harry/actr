@@ -67,17 +67,19 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
-      # Phase 1 Component Model toolchain:
-      # - wasm-component-ld 0.5.22 is the first release that recognises
-      #   wit-bindgen 0.57's async-ABI custom sections; earlier versions
-      #   reject the guest fixture with "unknown custom section".
-      # - wasm-tools 1.247 is pinned via `cargo install --version` so a
-      #   compatible component validator is available for
-      #   diagnostics / local inspection.
+      # Component Model toolchain:
+      # - wasm-component-ld 0.5.22 is still required: the legacy async-lift
+      #   fixture (tests/legacy_asynclift_guest, kept as a rejection sample)
+      #   links the older async-ABI custom sections, and >= 0.5.22 is the
+      #   first release that accepts them. The current sync-lift guests link
+      #   fine with it too.
+      # - wasm-tools 1.249 matches wasmtime 46's embedded validator, so
+      #   `wasm-tools validate` agrees with the runtime on the async-lift
+      #   rejection (diagnostic consistency) and for local inspection.
       - name: Install wasm Component Model toolchain
         run: |
           cargo install wasm-component-ld --version 0.5.22 --locked
-          cargo install wasm-tools --version 1.247.0 --locked
+          cargo install wasm-tools --version 1.249.0 --locked
       - name: Install wasm-pack
         run: cargo install wasm-pack --version 0.13.1 --locked
       - uses: Swatinem/rust-cache@v2
@@ -108,7 +110,7 @@ jobs:
       - name: Install wasm Component Model toolchain
         run: |
           cargo install wasm-component-ld --version 0.5.22 --locked
-          cargo install wasm-tools --version 1.247.0 --locked
+          cargo install wasm-tools --version 1.249.0 --locked
       - name: Install wasm-pack
         run: cargo install wasm-pack --version 0.13.1 --locked
       - uses: Swatinem/rust-cache@v2

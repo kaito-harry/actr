@@ -344,3 +344,61 @@ pub async fn run_on_data_stream(
         .await
         .map_err(actr_error_to_wit)
 }
+
+/// Drive a guest future to completion on the current thread, synchronously.
+///
+/// Since M3 the guest exports are lifted *synchronously* (wit-bindgen no
+/// longer emits the async-ABI custom sections that wasmtime 46 rejects — see
+/// `generated.rs`). Every host import therefore resolves on first poll, so a
+/// guest future normally completes without ever yielding. This runner still
+/// drives a real poll loop rather than a bare `now_or_never` so that
+/// *self-waking* futures (e.g. a `yield_now()` that wakes then re-pends) are
+/// not misjudged as stuck: a wake between polls re-polls.
+///
+/// The only way to reach the final panic is a future that pends **without**
+/// registering a wake — nothing in a sync-lifted export can ever wake it, so
+/// that is a guest bug. The panic surfaces to the host as a trap with a clear
+/// diagnostic rather than a silent hang.
+pub fn complete_sync<F: core::future::Future>(fut: F) -> F::Output {
+    use std::future::Future;
+    use std::pin::pin;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+
+    /// A waker that just records that it was invoked. Single-threaded wasm,
+    /// but `AtomicBool` keeps `Wake` (which requires `Send + Sync`) happy.
+    struct FlagWaker(AtomicBool);
+
+    impl Wake for FlagWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    let flag = Arc::new(FlagWaker(AtomicBool::new(false)));
+    let waker = Waker::from(flag.clone());
+    let mut cx = Context::from_waker(&waker);
+    let mut fut = pin!(fut);
+
+    loop {
+        match fut.as_mut().poll(&mut cx) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => {
+                // Re-poll only if the future woke itself since the last poll
+                // (yield-style). Clear the flag first so a fresh wake during
+                // the next poll is observed.
+                if flag.0.swap(false, Ordering::AcqRel) {
+                    continue;
+                }
+                panic!(
+                    "sync-lifted guest export pended with no wake source; \
+                     nothing can resume it (guest bug in a synchronous export)"
+                );
+            }
+        }
+    }
+}
