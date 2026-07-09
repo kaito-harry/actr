@@ -19,14 +19,14 @@ fn actr_type(mfr: &str, name: &str, ver: &str) -> ActrType {
 #[tokio::test]
 async fn select_gate_shell_and_local_use_inproc() {
     let c = ctx();
-    assert!(c.select_gate(&Dest::Shell).is_ok());
-    assert!(c.select_gate(&Dest::Local).is_ok());
+    assert!(c.select_gate(&Dest::Host).is_ok());
+    assert!(c.select_gate(&Dest::Workload).is_ok());
 }
 
 #[tokio::test]
-async fn select_gate_actor_errors_when_outproc_unset() {
+async fn select_gate_peer_errors_when_outproc_unset() {
     // Build a context with outproc_gate = None (unlike the test_support
-    // helper, which sets Some). Actor dest must fail.
+    // helper, which sets Some). Peer dest must fail.
     use crate::inbound::{DataChunkRegistry, MediaFrameRegistry};
     use crate::outbound::{Gate, HostGate};
     use crate::wire::webrtc::{ReconnectConfig, SignalingConfig, WebSocketSignalingClient};
@@ -54,7 +54,7 @@ async fn select_gate_actor_errors_when_outproc_unset() {
         None,
         0,
     );
-    match c.select_gate(&Dest::Actor(ActrId::default())) {
+    match c.select_gate(&Dest::Peer(ActrId::default())) {
         Err(ActrError::Internal(_)) => {}
         Err(_) => panic!("expected Internal error, got a different ActrError variant"),
         Ok(_) => panic!("expected error, got Ok"),
@@ -65,7 +65,7 @@ async fn select_gate_actor_errors_when_outproc_unset() {
 async fn select_gate_actor_ok_when_outproc_set() {
     // The test_support helper sets outproc_gate = Some(inproc) → Actor ok.
     let c = ctx();
-    assert!(c.select_gate(&Dest::Actor(ActrId::default())).is_ok());
+    assert!(c.select_gate(&Dest::Peer(ActrId::default())).is_ok());
 }
 
 // ── extract_target_id ───────────────────────────────────────────────────
@@ -74,14 +74,14 @@ async fn select_gate_actor_ok_when_outproc_set() {
 async fn extract_target_id_resolves_self_for_local_dests() {
     let c = ctx();
     let self_id = c.self_id().clone();
-    assert_eq!(c.extract_target_id(&Dest::Shell), &self_id);
-    assert_eq!(c.extract_target_id(&Dest::Local), &self_id);
+    assert_eq!(c.extract_target_id(&Dest::Host), &self_id);
+    assert_eq!(c.extract_target_id(&Dest::Workload), &self_id);
 
     let remote = ActrId {
         serial_number: 99,
         ..ActrId::default()
     };
-    assert_eq!(c.extract_target_id(&Dest::Actor(remote.clone())), &remote);
+    assert_eq!(c.extract_target_id(&Dest::Peer(remote.clone())), &remote);
 }
 
 // ── ensure_session_ready ────────────────────────────────────────────────

@@ -222,15 +222,15 @@ function installActrHostGlobals() {
   // JS bridge without clobbering each other's runtime context (TD-003).
 
   self.actrHostCall = async function (requestId, target, routeKey, payload) {
-    // actr-web-abi `call` passes `Dest` variant as `{ actor: {...} }` or
-    // `"shell"`/`"local"`; sw-host's `host_call_async` reads `{ tag, val }`.
+    // actr-web-abi `call` passes `Dest` variant as `{ peer: {...} }` or
+    // `"host"`/`"workload"`; sw-host's `host_call_async` reads `{ tag, val }`.
     // The WBG path is only exercised by the echo client which uses
     // `call_raw`, but keep the shape future-proof.
     let destCamel;
-    if (target === 'shell' || target === 'local') {
+    if (target === 'host' || target === 'workload') {
       destCamel = { tag: target };
-    } else if (target && target.actor) {
-      destCamel = { tag: 'actor', val: actrIdKebabToCamel(target.actor) };
+    } else if (target && target.peer) {
+      destCamel = { tag: 'peer', val: actrIdKebabToCamel(target.peer) };
     } else {
       throw new Error('[WBG] actrHostCall: unknown dest shape ' + JSON.stringify(target));
     }
@@ -306,10 +306,10 @@ function installActrHostGlobals() {
 
   self.actrHostTell = async function (requestId, target, routeKey, payload) {
     let destCamel;
-    if (target === 'shell' || target === 'local') {
+    if (target === 'host' || target === 'workload') {
       destCamel = { tag: target };
-    } else if (target && target.actor) {
-      destCamel = { tag: 'actor', val: actrIdKebabToCamel(target.actor) };
+    } else if (target && target.peer) {
+      destCamel = { tag: 'peer', val: actrIdKebabToCamel(target.peer) };
     } else {
       throw new Error('[WBG] actrHostTell: unknown dest shape ' + JSON.stringify(target));
     }

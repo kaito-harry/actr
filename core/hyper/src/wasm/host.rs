@@ -393,9 +393,9 @@ fn wit_connection_not_ready_info_to_proto(
 
 fn wit_dest_to_v1(dest: &WitDest) -> guest_abi::DestV1 {
     match dest {
-        WitDest::Shell => guest_abi::DestV1::shell(),
-        WitDest::Local => guest_abi::DestV1::local(),
-        WitDest::Actor(id) => guest_abi::DestV1::actor(wit_actr_id_to_proto(id)),
+        WitDest::Host => guest_abi::DestV1::host(),
+        WitDest::Workload => guest_abi::DestV1::workload(),
+        WitDest::Peer(id) => guest_abi::DestV1::peer(wit_actr_id_to_proto(id)),
     }
 }
 

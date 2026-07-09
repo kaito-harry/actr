@@ -356,7 +356,7 @@ pub fn default_mapping() -> Mapping {
         records: vec![
             // DestV1 { kind } is a prost-oneof wrapper. The `kind` field
             // holds an `Option<DestKind>`, which maps to the WIT `variant
-            // dest { shell, local, actor(actr-id) }`. We still assert the
+            // dest { host, workload, peer(actr-id) }`. We still assert the
             // struct exists; the variant alignment is covered by
             // `variants` below.
             //
@@ -377,9 +377,9 @@ pub fn default_mapping() -> Mapping {
                 // arm. The `bool` is an ABI-level discriminant-only
                 // placeholder (always true) — documented in
                 // dynclib_abi.rs's DestKind declaration.
-                ("shell", "Shell", Some("(bool)")),
-                ("local", "Local", Some("(bool)")),
-                ("actor", "Actor", Some("(ActrId)")),
+                ("host", "Host", Some("(bool)")),
+                ("workload", "Workload", Some("(bool)")),
+                ("peer", "Peer", Some("(ActrId)")),
             ],
         }],
         functions: vec![

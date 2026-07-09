@@ -484,7 +484,7 @@ impl PeerGate {
                         peer_id,
                         session_id: event_session_id,
                     } => {
-                        let dest = Dest::actor(peer_id.clone());
+                        let dest = Dest::peer(peer_id.clone());
 
                         Self::notify_active_data_chunks_uncertain(
                             &webrtc_coordinator,
@@ -670,7 +670,7 @@ impl PeerGate {
 
     /// Convert ActrId to Dest
     fn actr_id_to_dest(actor_id: &ActrId) -> Dest {
-        Dest::actor(actor_id.clone())
+        Dest::peer(actor_id.clone())
     }
 
     /// Serialize RpcEnvelope to bytes

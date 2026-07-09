@@ -57,9 +57,9 @@ pub(crate) fn actr_id_from_wit(id: &wit_types::ActrId) -> ActrId {
 
 pub(crate) fn dest_to_wit(dest: &Dest) -> wit_types::Dest {
     match dest {
-        Dest::Shell => wit_types::Dest::Shell,
-        Dest::Local => wit_types::Dest::Local,
-        Dest::Actor(id) => wit_types::Dest::Actor(actr_id_to_wit(id)),
+        Dest::Host => wit_types::Dest::Host,
+        Dest::Workload => wit_types::Dest::Workload,
+        Dest::Peer(id) => wit_types::Dest::Peer(actr_id_to_wit(id)),
     }
 }
 

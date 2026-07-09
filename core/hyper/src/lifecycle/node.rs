@@ -50,13 +50,13 @@ pub(crate) struct Inner {
     /// Dead Letter Queue for poison messages
     pub(crate) dlq: Arc<dyn DeadLetterQueue>,
 
-    /// In-process gate for `Dest::Shell` / `Dest::Local` calls.
+    /// In-process gate for `Dest::Host` / `Dest::Workload` calls.
     ///
     /// Created in `build()` together with `shell_to_workload` so the inproc
     /// lane is usable as soon as the node exists, even before registration.
     pub(crate) inproc_gate: Gate,
 
-    /// Cross-process gate for `Dest::Actor(_)` calls.
+    /// Cross-process gate for `Dest::Peer(_)` calls.
     ///
     /// `None` until `start()` finishes WebRTC / PeerGate initialization. Any
     /// outbound call issued before that point returns `Internal("PeerGate
@@ -270,7 +270,7 @@ async fn host_operation_handler(
         HostOperation::CallRaw(req) => {
             match ctx
                 .call_raw(
-                    &Dest::Actor(req.target),
+                    &Dest::Peer(req.target),
                     req.route_key,
                     PayloadType::RpcReliable,
                     bytes::Bytes::from(req.payload),
@@ -472,7 +472,7 @@ async fn stream_callback_host_operation_handler(
         HostOperation::CallRaw(req) => {
             match ctx
                 .call_raw(
-                    &Dest::Actor(req.target),
+                    &Dest::Peer(req.target),
                     req.route_key,
                     PayloadType::RpcReliable,
                     bytes::Bytes::from(req.payload),
@@ -1316,7 +1316,7 @@ impl Inner {
                     let credential_state_for_hook = credential_state.clone();
                     // Snapshot at this point — outproc_gate is still None
                     // here; credential / mailbox hook contexts inherit that
-                    // and therefore cannot issue Dest::Actor(_) calls (same
+                    // and therefore cannot issue Dest::Peer(_) calls (same
                     // behavior as before B13 refactor).
                     let ctx_builder_snapshot = self.bootstrap_ctx_builder();
                     let ctx_builder: crate::lifecycle::hooks::HookContextBuilder =
@@ -1576,7 +1576,7 @@ impl Inner {
                             let credential_state_for_hook = credential_state.clone();
                             // Snapshot taken after outproc_gate is live: ws
                             // peer-lifecycle hook contexts can issue
-                            // Dest::Actor(_) calls.
+                            // Dest::Peer(_) calls.
                             let ctx_builder_snapshot = self.bootstrap_ctx_builder();
                             let ctx_builder: crate::lifecycle::hooks::HookContextBuilder =
                                 Arc::new(move || {

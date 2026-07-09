@@ -1,36 +1,38 @@
 //! Destination identifier for Actor communication
 //!
 //! Defines the `Dest` enum with three-way destination distinction:
-//! - **Shell**: Workload → App (inproc reverse channel)
-//! - **Local**: Target local Workload (inproc from App, outproc short-circuit from Workload)
-//! - **Actor**: Remote Actor (full outproc)
+//! - **Host**: this node's host side (the process embedding the workload)
+//! - **Workload**: this node's workload side (self when sent from the workload)
+//! - **Peer**: a remote node, addressed by `ActrId`
 //!
 //! # Design Rationale
 //!
-//! The three-way distinction provides:
-//! - **Clear semantics**: Shell/Local/Actor have distinct meanings
-//! - **Symmetric communication**: App ↔ Workload bidirectional calls
+//! All three variants answer the same question — *which role receives the
+//! message* — relative to the sending node:
+//! - **Consistent axis**: Host / Workload / Peer are role nouns; `Peer` makes
+//!   "crosses the network" visible in the name
+//! - **Symmetric communication**: Host ↔ Workload bidirectional calls
 //! - **Protocol consistency**: Workload self-calls use full serialization (same as remote)
-//! - **Transparent optimization**: Transport layer can short-circuit Local calls
+//! - **Transparent optimization**: Transport layer can short-circuit Workload calls
 //!
 //! # Usage
 //!
-//! **Shell side (App)**:
+//! **Host side (embedding process)**:
 //! ```rust,ignore
-//! // Call local Workload (implies Dest::Local)
+//! // Call local Workload (implies Dest::Workload)
 //! running_node.call(request).await?;  // No target parameter
 //! ```
 //!
-//! **Actr side (Workload)**:
+//! **Workload side**:
 //! ```rust,ignore
-//! // Call App
-//! ctx.call(&Dest::Shell, request).await?;
+//! // Call the host side
+//! ctx.call(&Dest::Host, request).await?;
 //!
 //! // Call self (outproc short-circuit)
-//! ctx.call(&Dest::Local, request).await?;
+//! ctx.call(&Dest::Workload, request).await?;
 //!
-//! // Call remote Actor
-//! ctx.call(&Dest::Actor(server_id), request).await?;
+//! // Call a remote peer
+//! ctx.call(&Dest::Peer(server_id), request).await?;
 //! ```
 //!
 //! # Placement in actr-framework
@@ -49,76 +51,74 @@ use actr_protocol::ActrId;
 ///
 /// # Semantics
 ///
-/// - **`Dest::Shell`**: Workload -> App (inproc reverse channel)
-///   - Used by Workload to call App side
+/// - **`Dest::Host`**: Workload -> host side (inproc reverse channel)
+///   - Used by the Workload to call the process embedding it
 ///   - Routed through `HostGate` (zero serialization)
-///   - Example: Workload pushing notifications to App
+///   - Example: Workload pushing notifications to the host application
 ///
-/// - **`Dest::Local`**: Target local Workload
-///   - From App: routed through `HostGate` (zero serialization)
-///   - From Workload: routed through `PeerGate` (full serialization, short-circuit at transport)
-///   - Example: App calling its local Workload, or Workload calling itself
+/// - **`Dest::Workload`**: Target this node's Workload
+///   - From the host side: routed through `HostGate` (zero serialization)
+///   - From the Workload: routed through `PeerGate` (full serialization, short-circuit at transport)
+///   - Example: host calling its local Workload, or Workload calling itself
 ///
-/// - **`Dest::Actor(ActrId)`**: Remote Actor (full outproc)
+/// - **`Dest::Peer(ActrId)`**: Remote node (full outproc)
 ///   - Used for cross-process Actor communication
 ///   - Routed through `PeerGate` (WebRTC/WebSocket)
 ///   - Example: ClientWorkload calling RemoteServer
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Dest {
-    /// Local Shell - Workload calls App side (inproc reverse channel)
-    Shell,
+    /// This node's host side - Workload calls the embedding process (inproc reverse channel)
+    Host,
 
-    /// Local Workload - calls local Workload (from App: inproc, from Workload: outproc short-circuit)
-    Local,
+    /// This node's Workload - self when sent from the workload (from host: inproc, from Workload: outproc short-circuit)
+    Workload,
 
-    /// Remote Actor - cross-process communication (WebRTC/WebSocket)
-    Actor(ActrId),
+    /// Remote node - cross-process communication (WebRTC/WebSocket)
+    Peer(ActrId),
 }
 
 impl Dest {
-    /// Create Shell destination
+    /// Create a Host destination
     #[inline]
-    pub fn shell() -> Self {
-        Dest::Shell
+    pub fn host() -> Self {
+        Dest::Host
     }
 
-    /// Create Local destination
+    /// Create a Workload destination
     #[inline]
-    pub fn local() -> Self {
-        Dest::Local
+    pub fn workload() -> Self {
+        Dest::Workload
     }
 
-    /// Create Actor destination
+    /// Create a Peer destination
     #[inline]
-    pub fn actor(id: ActrId) -> Self {
-        Dest::Actor(id)
+    pub fn peer(id: ActrId) -> Self {
+        Dest::Peer(id)
     }
 
-    /// Check if this is a Shell destination
+    /// Check if this is a Host destination
     #[inline]
-    pub fn is_shell(&self) -> bool {
-        matches!(self, Dest::Shell)
+    pub fn is_host(&self) -> bool {
+        matches!(self, Dest::Host)
     }
 
-    /// Check if this is a Local destination
+    /// Check if this is a Workload destination
     #[inline]
-    pub fn is_local(&self) -> bool {
-        matches!(self, Dest::Local)
+    pub fn is_workload(&self) -> bool {
+        matches!(self, Dest::Workload)
     }
 
-    /// Check if this is an Actor destination
+    /// Check if this is a Peer destination
     #[inline]
-    pub fn is_actor(&self) -> bool {
-        matches!(self, Dest::Actor(_))
+    pub fn is_peer(&self) -> bool {
+        matches!(self, Dest::Peer(_))
     }
 
-    /// Get ActrId (if this is an Actor destination)
-    ///
-    /// Returns `None` for `Dest::Shell` or `Dest::Local`.
+    /// Get the peer's ActrId if this is a Peer destination
     #[inline]
-    pub fn as_actor_id(&self) -> Option<&ActrId> {
+    pub fn as_peer_id(&self) -> Option<&ActrId> {
         match self {
-            Dest::Actor(id) => Some(id),
+            Dest::Peer(id) => Some(id),
             _ => None,
         }
     }
@@ -127,7 +127,7 @@ impl Dest {
 impl From<ActrId> for Dest {
     #[inline]
     fn from(id: ActrId) -> Self {
-        Dest::Actor(id)
+        Dest::Peer(id)
     }
 }
 
@@ -137,21 +137,21 @@ mod tests {
 
     #[test]
     fn test_dest_creation() {
-        let shell_dest = Dest::shell();
-        assert!(shell_dest.is_shell());
-        assert!(!shell_dest.is_local());
-        assert!(!shell_dest.is_actor());
+        let host_dest = Dest::host();
+        assert!(host_dest.is_host());
+        assert!(!host_dest.is_workload());
+        assert!(!host_dest.is_peer());
 
-        let local_dest = Dest::local();
-        assert!(!local_dest.is_shell());
-        assert!(local_dest.is_local());
-        assert!(!local_dest.is_actor());
+        let workload_dest = Dest::workload();
+        assert!(!workload_dest.is_host());
+        assert!(workload_dest.is_workload());
+        assert!(!workload_dest.is_peer());
 
         let id = ActrId::default();
-        let actor_dest = Dest::actor(id);
-        assert!(!actor_dest.is_shell());
-        assert!(!actor_dest.is_local());
-        assert!(actor_dest.is_actor());
+        let peer_dest = Dest::peer(id);
+        assert!(!peer_dest.is_host());
+        assert!(!peer_dest.is_workload());
+        assert!(peer_dest.is_peer());
     }
 
     #[test]
@@ -165,24 +165,34 @@ mod tests {
         };
 
         let mut map = HashMap::new();
-        map.insert(Dest::shell(), "shell");
-        map.insert(Dest::local(), "local");
-        map.insert(Dest::actor(id1), "actor1");
-        map.insert(Dest::actor(id2), "actor2");
+        map.insert(Dest::host(), "host");
+        map.insert(Dest::workload(), "workload");
+        map.insert(Dest::peer(id1), "peer1");
+        map.insert(Dest::peer(id2), "peer2");
 
         assert_eq!(map.len(), 4);
     }
 
     #[test]
-    fn test_dest_as_actor_id() {
-        let shell_dest = Dest::shell();
-        assert_eq!(shell_dest.as_actor_id(), None);
+    fn test_dest_as_peer_id() {
+        let host_dest = Dest::host();
+        assert_eq!(host_dest.as_peer_id(), None);
 
-        let local_dest = Dest::local();
-        assert_eq!(local_dest.as_actor_id(), None);
+        let workload_dest = Dest::workload();
+        assert_eq!(workload_dest.as_peer_id(), None);
 
+        let id = ActrId {
+            serial_number: 7,
+            ..Default::default()
+        };
+        let peer_dest = Dest::peer(id.clone());
+        assert_eq!(peer_dest.as_peer_id(), Some(&id));
+    }
+
+    #[test]
+    fn test_dest_from_actr_id() {
         let id = ActrId::default();
-        let actor_dest = Dest::actor(id.clone());
-        assert_eq!(actor_dest.as_actor_id(), Some(&id));
+        let dest: Dest = id.clone().into();
+        assert_eq!(dest, Dest::Peer(id));
     }
 }

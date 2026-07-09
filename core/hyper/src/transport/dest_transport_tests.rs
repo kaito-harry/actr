@@ -350,7 +350,7 @@ async fn generic_error_with_closed_text_does_not_trigger_stale_self_heal() {
 #[tokio::test]
 async fn has_healthy_connection_false_when_no_connections() {
     // Empty DestTransport has no ready connections → not healthy.
-    let t = DestTransport::new(Dest::Shell, vec![]).await.unwrap();
+    let t = DestTransport::new(Dest::Host, vec![]).await.unwrap();
     assert!(!t.has_healthy_connection().await);
     // watch_ready returns a live receiver (empty initially).
     let rx = t.watch_ready();

@@ -55,34 +55,6 @@ pub fn peer_status_from_v1(status: u32) -> Option<crate::WebRtcPeerStatus> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn peer_status_from_v1_drops_unknown_discriminants() {
-        use crate::guest::dynclib_abi::webrtc_peer_status as st;
-
-        assert_eq!(
-            peer_status_from_v1(st::IDLE),
-            Some(crate::WebRtcPeerStatus::Idle)
-        );
-        assert_eq!(
-            peer_status_from_v1(st::CONNECTING),
-            Some(crate::WebRtcPeerStatus::Connecting)
-        );
-        assert_eq!(
-            peer_status_from_v1(st::CONNECTED),
-            Some(crate::WebRtcPeerStatus::Connected)
-        );
-        assert_eq!(
-            peer_status_from_v1(st::RECOVERING),
-            Some(crate::WebRtcPeerStatus::Recovering)
-        );
-        assert_eq!(peer_status_from_v1(u32::MAX), None);
-    }
-}
-
 // The Component Model wasm runtime glue is gated on `not(feature = "web")`
 // so the `wasm32-unknown-unknown` + `web` target (which routes through
 // `actr-web-abi` instead) does not link the wit-bindgen host imports that
@@ -862,4 +834,32 @@ macro_rules! entry {
             }
         };
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_status_from_v1_drops_unknown_discriminants() {
+        use crate::guest::dynclib_abi::webrtc_peer_status as st;
+
+        assert_eq!(
+            peer_status_from_v1(st::IDLE),
+            Some(crate::WebRtcPeerStatus::Idle)
+        );
+        assert_eq!(
+            peer_status_from_v1(st::CONNECTING),
+            Some(crate::WebRtcPeerStatus::Connecting)
+        );
+        assert_eq!(
+            peer_status_from_v1(st::CONNECTED),
+            Some(crate::WebRtcPeerStatus::Connected)
+        );
+        assert_eq!(
+            peer_status_from_v1(st::RECOVERING),
+            Some(crate::WebRtcPeerStatus::Recovering)
+        );
+        assert_eq!(peer_status_from_v1(u32::MAX), None);
+    }
 }

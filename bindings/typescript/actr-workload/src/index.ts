@@ -43,14 +43,14 @@ export interface DataChunk {
   timestampMs?: bigint | number;
 }
 
-export type Dest = 'shell' | 'local' | { actor: ActrId };
+export type Dest = 'host' | 'workload' | { peer: ActrId };
 
 type WitActrId = Omit<ActrId, 'serialNumber'> & {
   serialNumber: bigint;
 };
 
 type WitDest =
-  { tag: 'shell' } | { tag: 'local' } | { tag: 'actor'; val: WitActrId };
+  { tag: 'host' } | { tag: 'workload' } | { tag: 'peer'; val: WitActrId };
 
 type WitPayloadType = { tag: PayloadType };
 
@@ -110,17 +110,17 @@ export function toUint8Array(value: PayloadBytes): Uint8Array {
 }
 
 function toWitDest(dest: Dest): WitDest {
-  if (dest === 'shell') {
-    return { tag: 'shell' };
+  if (dest === 'host') {
+    return { tag: 'host' };
   }
-  if (dest === 'local') {
-    return { tag: 'local' };
+  if (dest === 'workload') {
+    return { tag: 'workload' };
   }
   return {
-    tag: 'actor',
+    tag: 'peer',
     val: {
-      ...dest.actor,
-      serialNumber: BigInt(dest.actor.serialNumber),
+      ...dest.peer,
+      serialNumber: BigInt(dest.peer.serialNumber),
     },
   };
 }

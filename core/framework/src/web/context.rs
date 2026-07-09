@@ -21,7 +21,7 @@
 //! every per-dispatch `RuntimeContext` by that string, so multiple
 //! concurrent dispatches never cross wires on the shared JS thread.
 //!
-//! Only `Dest::Actor(_)` is routable from the browser right now — the
+//! Only `Dest::Peer(_)` is routable from the browser right now — the
 //! `Shell` / `Local` variants have no meaning once the guest runs in a
 //! wasm module and the host lives in the service worker. Callers get
 //! `ActrError::NotImplemented` for those two shapes; if a future phase
@@ -230,9 +230,9 @@ impl Context for WebContext {
         // decode response back to the typed Response. Mirrors the wasip2
         // `WasmContext::call` path so handler code is target-agnostic.
         let actor = match target {
-            Dest::Actor(id) => id,
-            Dest::Shell | Dest::Local => {
-                return Err(Self::not_implemented("call → Shell/Local dest"));
+            Dest::Peer(id) => id,
+            Dest::Host | Dest::Workload => {
+                return Err(Self::not_implemented("call → Host/Workload dest"));
             }
         };
         let payload = request.encode_to_vec();
@@ -250,9 +250,9 @@ impl Context for WebContext {
         // matches the guest-import contract exactly (§3.4).
         let payload = message.encode_to_vec();
         let wit_dest = match target {
-            Dest::Shell => wit::Dest::Shell,
-            Dest::Local => wit::Dest::Local,
-            Dest::Actor(id) => wit::Dest::Actor(actr_id_to_wit(id)),
+            Dest::Host => wit::Dest::Host,
+            Dest::Workload => wit::Dest::Workload,
+            Dest::Peer(id) => wit::Dest::Peer(actr_id_to_wit(id)),
         };
         let outcome = actr_web_abi::guest::tell_with_request_id(
             self.request_id(),

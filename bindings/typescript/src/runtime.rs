@@ -140,7 +140,7 @@ impl ActrRef {
         let ctx = self.inner.app_context().await;
         let response = ctx
             .call_raw(
-                &Dest::Actor(target_id),
+                &Dest::Peer(target_id),
                 route_key,
                 proto_payload_type,
                 bytes::Bytes::from(request_payload.to_vec()),
@@ -165,7 +165,7 @@ impl ActrRef {
         let proto_payload_type: actr_protocol::PayloadType = payload_type.into();
         let ctx = self.inner.app_context().await;
         ctx.tell_raw(
-            &Dest::Actor(target_id),
+            &Dest::Peer(target_id),
             route_key,
             proto_payload_type,
             bytes::Bytes::from(message_payload.to_vec()),

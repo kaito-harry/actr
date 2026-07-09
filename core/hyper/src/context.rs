@@ -110,14 +110,14 @@ impl RuntimeContext {
 
     /// Select the appropriate gate based on `Dest`.
     ///
-    /// - `Dest::Shell` -> `inproc_gate`
-    /// - `Dest::Local` -> `inproc_gate`
-    /// - `Dest::Actor(_)` -> `outproc_gate`, which must already be initialized
+    /// - `Dest::Host` -> `inproc_gate`
+    /// - `Dest::Workload` -> `inproc_gate`
+    /// - `Dest::Peer(_)` -> `outproc_gate`, which must already be initialized
     #[inline]
     fn select_gate(&self, dest: &Dest) -> ActorResult<&Gate> {
         match dest {
-            Dest::Shell | Dest::Local => Ok(&self.inproc_gate),
-            Dest::Actor(_) => self.outproc_gate.as_ref().ok_or_else(|| {
+            Dest::Host | Dest::Workload => Ok(&self.inproc_gate),
+            Dest::Peer(_) => self.outproc_gate.as_ref().ok_or_else(|| {
                 ActrError::Internal(
                     "PeerGate not initialized yet (WebRTC setup in progress)".to_string(),
                 )
@@ -127,14 +127,14 @@ impl RuntimeContext {
 
     /// Extract the target `ActrId` from `Dest`.
     ///
-    /// - `Dest::Shell` -> `self_id` for reverse Workload-to-App calls
-    /// - `Dest::Local` -> `self_id` for local workload calls
-    /// - `Dest::Actor(id)` -> remote actor ID
+    /// - `Dest::Host` -> `self_id` for reverse Workload-to-App calls
+    /// - `Dest::Workload` -> `self_id` for local workload calls
+    /// - `Dest::Peer(id)` -> remote actor ID
     #[inline]
     fn extract_target_id<'a>(&'a self, dest: &'a Dest) -> &'a ActrId {
         match dest {
-            Dest::Shell | Dest::Local => &self.self_id,
-            Dest::Actor(id) => id,
+            Dest::Host | Dest::Workload => &self.self_id,
+            Dest::Peer(id) => id,
         }
     }
 
@@ -769,7 +769,7 @@ impl Context for RuntimeContext {
         // path and stay in sync.
         RuntimeContext::call_raw(
             self,
-            &Dest::Actor(target.clone()),
+            &Dest::Peer(target.clone()),
             route_key.to_string(),
             PayloadType::RpcReliable,
             payload,

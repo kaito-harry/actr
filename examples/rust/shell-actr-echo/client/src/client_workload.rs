@@ -67,8 +67,8 @@ impl actr_framework::MessageDispatcher for ClientDispatcher {
 
         info!("[ClientWorkload] Forwarding to remote server...");
 
-        // Call remote server via Dest::Actor
-        let response: EchoResponse = ctx.call(&Dest::Actor(server_id), request).await?;
+        // Call remote server via Dest::Peer
+        let response: EchoResponse = ctx.call(&Dest::Peer(server_id), request).await?;
 
         info!(
             "[ClientWorkload] Got response from server: {}",

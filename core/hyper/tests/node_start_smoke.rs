@@ -996,7 +996,7 @@ async fn peer_disconnect_triggers_coordinator_cleanup() {
     let err = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         context.call_raw(
-            &Dest::Actor(target),
+            &Dest::Peer(target),
             EchoRequest::route_key().to_string(),
             PayloadType::RpcReliable,
             EchoRequest {

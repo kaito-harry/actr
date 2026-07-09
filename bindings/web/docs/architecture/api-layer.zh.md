@@ -148,7 +148,7 @@ pub struct RuntimeContext {
 |------|------|----------|------|
 | **RPC call/tell** | ✅ | ✅ | 完全等价 |
 | **Fast Path** | ✅ | ⚠️ DataChunk baseline 已进 SW handlers，MediaTrack 需继续补齐 | 不再是 DOM 本地 callback |
-| **Dest 支持** | Shell/Local/Actor | Actor only | Web 版本只支持 Dest::Actor |
+| **Dest 支持** | Host/Workload/Peer | Peer only | Web 版本只支持 Dest::Peer |
 | **ID 生成** | uuid | js_sys::Math::random() | Web 环境简化 |
 
 ## 5. ActrRef 层
@@ -258,7 +258,7 @@ SW 侧   ActrRef::call() 返回响应
 
 ```
 SW 侧
-  ctx.call(&Dest::Actor(remote_id), request)
+  ctx.call(&Dest::Peer(remote_id), request)
     ↓
   RuntimeContext::call()
     ├─ 编码请求 (protobuf)

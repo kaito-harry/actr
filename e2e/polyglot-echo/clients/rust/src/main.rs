@@ -366,7 +366,7 @@ async fn scenario_bidi(
     }
 
     // Send N chunks to the server.
-    let dest = actr_framework::Dest::Actor(target.clone());
+    let dest = actr_framework::Dest::Peer(target.clone());
     for seq in 0..chunk_count {
         let payload = format!("{message}:{seq}").into_bytes();
         let chunk = DataChunk {

@@ -106,7 +106,7 @@ pub trait Context: Clone + MaybeSendSync + 'static {
     ///
     /// # Parameters
     ///
-    /// - `target`: Target destination (`Dest::Shell` for local, `Dest::Actor(id)` for remote)
+    /// - `target`: Target destination (`Dest::Host` for local, `Dest::Peer(id)` for remote)
     /// - `request`: Request message implementing `RpcRequest` trait
     ///
     /// # Returns
@@ -130,7 +130,7 @@ pub trait Context: Clone + MaybeSendSync + 'static {
     ///
     /// # Parameters
     ///
-    /// - `target`: Target destination (`Dest::Shell` for local, `Dest::Actor(id)` for remote)
+    /// - `target`: Target destination (`Dest::Host` for local, `Dest::Peer(id)` for remote)
     /// - `message`: Message implementing `RpcRequest` trait
     async fn tell<R: actr_protocol::RpcRequest>(
         &self,

@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "actr-config"
-version = "0.4.3"
+version = "0.4.10"
 dependencies = [
  "actr-protocol",
  "chrono",
@@ -17,7 +17,7 @@ dependencies = [
 
 [[package]]
 name = "actr-framework"
-version = "0.4.3"
+version = "0.4.10"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -32,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "actr-hyper"
-version = "0.4.3"
+version = "0.4.10"
 dependencies = [
  "actr-config",
  "actr-framework",
@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "actr-pack"
-version = "0.4.3"
+version = "0.4.10"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "actr-platform-native"
-version = "0.4.3"
+version = "0.4.10"
 dependencies = [
  "actr-hyper",
  "actr-platform-traits",
@@ -117,7 +117,7 @@ dependencies = [
 
 [[package]]
 name = "actr-platform-traits"
-version = "0.4.3"
+version = "0.4.10"
 dependencies = [
  "async-trait",
  "thiserror 2.0.18",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "actr-protocol"
-version = "0.4.3"
+version = "0.4.10"
 dependencies = [
  "anyhow",
  "base64",
@@ -145,7 +145,7 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime"
-version = "0.4.3"
+version = "0.4.10"
 dependencies = [
  "actr-framework",
  "actr-protocol",
@@ -157,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime-mailbox"
-version = "0.4.3"
+version = "0.4.10"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "actr-service-compat"
-version = "0.4.3"
+version = "0.4.10"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -5222,4 +5222,4 @@ dependencies = [
 
 [[patch.unused]]
 name = "actr"
-version = "0.4.3"
+version = "0.4.10"

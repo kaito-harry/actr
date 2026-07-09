@@ -202,7 +202,7 @@ async fn send_data_chunk_rejects_non_stream_payload_type() {
         ctx,
         wl,
         HostOperation::SendDataChunk(HostSendDataChunkV1 {
-            dest: DestV1::local(),
+            dest: DestV1::workload(),
             payload_type: PayloadType::RpcReliable as i32,
             ..Default::default()
         }),
@@ -218,7 +218,7 @@ async fn send_data_chunk_rejects_unknown_payload_type() {
         ctx,
         wl,
         HostOperation::SendDataChunk(HostSendDataChunkV1 {
-            dest: DestV1::local(),
+            dest: DestV1::workload(),
             payload_type: 9999,
             ..Default::default()
         }),
@@ -235,7 +235,7 @@ async fn send_data_chunk_valid_type_routes_and_errors() {
         ctx,
         wl,
         HostOperation::SendDataChunk(HostSendDataChunkV1 {
-            dest: DestV1::local(),
+            dest: DestV1::workload(),
             payload_type: PayloadType::StreamReliable as i32,
             ..Default::default()
         }),
@@ -330,7 +330,7 @@ async fn stream_callback_send_rejects_non_stream_payload_type() {
     let res = stream_callback_host_operation_handler(
         ctx,
         HostOperation::SendDataChunk(HostSendDataChunkV1 {
-            dest: DestV1::local(),
+            dest: DestV1::workload(),
             payload_type: PayloadType::RpcReliable as i32,
             ..Default::default()
         }),
@@ -345,7 +345,7 @@ async fn stream_callback_send_rejects_unknown_payload_type() {
     let res = stream_callback_host_operation_handler(
         ctx,
         HostOperation::SendDataChunk(HostSendDataChunkV1 {
-            dest: DestV1::local(),
+            dest: DestV1::workload(),
             payload_type: 9999,
             ..Default::default()
         }),
@@ -360,7 +360,7 @@ async fn stream_callback_send_valid_type_routes_and_errors() {
     let res = stream_callback_host_operation_handler(
         ctx,
         HostOperation::SendDataChunk(HostSendDataChunkV1 {
-            dest: DestV1::local(),
+            dest: DestV1::workload(),
             payload_type: PayloadType::StreamLatencyFirst as i32,
             ..Default::default()
         }),
