@@ -626,6 +626,44 @@ async fn handle_envelope_unknown_direction_is_dropped_not_enqueued() {
     );
 }
 
+/// An explicit Tell must be enqueued for dispatch like a Request, and must
+/// not consume any pending entry.
+#[tokio::test]
+async fn handle_envelope_tell_direction_is_enqueued() {
+    let mailbox = CapturingMailbox::new();
+    let pending = empty_pending();
+    let (tx, _rx) = oneshot::channel();
+    pending
+        .write()
+        .await
+        .insert("tell-ws-1".to_string(), (test_actor_id(11), tx));
+
+    let mut envelope = make_rpc_envelope("tell-ws-1");
+    envelope.direction = Some(actr_protocol::Direction::Tell as i32);
+    envelope.timeout_ms = 0;
+    let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
+
+    WebSocketGate::handle_envelope(
+        envelope,
+        vec![],
+        bytes::Bytes::from(data),
+        PayloadType::RpcReliable,
+        pending.clone(),
+        mailbox.clone(),
+    )
+    .await;
+
+    assert_eq!(
+        mailbox.enqueue_count.load(Ordering::SeqCst),
+        1,
+        "explicit WS Tell must be enqueued for dispatch"
+    );
+    assert!(
+        pending.read().await.contains_key("tell-ws-1"),
+        "explicit WS Tell must not consume the pending entry"
+    );
+}
+
 /// RPC response with a matching pending request should wake the waiter and not enter the mailbox.
 #[tokio::test]
 async fn handle_envelope_response_resolves_pending_not_mailbox() {

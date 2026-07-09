@@ -6,6 +6,7 @@ use super::coordinator::WebRtcCoordinator;
 use crate::inbound::DataChunkRegistry;
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::set_parent_from_rpc_envelope;
+use crate::wire::{DirectionError, direction_for_routing};
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{self, ActrId, DataChunk, Direction, PayloadType, RpcEnvelope};
@@ -20,20 +21,6 @@ type PendingRequestsMap =
     Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>;
 #[cfg(feature = "opentelemetry")]
 use tracing::Instrument as _;
-
-/// Why an inbound `RpcEnvelope.direction` could not be routed.
-///
-/// `direction_for_routing` returns this so the caller can decode the peer
-/// (for diagnostics) only on the drop path, never on the happy path.
-#[derive(Debug)]
-enum DirectionError {
-    /// `direction` field absent from the envelope.
-    Missing,
-    /// `direction` present but `DIRECTION_UNSPECIFIED`.
-    Unspecified,
-    /// `direction` present but not a known variant.
-    Unknown,
-}
 
 /// WebRTC Gate - OutboundGate implementation
 ///
@@ -103,7 +90,9 @@ impl WebRtcGate {
     ///
     /// # Behavior
     /// Routes strictly on the sender-set `direction` field:
-    /// - `Request`: enqueue to Mailbox, skipping the pending lookup.
+    /// - `Request` / `Tell`: enqueue to Mailbox, skipping the pending lookup.
+    ///   The dispatch loop decides from the same label whether a response is
+    ///   sent (`Request`) or suppressed (`Tell`).
     /// - `Response`: wake the waiting caller if a pending entry exists;
     ///   otherwise drop as an orphan late response — never enqueue (fix for #255).
     /// - missing, `Unspecified`, or unknown: warn and drop. There is no
@@ -118,7 +107,7 @@ impl WebRtcGate {
     ) {
         let request_id = envelope.request_id.clone();
 
-        let direction = match Self::direction_for_routing(envelope.direction) {
+        let direction = match direction_for_routing(envelope.direction) {
             Ok(direction) => direction,
             Err(error) => {
                 // Drop path only: decode the peer lazily for diagnostics.
@@ -140,8 +129,9 @@ impl WebRtcGate {
             }
         };
 
-        if matches!(direction, Direction::Request) {
-            // Explicit request — enqueue directly, skip pending lookup.
+        if matches!(direction, Direction::Request | Direction::Tell) {
+            // Explicit request or fire-and-forget tell — enqueue directly,
+            // skip pending lookup.
             Self::enqueue_request(from_bytes, data, payload_type, mailbox, &request_id).await;
             return;
         }
@@ -193,25 +183,8 @@ impl WebRtcGate {
             .unwrap_or_else(|e| format!("decode_failed:{e}"))
     }
 
-    /// Classify an inbound `RpcEnvelope.direction` into a routable direction
-    /// or a `DirectionError`.
-    ///
-    /// Pure: performs no logging and no peer decode. The caller handles
-    /// diagnostics on the drop path so the happy path stays free of
-    /// `ActrId::decode` + `to_string_repr()`.
-    fn direction_for_routing(raw_direction: Option<i32>) -> Result<Direction, DirectionError> {
-        match raw_direction {
-            Some(raw) => match Direction::try_from(raw) {
-                Ok(direction @ (Direction::Request | Direction::Response)) => Ok(direction),
-                Ok(Direction::Unspecified) => Err(DirectionError::Unspecified),
-                Err(_) => Err(DirectionError::Unknown),
-            },
-            None => Err(DirectionError::Missing),
-        }
-    }
-
-    /// Enqueue an explicit inbound RPC request to the Mailbox with priority
-    /// derived from the inbound `PayloadType`.
+    /// Enqueue an explicit inbound RPC request or tell to the Mailbox with
+    /// priority derived from the inbound `PayloadType`.
     async fn enqueue_request(
         from_bytes: Vec<u8>,
         data: Bytes,
@@ -644,6 +617,44 @@ mod tests {
         assert!(
             pending.read().await.contains_key("req-stale"),
             "explicit WebRTC Request must not consume the pending entry"
+        );
+    }
+
+    /// An explicit WebRTC Tell must be enqueued for dispatch like a Request,
+    /// and must not consume any pending entry.
+    #[tokio::test]
+    async fn handle_envelope_tell_direction_is_enqueued() {
+        let mailbox = CapturingMailbox::new();
+        let pending = empty_pending();
+        let (tx, _rx) = oneshot::channel();
+        pending
+            .write()
+            .await
+            .insert("tell-1".to_string(), (test_actor_id(11), tx));
+
+        let mut envelope = make_rpc_envelope("tell-1");
+        envelope.direction = Some(Direction::Tell as i32);
+        envelope.timeout_ms = 0;
+        let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
+
+        WebRtcGate::handle_envelope(
+            envelope,
+            vec![],
+            Bytes::from(data),
+            PayloadType::RpcReliable,
+            pending.clone(),
+            mailbox.clone(),
+        )
+        .await;
+
+        assert_eq!(
+            mailbox.enqueue_count.load(Ordering::SeqCst),
+            1,
+            "explicit WebRTC Tell must be enqueued for dispatch"
+        );
+        assert!(
+            pending.read().await.contains_key("tell-1"),
+            "explicit WebRTC Tell must not consume the pending entry"
         );
     }
 

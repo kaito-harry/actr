@@ -64,7 +64,9 @@ async fn send_message_with_type_reliable_succeeds() {
 }
 
 #[tokio::test]
-async fn send_message_with_type_stamps_request_direction() {
+async fn send_message_with_type_stamps_tell_direction() {
+    // One-way messages carry the explicit fire-and-forget label, overriding
+    // whatever the caller left in the direction field.
     let transport = Arc::new(HostTransport::new());
     let gate = HostGate::new(transport.clone());
     let lane = transport
@@ -79,7 +81,35 @@ async fn send_message_with_type_stamps_request_direction() {
         .unwrap();
 
     let received = lane.recv_envelope().await.unwrap();
+    assert_eq!(received.direction, Some(Direction::Tell as i32));
+}
+
+#[tokio::test]
+async fn send_request_with_type_stamps_request_direction() {
+    // The request path keeps the Request label (a response is expected).
+    let transport = Arc::new(HostTransport::new());
+    let lane = transport
+        .get_lane(PayloadType::RpcReliable, None)
+        .await
+        .unwrap();
+
+    let t2 = transport.clone();
+    let send = tokio::spawn(async move {
+        let gate = HostGate::new(t2);
+        let mut env = envelope("req-direction");
+        env.timeout_ms = 5000;
+        gate.send_request_with_type(&ActrId::default(), PayloadType::RpcReliable, None, env)
+            .await
+    });
+
+    let received = lane.recv_envelope().await.unwrap();
     assert_eq!(received.direction, Some(Direction::Request as i32));
+    transport
+        .complete_response("req-direction", Bytes::from_static(b"ok"))
+        .await
+        .unwrap();
+    let resp = send.await.unwrap().unwrap();
+    assert_eq!(resp, Bytes::from_static(b"ok"));
 }
 
 #[tokio::test]

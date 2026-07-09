@@ -181,6 +181,11 @@ impl RuntimeContext {
         payload: Bytes,
         timeout_ms: i64,
     ) -> ActorResult<Bytes> {
+        // Sender-side argument validation: a call must carry a positive
+        // deadline and an RPC payload type. Receivers stay permissive.
+        crate::transport::validate_rpc_timeout_ms(timeout_ms)?;
+        crate::outbound::ensure_rpc_payload_type(payload_type)?;
+
         self.ensure_session_ready().await?;
 
         #[cfg(feature = "opentelemetry")]
@@ -226,6 +231,8 @@ impl RuntimeContext {
         payload_type: PayloadType,
         payload: Bytes,
     ) -> ActorResult<()> {
+        crate::outbound::ensure_rpc_payload_type(payload_type)?;
+
         self.ensure_session_ready().await?;
 
         #[cfg(feature = "opentelemetry")]
@@ -236,11 +243,13 @@ impl RuntimeContext {
             route_key,
             payload: Some(payload),
             error: None,
-            direction: Some(Direction::Request as i32),
+            direction: Some(Direction::Tell as i32),
             traceparent: None,
             tracestate: None,
             request_id: uuid::Uuid::new_v4().to_string(),
             metadata: vec![],
+            // Documented filler for TELL: receivers MUST NOT read timeout_ms
+            // as a fire-and-forget marker — Direction::Tell is the label.
             timeout_ms: 0,
         };
         #[cfg(feature = "opentelemetry")]
@@ -508,6 +517,13 @@ impl Context for RuntimeContext {
         )
     )]
     async fn call<R: RpcRequest>(&self, target: &Dest, request: R) -> ActorResult<R::Response> {
+        // Typed call construction reuses call_raw's RPC-payload-type contract.
+        // The deadline is the fixed DEFAULT_CALL_TIMEOUT_MS (always > 0), so it
+        // needs no sender-side timeout validation here; the gate path validates
+        // caller-supplied timeouts (call_raw) instead.
+        const DEFAULT_CALL_TIMEOUT_MS: i64 = 30_000;
+        crate::outbound::ensure_rpc_payload_type(R::payload_type())?;
+
         self.ensure_session_ready().await?;
 
         use actr_protocol::prost::Message as ProstMessage;
@@ -529,7 +545,7 @@ impl Context for RuntimeContext {
             tracestate: None,
             request_id: uuid::Uuid::new_v4().to_string(), // Generate a new request_id.
             metadata: vec![],
-            timeout_ms: 30000, // Default to a 30-second timeout.
+            timeout_ms: DEFAULT_CALL_TIMEOUT_MS, // Default to a 30-second timeout.
         };
         // Inject tracing context from current span
         #[cfg(feature = "opentelemetry")]
@@ -564,6 +580,8 @@ impl Context for RuntimeContext {
         )
     )]
     async fn tell<R: RpcRequest>(&self, target: &Dest, message: R) -> ActorResult<()> {
+        crate::outbound::ensure_rpc_payload_type(R::payload_type())?;
+
         self.ensure_session_ready().await?;
 
         // 1. Encode the message.
@@ -578,12 +596,14 @@ impl Context for RuntimeContext {
             route_key,
             payload: Some(payload),
             error: None,
-            direction: Some(Direction::Request as i32),
+            direction: Some(Direction::Tell as i32),
             traceparent: None,
             tracestate: None,
             request_id: uuid::Uuid::new_v4().to_string(),
             metadata: vec![],
-            timeout_ms: 0, // Zero means no response is expected.
+            // Documented filler for TELL: the Direction::Tell label — not a
+            // zero timeout — is what marks this envelope fire-and-forget.
+            timeout_ms: 0,
         };
         // Inject tracing context from current span
         #[cfg(feature = "opentelemetry")]

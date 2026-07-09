@@ -1,4 +1,5 @@
 use super::*;
+use std::time::Duration;
 
 fn envelope(request_id: &str) -> RpcEnvelope {
     RpcEnvelope {

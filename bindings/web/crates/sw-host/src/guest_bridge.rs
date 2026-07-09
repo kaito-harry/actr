@@ -408,8 +408,9 @@ pub async fn host_call_async(
 
 /// WIT `host.tell(target, route_key, payload) -> result<_, actr-error>`.
 ///
-/// Fire-and-forget semantics. The web runtime maps this to `call_raw` with
-/// `timeout_ms=0`; the result is discarded. Only `Dest::Peer` is wired.
+/// Fire-and-forget semantics: the envelope is stamped `Direction::Tell` via
+/// `tell_raw`, no pending entry is registered, and no response ever arrives.
+/// Only `Dest::Peer` is wired.
 #[wasm_bindgen]
 pub async fn host_tell_async(
     request_id: String,
@@ -430,8 +431,8 @@ pub async fn host_tell_async(
         }
     };
 
-    match ctx.call_raw(&actor_id, &route_key, &payload_bytes, 0).await {
-        Ok(_) => Ok(()),
+    match ctx.tell_raw(&actor_id, &route_key, payload_bytes).await {
+        Ok(()) => Ok(()),
         Err(e) => Err(actr_error_to_js(e)),
     }
 }

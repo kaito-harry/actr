@@ -61,9 +61,46 @@ impl PeerGate {
         envelope
     }
 
+    fn relayable_direction(envelope: &RpcEnvelope) -> ActorResult<Direction> {
+        match envelope.direction.map(Direction::try_from) {
+            Some(Ok(direction @ (Direction::Request | Direction::Response | Direction::Tell))) => {
+                Ok(direction)
+            }
+            Some(Ok(Direction::Unspecified)) | None => Err(ActrError::InvalidArgument(
+                "relay_envelope requires explicit Request, Response, or Tell direction".to_string(),
+            )),
+            Some(Err(_)) => Err(ActrError::InvalidArgument(format!(
+                "relay_envelope received unknown direction {:?}",
+                envelope.direction
+            ))),
+        }
+    }
+
+    async fn send_rpc_signal_envelope(
+        &self,
+        target: &ActrId,
+        envelope: RpcEnvelope,
+    ) -> ActorResult<()> {
+        // 1. Resolve the target destination.
+        let dest = self.get_dest(target)?;
+
+        // 2. Serialize the envelope and send it with RpcSignal as a one-way payload type.
+        let payload = envelope.encode_to_vec();
+        self.transport
+            .send(&dest, PayloadType::RpcSignal, &payload)
+            .await
+            .map_err(|e| ActrError::Unavailable(format!("Send failed: {}", e)))?;
+
+        Ok(())
+    }
+
     /// Send a request and wait for the response.
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         let envelope = Self::stamp_envelope_direction(envelope, Direction::Request);
+
+        // Sender-side contract (#254): reject non-positive deadlines before
+        // registering a pending entry. Mirrors the native PeerGate guard.
+        crate::outbound::validate_rpc_timeout_ms(envelope.timeout_ms)?;
 
         log::debug!(
             "PeerGate::send_request to {:?}, request_id={}",
@@ -98,9 +135,9 @@ impl PeerGate {
         Ok(response)
     }
 
-    /// Send a one-way message without waiting for a response.
+    /// Send a one-way tell without waiting for a response.
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
-        let envelope = Self::stamp_envelope_direction(envelope, Direction::Request);
+        let envelope = Self::stamp_envelope_direction(envelope, Direction::Tell);
 
         log::debug!(
             "PeerGate::send_message to {:?}, request_id={}",
@@ -108,17 +145,24 @@ impl PeerGate {
             envelope.request_id
         );
 
-        // 1. Resolve the target destination.
-        let dest = self.get_dest(target)?;
+        self.send_rpc_signal_envelope(target, envelope).await
+    }
 
-        // 2. Serialize the envelope and send it with RpcSignal as a one-way payload type.
-        let payload = envelope.encode_to_vec();
-        self.transport
-            .send(&dest, PayloadType::RpcSignal, &payload)
-            .await
-            .map_err(|e| ActrError::Unavailable(format!("Send failed: {}", e)))?;
+    /// Relay an envelope that already carries its routing direction.
+    ///
+    /// Used by `System::init_message_handler` to forward HostGate-produced
+    /// request envelopes to remote peers without downgrading them to Tell.
+    pub async fn relay_envelope(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
+        let direction = Self::relayable_direction(&envelope)?;
 
-        Ok(())
+        log::debug!(
+            "PeerGate::relay_envelope to {:?}, request_id={}, direction={:?}",
+            target,
+            envelope.request_id,
+            direction
+        );
+
+        self.send_rpc_signal_envelope(target, envelope).await
     }
 
     /// Send a DataChunk through the Fast Path.
@@ -196,5 +240,51 @@ mod tests {
             Direction::Request,
         );
         assert_eq!(request.direction, Some(Direction::Request as i32));
+    }
+
+    #[test]
+    fn send_message_direction_overwrites_missing_and_mismatched_values() {
+        let tell =
+            PeerGate::stamp_envelope_direction(envelope_with_direction(None), Direction::Tell);
+        assert_eq!(tell.direction, Some(Direction::Tell as i32));
+
+        let tell = PeerGate::stamp_envelope_direction(
+            envelope_with_direction(Some(Direction::Request as i32)),
+            Direction::Tell,
+        );
+        assert_eq!(tell.direction, Some(Direction::Tell as i32));
+    }
+
+    #[test]
+    fn relayable_direction_requires_explicit_routable_direction() {
+        let request = envelope_with_direction(Some(Direction::Request as i32));
+        assert_eq!(
+            PeerGate::relayable_direction(&request).unwrap(),
+            Direction::Request
+        );
+
+        let tell = envelope_with_direction(Some(Direction::Tell as i32));
+        assert_eq!(
+            PeerGate::relayable_direction(&tell).unwrap(),
+            Direction::Tell
+        );
+
+        let missing = envelope_with_direction(None);
+        assert!(matches!(
+            PeerGate::relayable_direction(&missing),
+            Err(ActrError::InvalidArgument(_))
+        ));
+
+        let unspecified = envelope_with_direction(Some(Direction::Unspecified as i32));
+        assert!(matches!(
+            PeerGate::relayable_direction(&unspecified),
+            Err(ActrError::InvalidArgument(_))
+        ));
+
+        let unknown = envelope_with_direction(Some(999));
+        assert!(matches!(
+            PeerGate::relayable_direction(&unknown),
+            Err(ActrError::InvalidArgument(_))
+        ));
     }
 }

@@ -68,6 +68,10 @@ impl HostGate {
     /// - `payload_type`: PayloadType
     /// - `identifier`: Optional identifier
     /// - `envelope`: Message envelope
+    ///
+    /// # Direction
+    /// One-way traffic is stamped `Direction::Tell` so the receiver runs the
+    /// handler without sending a reply.
     pub async fn send_message_with_type(
         &self,
         _target: &ActrId,
@@ -82,7 +86,7 @@ impl HostGate {
             identifier
         );
 
-        envelope.direction = Some(Direction::Request as i32);
+        envelope.direction = Some(Direction::Tell as i32);
         self.transport
             .send_message(payload_type, identifier, envelope)
             .await
@@ -131,7 +135,8 @@ impl HostGate {
     /// - `envelope`: Message envelope
     ///
     /// # Default behavior
-    /// Uses PayloadType::RpcReliable with no identifier
+    /// Uses PayloadType::RpcReliable with no identifier; one-way traffic is
+    /// stamped `Direction::Tell`.
     #[cfg(feature = "test-utils")]
     pub async fn send_message(
         &self,
@@ -140,7 +145,7 @@ impl HostGate {
     ) -> ActorResult<()> {
         tracing::debug!("HostGate::send_message to {}", target);
 
-        envelope.direction = Some(Direction::Request as i32);
+        envelope.direction = Some(Direction::Tell as i32);
         // Default to Reliable (no identifier)
         self.transport
             .send_message(PayloadType::RpcReliable, None, envelope)
@@ -173,13 +178,14 @@ impl HostGate {
 
         ensure_stream_payload_type(payload_type)?;
 
-        // Wrap in RpcEnvelope for transport.
+        // Wrap in RpcEnvelope for transport. DataChunk payloads are one-way
+        // traffic, so the wrapper envelope is stamped `Direction::Tell`.
         #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
         let mut envelope = RpcEnvelope {
             route_key: "fast_path.data_chunk".to_string(),
             payload: Some(data),
             error: None,
-            direction: Some(Direction::Request as i32),
+            direction: Some(Direction::Tell as i32),
             traceparent: None,
             tracestate: None,
             request_id: uuid::Uuid::new_v4().to_string(),

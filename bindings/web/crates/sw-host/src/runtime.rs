@@ -2878,7 +2878,9 @@ fn direction_for_routing(
 ) -> Option<Direction> {
     match envelope.direction {
         Some(raw) => match Direction::try_from(raw) {
-            Ok(direction @ (Direction::Request | Direction::Response)) => Some(direction),
+            Ok(direction @ (Direction::Request | Direction::Response | Direction::Tell)) => {
+                Some(direction)
+            }
             Ok(Direction::Unspecified) => {
                 log::warn!(
                     "[SW] rpc.invalid_direction_dropped: RpcEnvelope.direction is Unspecified request_id={} peer={} channel={} stream_id={} route_key={} direction={}; dropping",
@@ -3092,7 +3094,10 @@ pub async fn register_client(
             if let Some(workload) = workload {
                 let route_key = envelope.route_key.clone();
                 let request_id = envelope.request_id.clone();
-                let is_tell = envelope.timeout_ms == 0; // `tell()` sets `timeout_ms=0`, meaning one-way messaging.
+                // Fire-and-forget is signalled ONLY by the explicit
+                // Direction::Tell label; receivers must not infer tell-ness
+                // from timeout_ms == 0 (see package.proto).
+                let is_tell = envelope.direction == Some(Direction::Tell as i32);
                 let request_bytes = envelope
                     .payload
                     .as_ref()
@@ -3509,6 +3514,9 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
     let payload_bytes = call.request.payload.clone();
     let request_id = call.request_id.clone();
     let timeout_ms = call.request.timeout.unwrap_or(30000);
+    // Sender-side contract (#254): a REQUEST must carry a positive deadline.
+    crate::outbound::validate_rpc_timeout_ms(timeout_ms as i64)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
     // Check if a workload is registered
     let workload = WORKLOAD.with(|cell| cell.borrow().clone());

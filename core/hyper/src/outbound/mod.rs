@@ -32,6 +32,20 @@ fn ensure_stream_payload_type(payload_type: PayloadType) -> ActorResult<()> {
     Ok(())
 }
 
+/// Reject non-RPC payload types on the call/tell entry points.
+///
+/// Only `RpcReliable` and `RpcSignal` may carry an `RpcEnvelope`; stream and
+/// media payload types must use `send_data_chunk` / `send_media_sample`.
+pub(crate) fn ensure_rpc_payload_type(payload_type: PayloadType) -> ActorResult<()> {
+    if !payload_type.is_rpc() {
+        return Err(ActrError::InvalidArgument(format!(
+            "call/tell requires an RPC payload type (RpcReliable or RpcSignal), got {payload_type:?}"
+        )));
+    }
+
+    Ok(())
+}
+
 /// Gate enum for outbound messaging.
 ///
 /// # Design Principles

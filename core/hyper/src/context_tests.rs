@@ -303,3 +303,126 @@ async fn get_dependency_fingerprint_missing_dependency() {
         None
     );
 }
+
+// ── sender-side call/tell argument validation (#254 / #256) ──────────────
+
+#[tokio::test]
+async fn call_raw_rejects_zero_timeout() {
+    let c = ctx();
+    let err = c
+        .call_raw(
+            &Dest::Workload,
+            "pkg.Service.Method".to_string(),
+            PayloadType::RpcReliable,
+            Bytes::from_static(b"payload"),
+            0,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ActrError::InvalidArgument(_)),
+        "timeout_ms == 0 must be rejected at the call entry point, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn call_raw_rejects_negative_timeout() {
+    // A negative i64 would otherwise wrap through `as u64` into an
+    // effectively infinite Duration.
+    let c = ctx();
+    let err = c
+        .call_raw(
+            &Dest::Workload,
+            "pkg.Service.Method".to_string(),
+            PayloadType::RpcReliable,
+            Bytes::from_static(b"payload"),
+            -1,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ActrError::InvalidArgument(_)),
+        "negative timeout_ms must be rejected, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn call_raw_rejects_stream_payload_type() {
+    let c = ctx();
+    let err = c
+        .call_raw(
+            &Dest::Workload,
+            "pkg.Service.Method".to_string(),
+            PayloadType::StreamReliable,
+            Bytes::from_static(b"payload"),
+            5000,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ActrError::InvalidArgument(_)),
+        "StreamReliable must be rejected on the call path, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn call_raw_rejects_media_payload_type() {
+    let c = ctx();
+    let err = c
+        .call_raw(
+            &Dest::Workload,
+            "pkg.Service.Method".to_string(),
+            PayloadType::MediaRtp,
+            Bytes::from_static(b"payload"),
+            5000,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ActrError::InvalidArgument(_)),
+        "MediaRtp must be rejected on the call path, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn tell_raw_rejects_stream_payload_type() {
+    let c = ctx();
+    let err = c
+        .tell_raw(
+            &Dest::Workload,
+            "pkg.Service.Method".to_string(),
+            PayloadType::StreamLatencyFirst,
+            Bytes::from_static(b"payload"),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ActrError::InvalidArgument(_)),
+        "StreamLatencyFirst must be rejected on the tell path, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn tell_raw_accepts_rpc_signal_and_stamps_tell() {
+    // The tell path accepts both RPC payload types and puts a
+    // Direction::Tell envelope on the wire with timeout_ms == 0 as filler.
+    let transport = Arc::new(HostTransport::new());
+    let c = runtime_context_with_host_transport(ActrId::default(), transport.clone());
+    let lane = transport
+        .get_lane(PayloadType::RpcSignal, None)
+        .await
+        .unwrap();
+
+    c.tell_raw(
+        &Dest::Workload,
+        "pkg.Service.Method".to_string(),
+        PayloadType::RpcSignal,
+        Bytes::from_static(b"payload"),
+    )
+    .await
+    .unwrap();
+
+    let sent = lane.recv_envelope().await.unwrap();
+    assert_eq!(sent.direction, Some(Direction::Tell as i32));
+    assert_eq!(sent.timeout_ms, 0);
+}

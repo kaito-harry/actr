@@ -22,6 +22,10 @@ fn client_websocket_response_reader_accepts_only_response_direction() {
         PayloadType::RpcReliable,
     ));
     assert!(!ClientWebSocketHandle::is_response_envelope(
+        &envelope_with_direction(Some(Direction::Tell as i32)),
+        PayloadType::RpcReliable,
+    ));
+    assert!(!ClientWebSocketHandle::is_response_envelope(
         &envelope_with_direction(Some(Direction::Unspecified as i32)),
         PayloadType::RpcReliable,
     ));

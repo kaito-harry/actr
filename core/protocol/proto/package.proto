@@ -18,7 +18,9 @@ message MetadataEntry {
 // Direction of an RpcEnvelope on the wire.
 //
 // Receivers route explicitly on this field instead of inferring
-// request-vs-response from pending-state. Absence, DIRECTION_UNSPECIFIED,
+// request-vs-response from pending-state or tell-ness from timeout_ms.
+// Routing policy: REQUEST and TELL are dispatched to a handler; RESPONSE
+// wakes the matching pending request. Absence, DIRECTION_UNSPECIFIED,
 // and unknown future values are invalid on the current wire protocol;
 // receivers should warn and drop instead of guessing from local pending state.
 //
@@ -30,9 +32,10 @@ message MetadataEntry {
 // enqueued as a new call. The orphan-drop log includes route_key to make
 // such mislabels diagnosable.
 enum Direction {
-    DIRECTION_UNSPECIFIED = 0;  // Invalid default / missing direction sentinel
-    DIRECTION_REQUEST = 1;      // A new RPC call addressed to a handler
+    DIRECTION_UNSPECIFIED = 0;  // Invalid default / missing direction sentinel; receivers warn + drop
+    DIRECTION_REQUEST = 1;      // A new RPC call addressed to a handler; a response is expected
     DIRECTION_RESPONSE = 2;     // A reply (success payload or ErrorResponse) to a prior request
+    DIRECTION_TELL = 3;         // Fire-and-forget request; receiver MUST NOT reply
 }
 
 // RpcEnvelope wraps State Path RPC messages
@@ -49,7 +52,7 @@ message RpcEnvelope {
     // Business errors should be in the response message payload
     optional ErrorResponse error = 3;
 
-    // Envelope direction: Request or Response. See `Direction` above.
+    // Envelope direction: Request, Response, or Tell. See `Direction` above.
     optional Direction direction = 4;
 
     // W3C trace context header values (for distributed tracing)
@@ -58,6 +61,14 @@ message RpcEnvelope {
 
     required string request_id = 102;
     repeated MetadataEntry metadata = 103;
+
+    // Caller deadline in milliseconds.
+    //
+    // Contract: timeout_ms MUST be > 0 iff direction == DIRECTION_REQUEST.
+    // Senders set 0 as documented filler for TELL and RESPONSE envelopes.
+    // Receivers MUST ignore timeout_ms for TELL/RESPONSE and MUST NOT infer
+    // tell-ness (fire-and-forget) from timeout_ms == 0 — the explicit
+    // DIRECTION_TELL label is the only fire-and-forget marker.
     required int64 timeout_ms = 104;
 }
 

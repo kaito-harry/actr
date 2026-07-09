@@ -242,13 +242,13 @@ impl ClientWebSocketHandle {
         match envelope.direction {
             Some(raw) => match Direction::try_from(raw) {
                 Ok(Direction::Response) => true,
-                Ok(Direction::Request) => {
+                Ok(Direction::Request | Direction::Tell) => {
                     tracing::warn!(
                         request_id = %envelope.request_id,
                         route_key = %envelope.route_key,
                         payload_type = ?payload_type,
                         direction = raw,
-                        "ClientWebSocketHandle: request-labeled envelope received on response reader, dropping"
+                        "ClientWebSocketHandle: request/tell-labeled envelope received on response reader, dropping"
                     );
                     false
                 }

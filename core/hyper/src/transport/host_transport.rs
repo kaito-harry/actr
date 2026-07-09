@@ -58,7 +58,6 @@ use actr_framework::Bytes;
 use actr_protocol::{ActrError, PayloadType, RpcEnvelope};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, mpsc};
 
 /// Host Transport - manages intra-process transport (mpsc channels)
@@ -311,10 +310,14 @@ impl HostTransport {
         identifier: Option<String>,
         envelope: RpcEnvelope,
     ) -> actr_protocol::ActorResult<Bytes> {
+        // Sender-side deadline validation (#254): a request must carry a
+        // positive timeout. Rejecting here also avoids the `as u64` sign
+        // wrap for negative values. Receivers stay permissive.
+        let timeout = super::validate_rpc_timeout_ms(envelope.timeout_ms)?;
+
         // Register the pending entry first; the guard removes it on every
         // exit path below (lane lookup failure, send failure, timeout), so
         // unanswered requests cannot accumulate in the map.
-        let timeout_ms = envelope.timeout_ms;
         let pending = self.correlation.register(envelope.request_id.clone(), ());
 
         // Send
@@ -327,7 +330,7 @@ impl HostTransport {
             .map_err(ActrError::from)?;
 
         // Wait for response
-        pending.wait(Duration::from_millis(timeout_ms as u64)).await
+        pending.wait(timeout).await
     }
 
     /// Send one-way message

@@ -82,16 +82,22 @@ impl MessageDispatcher for DoubleDispatcher {
 struct InprocTestHarness {
     /// Shell uses this gate to send requests to the Workload
     shell_gate: Arc<HostGate>,
+    /// Raw Shell → Workload transport, for injecting hand-crafted envelopes
+    /// that bypass the gate's direction stamping (interop / drop tests).
+    shell_to_workload: Arc<HostTransport>,
     /// Shutdown signal
     shutdown_token: CancellationToken,
     /// Number of times the Workload handler actually ran (its side effect).
-    /// Incremented once per inbound envelope, regardless of `call` vs `tell`.
+    /// Incremented once per dispatched envelope, regardless of `call` vs `tell`.
     handler_runs: Arc<AtomicUsize>,
     /// Number of envelopes observed on the Shell response lane. A `call`
     /// produces exactly one; a `tell` (suppressed reply) produces zero.
     responses_seen: Arc<AtomicUsize>,
-    /// Receives one item after the Workload finishes handling each inbound
-    /// envelope, so `tell` tests can await the side effect deterministically
+    /// Direction label of the last envelope received by the Workload loop —
+    /// pins what the sender gates actually put on the wire.
+    last_direction: Arc<std::sync::Mutex<Option<i32>>>,
+    /// Receives one item after the Workload finishes handling (or dropping)
+    /// each inbound envelope, so tests can await the outcome deterministically
     /// (buffered channel — no lost wakeups, no polling with sleeps).
     handled_rx: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<()>>,
     /// Background task handles
@@ -128,6 +134,8 @@ impl InprocTestHarness {
 
         let handler_runs = Arc::new(AtomicUsize::new(0));
         let handler_runs_loop = handler_runs.clone();
+        let last_direction = Arc::new(std::sync::Mutex::new(None::<i32>));
+        let last_direction_loop = last_direction.clone();
         let (handled_tx, handled_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
 
         let workload_handle = tokio::spawn(async move {
@@ -139,6 +147,33 @@ impl InprocTestHarness {
                             Ok(envelope) => {
                                 let request_id = envelope.request_id.clone();
                                 let route_key = envelope.route_key.clone();
+                                *last_direction_loop.lock().unwrap() = envelope.direction;
+
+                                // Route strictly on the explicit direction label, mirroring
+                                // the node.rs guest/peer receive loops: Request runs the
+                                // handler and sends a response; Tell runs the handler for
+                                // its side effects but sends nothing — an unwanted reply
+                                // becomes an orphan response on the caller (#262). Anything
+                                // else (missing / Unspecified / Response / unknown) is
+                                // invalid on a dispatch lane and dropped with a warning.
+                                // timeout_ms is never consulted for tell-ness.
+                                let expects_response = match envelope
+                                    .direction
+                                    .map(actr_protocol::Direction::try_from)
+                                {
+                                    Some(Ok(actr_protocol::Direction::Request)) => true,
+                                    Some(Ok(actr_protocol::Direction::Tell)) => false,
+                                    other => {
+                                        tracing::warn!(
+                                            request_id = %request_id,
+                                            direction = ?other,
+                                            "invalid direction on dispatch lane; dropping"
+                                        );
+                                        // Signal the drop so tests can await it.
+                                        let _ = handled_tx.send(());
+                                        continue;
+                                    }
+                                };
 
                                 // Dispatch to Workload (use a mock context). This runs the
                                 // handler for its side effects unconditionally — including
@@ -150,13 +185,6 @@ impl InprocTestHarness {
                                     &ctx,
                                 ).await;
                                 handler_runs_loop.fetch_add(1, Ordering::SeqCst);
-
-                                // A `tell` (fire-and-forget) sets `timeout_ms == 0` to signal
-                                // it wants no reply. Run the handler for its side effects, but
-                                // do not send a response — an unwanted reply becomes an orphan
-                                // response on the caller (#262). Mirrors the guard added to the
-                                // node.rs guest/peer receive loops.
-                                let expects_response = envelope.timeout_ms != 0;
 
                                 match result {
                                     Ok(response_bytes) => {
@@ -170,7 +198,7 @@ impl InprocTestHarness {
                                                 tracestate: None,
                                                 request_id: request_id.clone(),
                                                 metadata: Vec::new(),
-                                                timeout_ms: 30000,
+                                                timeout_ms: 0, // RESPONSE filler; contract: only REQUEST carries a deadline.
                                             };
                                             if let Err(e) = response_tx
                                                 .send_message(PayloadType::RpcReliable, None, response_envelope)
@@ -198,7 +226,7 @@ impl InprocTestHarness {
                                                 tracestate: None,
                                                 request_id: request_id.clone(),
                                                 metadata: Vec::new(),
-                                                timeout_ms: 30000,
+                                                timeout_ms: 0, // RESPONSE filler; contract: only REQUEST carries a deadline.
                                             };
                                             if let Err(e) = response_tx
                                                 .send_message(PayloadType::RpcReliable, None, error_envelope)
@@ -284,9 +312,11 @@ impl InprocTestHarness {
 
         Self {
             shell_gate,
+            shell_to_workload,
             shutdown_token,
             handler_runs,
             responses_seen,
+            last_direction,
             handled_rx: tokio::sync::Mutex::new(handled_rx),
             _task_handles: vec![workload_handle, shell_receive_handle],
         }
@@ -311,23 +341,38 @@ impl InprocTestHarness {
 
     /// Send a fire-and-forget `tell` from Shell to Workload.
     ///
-    /// Mirrors `RuntimeContext::tell`: `timeout_ms == 0` signals that no reply
-    /// is expected, and the message is dispatched via `send_message` (no
-    /// pending response entry is registered on the sender side).
+    /// Mirrors `RuntimeContext::tell`: the one-way message path stamps
+    /// `Direction::Tell` (the gate overrides whatever is set here) and no
+    /// pending response entry is registered on the sender side. The zero
+    /// timeout is documented filler, not a tell marker.
     async fn tell_raw(&self, route_key: &str, payload: Vec<u8>) -> ActorResult<()> {
         let actor_id = test_actor_id();
         let envelope = RpcEnvelope {
             route_key: route_key.to_string(),
             payload: Some(Bytes::from(payload)),
             error: None,
-            direction: Some(actr_protocol::Direction::Request as i32),
+            direction: Some(actr_protocol::Direction::Tell as i32),
             traceparent: None,
             tracestate: None,
             request_id: uuid::Uuid::new_v4().to_string(),
             metadata: Vec::new(),
-            timeout_ms: 0, // Zero means no response is expected.
+            timeout_ms: 0, // Documented filler for TELL; not a tell marker.
         };
         self.shell_gate.send_message(&actor_id, envelope).await
+    }
+
+    /// Inject a hand-crafted envelope on the Shell → Workload lane without
+    /// any gate-side direction stamping (for interop / drop-path tests).
+    async fn send_raw_envelope(&self, envelope: RpcEnvelope) -> ActorResult<()> {
+        self.shell_to_workload
+            .send_message(PayloadType::RpcReliable, None, envelope)
+            .await
+            .map_err(|e| ActrError::Unavailable(e.to_string()))
+    }
+
+    /// Direction label of the last envelope seen by the Workload loop.
+    fn last_direction(&self) -> Option<i32> {
+        *self.last_direction.lock().unwrap()
     }
 
     /// Number of times the Workload handler ran (its observable side effect).
@@ -634,9 +679,10 @@ async fn concurrent_calls() {
 
 /// Test 7: a `tell` runs the handler but sends NO response (#262).
 ///
-/// The receive loop must run the handler for its side effects even for a
-/// fire-and-forget `tell` (`timeout_ms == 0`), but it must NOT emit a reply.
-/// An unwanted reply would arrive as an orphan response on the caller.
+/// The receive loop must run the handler for its side effects for a
+/// fire-and-forget `tell` (explicit `Direction::Tell` on the wire), but it
+/// must NOT emit a reply. An unwanted reply would arrive as an orphan
+/// response on the caller.
 #[tokio::test]
 async fn tell_runs_handler_but_sends_no_response() {
     let harness = InprocTestHarness::build().await;
@@ -656,6 +702,13 @@ async fn tell_runs_handler_but_sends_no_response() {
         .await_handled(std::time::Duration::from_secs(5))
         .await;
 
+    // The tell arrived with the explicit fire-and-forget label — receivers
+    // no longer infer tell-ness from timeout_ms.
+    assert_eq!(
+        harness.last_direction(),
+        Some(actr_protocol::Direction::Tell as i32),
+        "a tell must carry Direction::Tell on the wire"
+    );
     // The handler ran (side effect observed) ...
     assert_eq!(
         harness.handler_runs(),
@@ -723,6 +776,128 @@ async fn call_still_receives_its_response() {
         harness.responses_seen(),
         1,
         "a call must receive exactly one response envelope"
+    );
+
+    harness.shutdown();
+}
+
+/// Test 10 (interop pin, #254): a REQUEST arriving with `timeout_ms == 0`
+/// (buggy or pre-contract sender) is still dispatched AND answered.
+/// Sender-side validation rejects zero timeouts, but receivers stay
+/// permissive — tell-ness comes only from `Direction::Tell`.
+#[tokio::test]
+async fn request_with_zero_timeout_is_still_dispatched_and_answered() {
+    let harness = InprocTestHarness::build().await;
+
+    let envelope = RpcEnvelope {
+        route_key: "test/double".to_string(),
+        payload: Some(Bytes::from(21i32.to_le_bytes().to_vec())),
+        error: None,
+        direction: Some(actr_protocol::Direction::Request as i32),
+        traceparent: None,
+        tracestate: None,
+        request_id: uuid::Uuid::new_v4().to_string(),
+        metadata: Vec::new(),
+        timeout_ms: 0, // Contract violation by the sender; receiver must not care.
+    };
+    harness
+        .send_raw_envelope(envelope)
+        .await
+        .expect("raw send should succeed");
+
+    harness
+        .await_handled(std::time::Duration::from_secs(5))
+        .await;
+
+    assert_eq!(
+        harness.handler_runs(),
+        1,
+        "a zero-timeout REQUEST must still be dispatched"
+    );
+    assert_eq!(
+        harness.responses_seen(),
+        1,
+        "a zero-timeout REQUEST must still be answered (receiver permissive)"
+    );
+
+    harness.shutdown();
+}
+
+/// Test 11: an Unspecified direction is invalid on the dispatch lane and is
+/// dropped without running the handler or emitting a reply.
+#[tokio::test]
+async fn unspecified_direction_is_dropped_without_dispatch() {
+    let harness = InprocTestHarness::build().await;
+
+    let envelope = RpcEnvelope {
+        route_key: "test/double".to_string(),
+        payload: Some(Bytes::from(21i32.to_le_bytes().to_vec())),
+        error: None,
+        direction: Some(actr_protocol::Direction::Unspecified as i32),
+        traceparent: None,
+        tracestate: None,
+        request_id: uuid::Uuid::new_v4().to_string(),
+        metadata: Vec::new(),
+        timeout_ms: 5000,
+    };
+    harness
+        .send_raw_envelope(envelope)
+        .await
+        .expect("raw send should succeed");
+
+    harness
+        .await_handled(std::time::Duration::from_secs(5))
+        .await;
+
+    assert_eq!(
+        harness.handler_runs(),
+        0,
+        "an Unspecified-direction envelope must not be dispatched"
+    );
+    assert_eq!(
+        harness.responses_seen(),
+        0,
+        "an Unspecified-direction envelope must not produce a reply"
+    );
+
+    harness.shutdown();
+}
+
+/// Test 12: a Response-labeled envelope on the dispatch lane is a mislabel
+/// (responses are routed to pending maps by the gates) and is dropped.
+#[tokio::test]
+async fn response_direction_on_dispatch_lane_is_dropped() {
+    let harness = InprocTestHarness::build().await;
+
+    let envelope = RpcEnvelope {
+        route_key: "test/double".to_string(),
+        payload: Some(Bytes::from(21i32.to_le_bytes().to_vec())),
+        error: None,
+        direction: Some(actr_protocol::Direction::Response as i32),
+        traceparent: None,
+        tracestate: None,
+        request_id: uuid::Uuid::new_v4().to_string(),
+        metadata: Vec::new(),
+        timeout_ms: 5000,
+    };
+    harness
+        .send_raw_envelope(envelope)
+        .await
+        .expect("raw send should succeed");
+
+    harness
+        .await_handled(std::time::Duration::from_secs(5))
+        .await;
+
+    assert_eq!(
+        harness.handler_runs(),
+        0,
+        "a Response-labeled envelope must not be dispatched as a request"
+    );
+    assert_eq!(
+        harness.responses_seen(),
+        0,
+        "a dropped mislabel must not produce a reply"
     );
 
     harness.shutdown();

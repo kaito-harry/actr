@@ -653,6 +653,67 @@ impl Inner {
         .await;
     }
 
+    /// Whether the inbound envelope is an explicit fire-and-forget tell.
+    ///
+    /// This is the ONLY tell marker: receivers never infer tell-ness from
+    /// `timeout_ms == 0` (see the wire contract in `package.proto`).
+    pub(crate) fn envelope_is_tell(envelope: &RpcEnvelope) -> bool {
+        envelope.direction == Some(Direction::Tell as i32)
+    }
+
+    /// Direction-based routing decision for the server dispatch loops.
+    ///
+    /// Returns `Some(direction)` for the two dispatchable kinds (`Request`,
+    /// `Tell`). Everything else — missing, `Unspecified`, `Response`
+    /// (mislabel: responses are routed to pending maps by the gates and
+    /// never reach a dispatch loop), or unknown future values — yields
+    /// `None`, which the loops warn about and drop.
+    pub(crate) fn dispatchable_direction(raw_direction: Option<i32>) -> Option<Direction> {
+        match crate::wire::direction_for_routing(raw_direction) {
+            // Response is routed to pending maps by the gates, never
+            // dispatched; missing / Unspecified / unknown are invalid here.
+            Ok(direction @ (Direction::Request | Direction::Tell)) => Some(direction),
+            _ => None,
+        }
+    }
+
+    /// Whether an inbound envelope expects a reply, decided solely from its
+    /// direction label: `Request` → yes, `Tell` → no (fire-and-forget). Any
+    /// non-dispatchable direction yields `None` so the caller can warn + drop.
+    ///
+    /// Single source of truth for the "does this dispatch expect a response?"
+    /// policy shared by the Shell→Guest and mailbox receive loops.
+    pub(crate) fn dispatch_expects_response(raw_direction: Option<i32>) -> Option<bool> {
+        Self::dispatchable_direction(raw_direction).map(|direction| direction != Direction::Tell)
+    }
+
+    /// Build a RESPONSE envelope for a handled request.
+    ///
+    /// `timeout_ms` is always 0: per the `package.proto` wire contract only
+    /// `DIRECTION_REQUEST` carries a positive deadline — RESPONSE (and TELL)
+    /// use 0 as documented filler, and receivers MUST ignore it. Centralizing
+    /// RESPONSE construction here pins that contract in one tested place.
+    pub(crate) fn build_response_envelope(
+        request_id: String,
+        route_key: String,
+        payload: Option<Bytes>,
+        error: Option<actr_protocol::ErrorResponse>,
+        traceparent: Option<String>,
+        tracestate: Option<String>,
+    ) -> RpcEnvelope {
+        RpcEnvelope {
+            request_id,
+            route_key,
+            payload,
+            error,
+            direction: Some(Direction::Response as i32),
+            traceparent,
+            tracestate,
+            metadata: Vec::new(),
+            timeout_ms: 0,
+        }
+    }
+
     fn duplicate_wait_timeout(timeout_ms: i64) -> Duration {
         if timeout_ms > 0 {
             Duration::from_millis(timeout_ms as u64)
@@ -758,7 +819,15 @@ impl Inner {
             )));
         }
 
-        // 0.2. Deduplication: return cached response for retried request_ids
+        // 0.2. Deduplication: return cached response for retried request_ids.
+        //
+        // TELL envelopes keep their dedup entry (retry protection for
+        // RpcReliable's up-to-5 same-request_id attempts), but their
+        // duplicate handling differs: no caller is waiting for a reply, so
+        // a duplicate arriving while the original is still in flight is
+        // dropped immediately instead of blocking the receive loop for
+        // `duplicate_wait_timeout` (which maps 0 to the 30 s DEDUP_TTL).
+        let is_tell = Self::envelope_is_tell(&envelope);
         let outcome = {
             self.dedup_state
                 .lock()
@@ -768,6 +837,14 @@ impl Inner {
         match outcome {
             DedupOutcome::Fresh => {} // proceed normally
             DedupOutcome::InFlight(waiter) => {
+                if is_tell {
+                    tracing::debug!(
+                        request_id = %envelope.request_id,
+                        route_key = %envelope.route_key,
+                        "duplicate tell in-flight; dropping duplicate immediately (fire-and-forget)"
+                    );
+                    return Ok(Bytes::new());
+                }
                 tracing::debug!(
                     request_id = %envelope.request_id,
                     route_key = %envelope.route_key,
@@ -836,11 +913,21 @@ impl Inner {
             ),
         }
 
-        // 3. Store completed result in dedup cache before returning
+        // 3. Store completed result in dedup cache before returning.
+        //
+        // Completion happens on handler Err too, so a retried request (or
+        // tell) observes the recorded failure instead of re-running the
+        // handler. For a successful TELL the response bytes are never sent,
+        // so cache empty bytes instead of retaining the unsent payload for
+        // the full DEDUP_TTL.
+        let cached = match (&result, is_tell) {
+            (Ok(_), true) => Ok(Bytes::new()),
+            _ => result.clone(),
+        };
         self.dedup_state
             .lock()
             .await
-            .complete(&envelope.request_id, result.clone());
+            .complete(&envelope.request_id, cached);
 
         result
     }
@@ -1898,6 +1985,28 @@ impl Inner {
                                     Ok(envelope) => {
                                         let request_id = envelope.request_id.clone();
                                         tracing::debug!("📨 Guest received REQUEST from Shell: request_id={}", request_id);
+
+                                        // Route strictly on the explicit direction label:
+                                        // Request runs the handler and sends a response;
+                                        // Tell runs the handler for its side effects but
+                                        // sends nothing — an unwanted reply becomes an
+                                        // orphan response on the caller (#262). Anything
+                                        // else (missing / Unspecified / Response / unknown)
+                                        // is invalid on a dispatch lane: warn and drop.
+                                        // timeout_ms is never consulted for tell-ness.
+                                        let expects_response = match Inner::dispatch_expects_response(envelope.direction) {
+                                            Some(v) => v,
+                                            None => {
+                                                tracing::warn!(
+                                                    request_id = %request_id,
+                                                    route_key = %envelope.route_key,
+                                                    direction = ?envelope.direction,
+                                                    "rpc.invalid_direction_dropped: non-dispatchable RpcEnvelope.direction on Shell → Guest lane; dropping"
+                                                );
+                                                continue;
+                                            }
+                                        };
+
                                         // Extract and set tracing context from envelope
                                         #[cfg(feature = "opentelemetry")]
                                         let span = {
@@ -1912,28 +2021,20 @@ impl Inner {
                                         #[cfg(feature = "opentelemetry")]
                                         let handle_incoming_fut = handle_incoming_fut.instrument(span.clone());
 
-                                        // A `tell` (fire-and-forget) sets `timeout_ms == 0` to
-                                        // signal it wants no reply. Run the handler for its side
-                                        // effects, but do not send a response — an unwanted reply
-                                        // becomes an orphan response on the caller (#262).
-                                        let expects_response = envelope.timeout_ms != 0;
                                         match handle_incoming_fut.await {
                                             Ok(response_bytes) => {
                                                 if expects_response {
                                                     // Send RESPONSE back via workload_to_shell
                                                     // Keep same route_key (no prefix needed - separate channels!)
                                                     #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                    let mut response_envelope = RpcEnvelope {
-                                                        route_key: envelope.route_key.clone(),
-                                                        payload: Some(response_bytes),
-                                                        error: None,
-                                                        direction: Some(Direction::Response as i32),
-                                                        traceparent: None,
-                                                        tracestate: None,
-                                                        request_id: request_id.clone(),
-                                                        metadata: Vec::new(),
-                                                        timeout_ms: 30000,
-                                                    };
+                                                    let mut response_envelope = Inner::build_response_envelope(
+                                                        request_id.clone(),
+                                                        envelope.route_key.clone(),
+                                                        Some(response_bytes),
+                                                        None,
+                                                        None,
+                                                        None,
+                                                    );
                                                     // Inject tracing context
                                                     #[cfg(feature = "opentelemetry")]
                                                     inject_span_context_to_rpc(&span, &mut response_envelope);
@@ -1973,17 +2074,14 @@ impl Inner {
                                                         message: e.to_string(),
                                                     };
                                                     #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                    let mut error_envelope = RpcEnvelope {
-                                                        route_key: envelope.route_key.clone(),
-                                                        payload: None,
-                                                        error: Some(error_response),
-                                                        direction: Some(Direction::Response as i32),
-                                                        traceparent: envelope.traceparent.clone(),
-                                                        tracestate: envelope.tracestate.clone(),
-                                                        request_id: request_id.clone(),
-                                                        metadata: Vec::new(),
-                                                        timeout_ms: 30000,
-                                                    };
+                                                    let mut error_envelope = Inner::build_response_envelope(
+                                                        request_id.clone(),
+                                                        envelope.route_key.clone(),
+                                                        None,
+                                                        Some(error_response),
+                                                        envelope.traceparent.clone(),
+                                                        envelope.tracestate.clone(),
+                                                    );
                                                     // Inject tracing context
                                                     #[cfg(feature = "opentelemetry")]
                                                     inject_span_context_to_rpc(&span, &mut error_envelope);
@@ -2275,6 +2373,39 @@ impl Inner {
                                                 tracing::info!(request_id = %request_id, queue_latency_ms = queue_latency_ms, "rpc.mailbox.dequeued");
 
                                                 tracing::debug!("📦 Processing message: request_id={}", request_id);
+
+                                                // Route strictly on the explicit direction label:
+                                                // Request runs the handler and sends a response;
+                                                // Tell runs the handler but suppresses the reply —
+                                                // an unwanted reply becomes an orphan response on
+                                                // the caller (#262). Anything else (missing /
+                                                // Unspecified / Response / unknown) is invalid in
+                                                // the dispatch mailbox: warn, ack (to avoid
+                                                // redelivery), and drop. timeout_ms is never
+                                                // consulted for tell-ness.
+                                                let expects_response = match Inner::dispatch_expects_response(envelope.direction) {
+                                                    Some(v) => v,
+                                                    None => {
+                                                        tracing::warn!(
+                                                            request_id = %request_id,
+                                                            route_key = %envelope.route_key,
+                                                            direction = ?envelope.direction,
+                                                            "rpc.invalid_direction_dropped: non-dispatchable RpcEnvelope.direction in mailbox; dropping"
+                                                        );
+                                                        if let Err(e) = mailbox.ack(msg_record.id).await {
+                                                            tracing::error!(
+                                                                severity = 9,
+                                                                error_category = "mailbox_error",
+                                                                request_id = %request_id,
+                                                                message_id = %msg_record.id,
+                                                                "❌ Mailbox ACK failed for dropped envelope: {:?}",
+                                                                e
+                                                            );
+                                                        }
+                                                        continue;
+                                                    }
+                                                };
+
                                                 #[cfg(feature = "opentelemetry")]
                                                 let span = {
                                                     let actr_id_str = node.actor_id.as_ref().map(|id| id.to_string()).unwrap_or_default();
@@ -2354,29 +2485,20 @@ impl Inner {
                                                     }
                                                 }
 
-                                                // A `tell` (fire-and-forget) sets `timeout_ms == 0`
-                                                // to signal it wants no reply. Run the handler for
-                                                // its side effects, but do not send a response — an
-                                                // unwanted reply becomes an orphan response on the
-                                                // caller (#262).
-                                                let expects_response = envelope.timeout_ms != 0;
                                                 match handle_incoming_fut.await {
                                                     Ok(response_bytes) => {
                                                         match caller_id_result {
                                                             Ok(caller) if expects_response => {
                                                                 // Construct response RpcEnvelope (reuse request_id!)
                                                                 #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                                let mut response_envelope = RpcEnvelope {
-                                                                    request_id: request_id.clone(),
-                                                                    route_key: envelope.route_key.clone(),
-                                                                    payload: Some(response_bytes),
-                                                                    error: None,
-                                                                    direction: Some(Direction::Response as i32),
-                                                                    traceparent: envelope.traceparent.clone(),
-                                                                    tracestate: envelope.tracestate.clone(),
-                                                                    metadata: Vec::new(),
-                                                                    timeout_ms: 30000,
-                                                                };
+                                                                let mut response_envelope = Inner::build_response_envelope(
+                                                                    request_id.clone(),
+                                                                    envelope.route_key.clone(),
+                                                                    Some(response_bytes),
+                                                                    None,
+                                                                    envelope.traceparent.clone(),
+                                                                    envelope.tracestate.clone(),
+                                                                );
                                                                 // Inject tracing context
                                                                 #[cfg(feature = "opentelemetry")]
                                                                 inject_span_context_to_rpc(&span, &mut response_envelope);
@@ -2437,7 +2559,7 @@ impl Inner {
                                                         // Send error envelope back to caller so it
                                                         // receives a structured error rather than
                                                         // waiting until its deadline fires. A `tell`
-                                                        // (timeout_ms == 0) registered no pending
+                                                        // (Direction::Tell) registered no pending
                                                         // entry, so skip the reply — the local error
                                                         // log above still records the failure (#262).
                                                         if let (true, Ok(caller)) =
@@ -2448,17 +2570,14 @@ impl Inner {
                                                                 message: e.to_string(),
                                                             };
                                                             #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                            let mut error_envelope = RpcEnvelope {
-                                                                request_id: request_id.clone(),
-                                                                route_key: envelope.route_key.clone(),
-                                                                payload: None,
-                                                                error: Some(error_response),
-                                                                direction: Some(Direction::Response as i32),
-                                                                traceparent: envelope.traceparent.clone(),
-                                                                tracestate: envelope.tracestate.clone(),
-                                                                metadata: Vec::new(),
-                                                                timeout_ms: 30000,
-                                                            };
+                                                            let mut error_envelope = Inner::build_response_envelope(
+                                                                request_id.clone(),
+                                                                envelope.route_key.clone(),
+                                                                None,
+                                                                Some(error_response),
+                                                                envelope.traceparent.clone(),
+                                                                envelope.tracestate.clone(),
+                                                            );
                                                             #[cfg(feature = "opentelemetry")]
                                                             inject_span_context_to_rpc(&span, &mut error_envelope);
 
