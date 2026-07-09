@@ -1,4 +1,3 @@
-use crate::commands::SupportedLanguage;
 use crate::commands::codegen::proto_model::{ProtoFileModel, TypeOwnerIndex};
 use crate::commands::codegen::scaffold::{ScaffoldCatalog, ScaffoldService};
 use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
@@ -189,6 +188,9 @@ impl LanguageGenerator for TypeScriptGenerator {
 
         let mut options = Vec::new();
         options.push("target=ts".to_string());
+        if !local_files.is_empty() {
+            options.push(format!("LocalFiles={}", local_files.join(":")));
+        }
         if !remote_files.is_empty() {
             options.push(format!("RemoteFiles={}", remote_files.join(":")));
         }
@@ -202,7 +204,7 @@ impl LanguageGenerator for TypeScriptGenerator {
         }
         let option_str = options.join(",");
 
-        if !remote_files.is_empty() {
+        if !proto_inputs.is_empty() {
             let plugin_path = self.ensure_typescript_plugin()?;
             let mut cmd = StdCommand::new(PROTOC);
             cmd.arg(format!("--proto_path={}", proto_root.display()))
@@ -216,7 +218,7 @@ impl LanguageGenerator for TypeScriptGenerator {
                     context.output.display()
                 ));
 
-            for proto_input in &remote_files {
+            for proto_input in &proto_inputs {
                 cmd.arg(proto_input);
             }
 
@@ -252,7 +254,11 @@ impl LanguageGenerator for TypeScriptGenerator {
         Ok(generated_files)
     }
 
-    async fn generate_scaffold(&self, context: &GenContext) -> Result<Vec<PathBuf>> {
+    async fn generate_scaffold(
+        &self,
+        context: &GenContext,
+        catalog: &ScaffoldCatalog,
+    ) -> Result<Vec<PathBuf>> {
         info!("📝 Generating TypeScript user code scaffold...");
 
         let mut scaffold_files = Vec::new();
@@ -281,7 +287,7 @@ impl LanguageGenerator for TypeScriptGenerator {
             }
         }
 
-        let modules = self.collect_proto_modules(context)?;
+        let modules = self.collect_proto_modules(context, catalog)?;
         let bound_methods = self.bind_methods(&modules)?;
         let scaffold_content = self.generate_scaffold_content(&bound_methods);
 
@@ -346,14 +352,18 @@ impl LanguageGenerator for TypeScriptGenerator {
 }
 
 impl TypeScriptGenerator {
-    fn collect_proto_modules(&self, context: &GenContext) -> Result<Vec<ProtoModuleInfo>> {
-        let catalog = ScaffoldCatalog::load(context, SupportedLanguage::TypeScript)?;
+    fn collect_proto_modules(
+        &self,
+        context: &GenContext,
+        catalog: &ScaffoldCatalog,
+    ) -> Result<Vec<ProtoModuleInfo>> {
         let mut services_by_file: HashMap<String, Vec<ProtoServiceInfo>> = HashMap::new();
 
         for service in catalog
             .local_services
-            .into_iter()
-            .chain(catalog.remote_services)
+            .iter()
+            .cloned()
+            .chain(catalog.remote_services.iter().cloned())
         {
             services_by_file
                 .entry(normalize_proto_lookup_key(&service.proto_file))

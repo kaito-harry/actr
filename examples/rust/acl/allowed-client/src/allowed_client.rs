@@ -61,7 +61,7 @@ impl actr_framework::MessageDispatcher for AllowedClientDispatcher {
 
         info!("[AllowedClient] Forwarding greeting to server...");
         
-        let response: GreetResponse = ctx.call(&Dest::Actor(server_id), request).await?;
+        let response: GreetResponse = ctx.call(&Dest::Peer(server_id), request).await?;
 
         info!("[AllowedClient] Got response: {}", response.message);
 

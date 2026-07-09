@@ -236,41 +236,41 @@ pub struct DestV1 {
 #[derive(Clone, PartialEq, prost::Oneof)]
 pub enum DestKind {
     #[prost(bool, tag = "1")]
-    Shell(bool),
+    Host(bool),
     #[prost(bool, tag = "2")]
-    Local(bool),
+    Workload(bool),
     #[prost(message, tag = "3")]
-    Actor(ActrId),
+    Peer(ActrId),
 }
 
 impl DestV1 {
-    /// Construct a shell destination.
-    pub fn shell() -> Self {
+    /// Construct a host destination.
+    pub fn host() -> Self {
         Self {
-            kind: Some(DestKind::Shell(true)),
+            kind: Some(DestKind::Host(true)),
         }
     }
 
-    /// Construct a local destination.
-    pub fn local() -> Self {
+    /// Construct a workload destination.
+    pub fn workload() -> Self {
         Self {
-            kind: Some(DestKind::Local(true)),
+            kind: Some(DestKind::Workload(true)),
         }
     }
 
-    /// Construct an actor destination.
-    pub fn actor(id: ActrId) -> Self {
+    /// Construct a peer destination.
+    pub fn peer(id: ActrId) -> Self {
         Self {
-            kind: Some(DestKind::Actor(id)),
+            kind: Some(DestKind::Peer(id)),
         }
     }
 
     /// Convert the ABI destination into the framework destination.
     pub fn try_into_dest(self) -> Result<Dest, ActrError> {
         match self.kind {
-            Some(DestKind::Shell(_)) => Ok(Dest::Shell),
-            Some(DestKind::Local(_)) => Ok(Dest::Local),
-            Some(DestKind::Actor(id)) => Ok(Dest::Actor(id)),
+            Some(DestKind::Host(_)) => Ok(Dest::Host),
+            Some(DestKind::Workload(_)) => Ok(Dest::Workload),
+            Some(DestKind::Peer(id)) => Ok(Dest::Peer(id)),
             None => Err(ActrError::DecodeFailure(
                 "destination kind is missing".into(),
             )),
@@ -457,9 +457,9 @@ pub fn error_reply(status: i32, message: impl Into<Vec<u8>>) -> Result<Vec<u8>, 
 /// Convert a [`crate::Dest`] to the ABI-level [`DestV1`].
 pub fn dest_to_v1(dest: &crate::Dest) -> DestV1 {
     match dest {
-        crate::Dest::Shell => DestV1::shell(),
-        crate::Dest::Local => DestV1::local(),
-        crate::Dest::Actor(id) => DestV1::actor(id.clone()),
+        crate::Dest::Host => DestV1::host(),
+        crate::Dest::Workload => DestV1::workload(),
+        crate::Dest::Peer(id) => DestV1::peer(id.clone()),
     }
 }
 

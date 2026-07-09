@@ -21,6 +21,7 @@ use crate::transport::WsSink;
 use crate::wire::SignalingKeyFetcher;
 use crate::wire::webrtc::SignalingClient;
 use crate::wire::webrtc::{HookCallback, HookEvent};
+use crate::wire::{DirectionError, direction_for_routing};
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
@@ -38,20 +39,6 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 /// Pending requests map type: request_id → (target_actor_id, oneshot response sender)
 type PendingRequestsMap =
     Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>;
-
-/// Why an inbound `RpcEnvelope.direction` could not be routed.
-///
-/// `direction_for_routing` returns this so the caller can decode the peer
-/// (for diagnostics) only on the drop path, never on the happy path.
-#[derive(Debug)]
-enum DirectionError {
-    /// `direction` field absent from the envelope.
-    Missing,
-    /// `direction` present but `DIRECTION_UNSPECIFIED`.
-    Unspecified,
-    /// `direction` present but not a known variant.
-    Unknown,
-}
 
 /// WebSocket authentication context (optional)
 ///
@@ -194,8 +181,9 @@ impl WebSocketGate {
     }
 
     /// Handle RpcEnvelope: explicit Response wakes the waiting party,
-    /// explicit Request enqueues into Mailbox. Missing, Unspecified, or
-    /// unknown direction values are invalid and dropped.
+    /// explicit Request or Tell enqueues into Mailbox (the dispatch loop
+    /// suppresses the reply for Tell). Missing, Unspecified, or unknown
+    /// direction values are invalid and dropped.
     async fn handle_envelope(
         envelope: RpcEnvelope,
         from_bytes: Vec<u8>,
@@ -206,7 +194,7 @@ impl WebSocketGate {
     ) {
         let request_id = envelope.request_id.clone();
 
-        let direction = match Self::direction_for_routing(envelope.direction) {
+        let direction = match direction_for_routing(envelope.direction) {
             Ok(direction) => direction,
             Err(error) => {
                 // Drop path only: decode the peer lazily for diagnostics.
@@ -228,7 +216,7 @@ impl WebSocketGate {
             }
         };
 
-        if matches!(direction, Direction::Request) {
+        if matches!(direction, Direction::Request | Direction::Tell) {
             Self::enqueue_request(from_bytes, data, payload_type, mailbox, &request_id).await;
             return;
         }
@@ -275,24 +263,7 @@ impl WebSocketGate {
             .unwrap_or_else(|e| format!("decode_failed:{e}"))
     }
 
-    /// Classify an inbound `RpcEnvelope.direction` into a routable direction
-    /// or a `DirectionError`.
-    ///
-    /// Pure: performs no logging and no peer decode. The caller handles
-    /// diagnostics on the drop path so the happy path stays free of
-    /// `ActrId::decode` + `to_string_repr()`.
-    fn direction_for_routing(raw_direction: Option<i32>) -> Result<Direction, DirectionError> {
-        match raw_direction {
-            Some(raw) => match Direction::try_from(raw) {
-                Ok(direction @ (Direction::Request | Direction::Response)) => Ok(direction),
-                Ok(Direction::Unspecified) => Err(DirectionError::Unspecified),
-                Err(_) => Err(DirectionError::Unknown),
-            },
-            None => Err(DirectionError::Missing),
-        }
-    }
-
-    /// Enqueue an explicit inbound RPC request to the Mailbox.
+    /// Enqueue an explicit inbound RPC request or tell to the Mailbox.
     async fn enqueue_request(
         from_bytes: Vec<u8>,
         data: Bytes,

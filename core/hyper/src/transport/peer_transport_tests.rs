@@ -44,7 +44,7 @@ async fn test_has_dest() {
     let factory = create_test_factory();
     let mgr = PeerTransport::new(local_id, factory);
 
-    let dest = Dest::shell();
+    let dest = Dest::host();
     assert!(!mgr.has_dest(&dest).await);
 }
 
@@ -53,7 +53,7 @@ async fn close_transport_if_current_replaced_instance_does_not_mark_closing() {
     let local_id = ActrId::default();
     let factory = create_test_factory();
     let mgr = PeerTransport::new(local_id, factory);
-    let dest = Dest::shell();
+    let dest = Dest::host();
 
     let old_transport = Arc::new(
         DestTransport::new(dest.clone(), vec![])
@@ -171,7 +171,7 @@ async fn peer_transport_with_webrtc_and_ws(
     websocket: Arc<CountingWire>,
 ) -> (PeerTransport, Dest) {
     let mgr = PeerTransport::new(peer_id.clone(), create_test_factory());
-    let dest = Dest::shell();
+    let dest = Dest::host();
 
     let transport = DestTransport::new(dest.clone(), vec![webrtc, websocket])
         .await

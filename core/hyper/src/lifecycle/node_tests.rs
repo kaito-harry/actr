@@ -202,7 +202,7 @@ async fn send_data_chunk_rejects_non_stream_payload_type() {
         ctx,
         wl,
         HostOperation::SendDataChunk(HostSendDataChunkV1 {
-            dest: DestV1::local(),
+            dest: DestV1::workload(),
             payload_type: PayloadType::RpcReliable as i32,
             ..Default::default()
         }),
@@ -218,7 +218,7 @@ async fn send_data_chunk_rejects_unknown_payload_type() {
         ctx,
         wl,
         HostOperation::SendDataChunk(HostSendDataChunkV1 {
-            dest: DestV1::local(),
+            dest: DestV1::workload(),
             payload_type: 9999,
             ..Default::default()
         }),
@@ -235,7 +235,7 @@ async fn send_data_chunk_valid_type_routes_and_errors() {
         ctx,
         wl,
         HostOperation::SendDataChunk(HostSendDataChunkV1 {
-            dest: DestV1::local(),
+            dest: DestV1::workload(),
             payload_type: PayloadType::StreamReliable as i32,
             ..Default::default()
         }),
@@ -330,7 +330,7 @@ async fn stream_callback_send_rejects_non_stream_payload_type() {
     let res = stream_callback_host_operation_handler(
         ctx,
         HostOperation::SendDataChunk(HostSendDataChunkV1 {
-            dest: DestV1::local(),
+            dest: DestV1::workload(),
             payload_type: PayloadType::RpcReliable as i32,
             ..Default::default()
         }),
@@ -345,7 +345,7 @@ async fn stream_callback_send_rejects_unknown_payload_type() {
     let res = stream_callback_host_operation_handler(
         ctx,
         HostOperation::SendDataChunk(HostSendDataChunkV1 {
-            dest: DestV1::local(),
+            dest: DestV1::workload(),
             payload_type: 9999,
             ..Default::default()
         }),
@@ -360,7 +360,7 @@ async fn stream_callback_send_valid_type_routes_and_errors() {
     let res = stream_callback_host_operation_handler(
         ctx,
         HostOperation::SendDataChunk(HostSendDataChunkV1 {
-            dest: DestV1::local(),
+            dest: DestV1::workload(),
             payload_type: PayloadType::StreamLatencyFirst as i32,
             ..Default::default()
         }),
@@ -561,4 +561,352 @@ fn protocol_error_to_code_maps_all_variants() {
         )),
         10011
     );
+}
+
+// ── direction-based dispatch routing helpers ────────────────────────────
+
+#[test]
+fn dispatchable_direction_accepts_request_and_tell_only() {
+    use actr_protocol::Direction;
+
+    assert_eq!(
+        Inner::dispatchable_direction(Some(Direction::Request as i32)),
+        Some(Direction::Request)
+    );
+    assert_eq!(
+        Inner::dispatchable_direction(Some(Direction::Tell as i32)),
+        Some(Direction::Tell)
+    );
+    // Response is routed to pending maps by the gates; in a dispatch loop it
+    // is a mislabel and must be dropped.
+    assert_eq!(
+        Inner::dispatchable_direction(Some(Direction::Response as i32)),
+        None
+    );
+    assert_eq!(
+        Inner::dispatchable_direction(Some(Direction::Unspecified as i32)),
+        None
+    );
+    assert_eq!(Inner::dispatchable_direction(Some(99)), None);
+    assert_eq!(Inner::dispatchable_direction(None), None);
+}
+
+#[test]
+fn envelope_is_tell_matches_only_explicit_tell_label() {
+    use actr_protocol::Direction;
+
+    let mut envelope = RpcEnvelope {
+        request_id: "tell-detect".to_string(),
+        route_key: "pkg.Service.Method".to_string(),
+        direction: Some(Direction::Tell as i32),
+        ..Default::default()
+    };
+    assert!(Inner::envelope_is_tell(&envelope));
+
+    // A zero timeout alone is NOT a tell marker anymore.
+    envelope.direction = Some(Direction::Request as i32);
+    envelope.timeout_ms = 0;
+    assert!(!Inner::envelope_is_tell(&envelope));
+
+    envelope.direction = None;
+    assert!(!Inner::envelope_is_tell(&envelope));
+}
+
+#[test]
+fn build_response_envelope_pins_zero_timeout_per_contract() {
+    use actr_protocol::Direction;
+
+    // Success RESPONSE.
+    let ok_env = Inner::build_response_envelope(
+        "req-ok".to_string(),
+        "pkg.Service.Method".to_string(),
+        Some(Bytes::from_static(b"resp")),
+        None,
+        None,
+        None,
+    );
+    assert_eq!(ok_env.direction, Some(Direction::Response as i32));
+    assert_eq!(
+        ok_env.timeout_ms, 0,
+        "RESPONSE envelopes must carry timeout_ms=0 per package.proto contract"
+    );
+
+    // Error RESPONSE also uses 0; payload/error are mutually exclusive.
+    let err_env = Inner::build_response_envelope(
+        "req-err".to_string(),
+        "pkg.Service.Method".to_string(),
+        None,
+        Some(actr_protocol::ErrorResponse {
+            code: 1,
+            message: "boom".to_string(),
+        }),
+        None,
+        None,
+    );
+    assert_eq!(err_env.timeout_ms, 0);
+    assert!(err_env.payload.is_none());
+    assert!(err_env.error.is_some());
+}
+
+// ── handle_incoming TELL dedup semantics ────────────────────────────────
+//
+// These tests build a real `Inner` (in-memory mailbox, unreachable
+// signaling) around a gated linked workload so the in-flight window is
+// under deterministic test control — no sleeps.
+
+use crate::lifecycle::node::CredentialState;
+use actr_framework::Bytes as FrameworkBytes;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Linked handle whose dispatch blocks until `release` flips to true,
+/// signalling entry through `entered_tx` for deterministic sequencing.
+struct GatedLinkedHandle {
+    entered_tx: tokio::sync::mpsc::UnboundedSender<()>,
+    release: tokio::sync::watch::Receiver<bool>,
+    runs: Arc<AtomicUsize>,
+    result: fn() -> ActorResult<FrameworkBytes>,
+}
+
+#[async_trait::async_trait]
+impl LinkedWorkloadHandle for GatedLinkedHandle {
+    async fn dispatch(
+        &self,
+        _envelope: RpcEnvelope,
+        _ctx: Arc<crate::context::RuntimeContext>,
+    ) -> ActorResult<FrameworkBytes> {
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        let _ = self.entered_tx.send(());
+        let mut release = self.release.clone();
+        while !*release.borrow() {
+            if release.changed().await.is_err() {
+                break;
+            }
+        }
+        (self.result)()
+    }
+}
+
+fn dedup_test_config(dir: &tempfile::TempDir) -> actr_config::RuntimeConfig {
+    actr_config::RuntimeConfig {
+        package: actr_config::PackageInfo {
+            name: "DedupTellActor".to_string(),
+            actr_type: actr_protocol::ActrType {
+                manufacturer: "test-mfr".to_string(),
+                name: "DedupTellActor".to_string(),
+                version: "0.1.0".to_string(),
+            },
+            description: None,
+            authors: vec![],
+            license: None,
+        },
+        signaling_url: url::Url::parse("ws://127.0.0.1:9/signaling/ws").unwrap(),
+        realm: actr_protocol::Realm { realm_id: 7 },
+        ais_endpoint: "http://127.0.0.1:9/ais".to_string(),
+        realm_secret: None,
+        visible_in_discovery: false,
+        acl: None,
+        mailbox_path: None,
+        scripts: std::collections::HashMap::new(),
+        webrtc: actr_config::WebRtcConfig::default(),
+        websocket_listen_port: None,
+        websocket_advertised_host: None,
+        observability: actr_config::ObservabilityConfig {
+            filter_level: "info".to_string(),
+            tracing_enabled: false,
+            tracing_endpoint: "http://127.0.0.1:9".to_string(),
+            tracing_service_name: "dedup-tell-test".to_string(),
+        },
+        config_dir: dir.path().to_path_buf(),
+        trust: vec![],
+        package_path: None,
+        web: None,
+    }
+}
+
+struct TellDedupHarness {
+    inner: Arc<Inner>,
+    entered_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+    release_tx: tokio::sync::watch::Sender<bool>,
+    runs: Arc<AtomicUsize>,
+    _dir: tempfile::TempDir,
+}
+
+async fn tell_dedup_harness(result: fn() -> ActorResult<FrameworkBytes>) -> TellDedupHarness {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (entered_tx, entered_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (release_tx, release_rx) = tokio::sync::watch::channel(false);
+    let runs = Arc::new(AtomicUsize::new(0));
+
+    let handle = GatedLinkedHandle {
+        entered_tx,
+        release: release_rx,
+        runs: runs.clone(),
+        result,
+    };
+    let workload = Workload::Linked(Arc::new(handle) as Arc<dyn LinkedWorkloadHandle>);
+    let config = dedup_test_config(&dir);
+    let actor_id = ActrId {
+        realm: config.realm,
+        serial_number: 1,
+        r#type: config.package.actr_type.clone(),
+    };
+
+    let mut inner = Inner::build(config, workload, None, None, 100, Duration::from_secs(60))
+        .await
+        .expect("Inner::build must succeed with in-memory mailbox");
+    // handle_incoming requires post-start identity/credential state; set it
+    // directly instead of driving the full registration path.
+    inner.actor_id = Some(actor_id);
+    inner.credential_state = Some(CredentialState::new(AIdCredential::default(), None, None));
+
+    TellDedupHarness {
+        inner: Arc::new(inner),
+        entered_rx,
+        release_tx,
+        runs,
+        _dir: dir,
+    }
+}
+
+fn tell_envelope(request_id: &str) -> RpcEnvelope {
+    RpcEnvelope {
+        request_id: request_id.to_string(),
+        route_key: "pkg.Service.Method".to_string(),
+        payload: Some(FrameworkBytes::from_static(b"tell-payload")),
+        error: None,
+        direction: Some(Direction::Tell as i32),
+        traceparent: None,
+        tracestate: None,
+        metadata: vec![],
+        // Documented filler for TELL; must not influence dedup behavior.
+        timeout_ms: 0,
+    }
+}
+
+/// A duplicate TELL arriving while the original is still in flight is
+/// dropped immediately — it must not wait `duplicate_wait_timeout` (which
+/// maps 0 to the 30 s DEDUP_TTL) and the handler must run exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_inflight_tell_is_dropped_immediately() {
+    let mut h = tell_dedup_harness(|| Ok(FrameworkBytes::from_static(b"unsent-response"))).await;
+    let envelope = tell_envelope("dup-tell-inflight");
+
+    // Task A: original tell, blocks inside the handler on the release gate.
+    let inner_a = h.inner.clone();
+    let env_a = envelope.clone();
+    let original = tokio::spawn(async move { inner_a.handle_incoming(env_a, None).await });
+
+    // Deterministic: wait until the handler has actually been entered.
+    tokio::time::timeout(Duration::from_secs(5), h.entered_rx.recv())
+        .await
+        .expect("handler must be entered")
+        .expect("entered channel must stay open");
+
+    // Duplicate while in flight: must resolve without waiting for the
+    // original (the release gate is still closed, so any wait would hang
+    // until this test's own 5 s guard fires).
+    let duplicate = tokio::time::timeout(
+        Duration::from_secs(5),
+        h.inner.handle_incoming(envelope.clone(), None),
+    )
+    .await
+    .expect("duplicate in-flight tell must return immediately, not wait for the original")
+    .expect("duplicate tell drop must resolve Ok");
+    assert!(
+        duplicate.is_empty(),
+        "dropped duplicate tell must carry no payload"
+    );
+    assert_eq!(
+        h.runs.load(Ordering::SeqCst),
+        1,
+        "duplicate tell must not re-enter the handler"
+    );
+
+    // Release the original and let it complete.
+    h.release_tx.send(true).unwrap();
+    let original_result = original.await.unwrap().unwrap();
+    assert_eq!(
+        original_result,
+        FrameworkBytes::from_static(b"unsent-response"),
+        "the original tell still returns the handler result to its loop"
+    );
+
+    // Post-completion duplicate: served from the dedup cache, which stores
+    // EMPTY bytes for a successful tell (the response is never sent, so the
+    // unsent payload is not retained for the DEDUP_TTL).
+    let cached = h.inner.handle_incoming(envelope, None).await.unwrap();
+    assert!(
+        cached.is_empty(),
+        "completed tell must cache empty bytes, not the unsent response"
+    );
+    assert_eq!(
+        h.runs.load(Ordering::SeqCst),
+        1,
+        "post-completion duplicate tell must not re-run the handler"
+    );
+}
+
+/// A TELL whose handler fails still completes its dedup entry (with the
+/// error), so a retry with the same request_id observes the failure instead
+/// of re-running the handler.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tell_handler_error_completes_dedup_entry() {
+    let mut h =
+        tell_dedup_harness(|| Err(ActrError::Internal("tell handler failed".to_string()))).await;
+    let envelope = tell_envelope("dup-tell-error");
+
+    let inner_a = h.inner.clone();
+    let env_a = envelope.clone();
+    let original = tokio::spawn(async move { inner_a.handle_incoming(env_a, None).await });
+
+    tokio::time::timeout(Duration::from_secs(5), h.entered_rx.recv())
+        .await
+        .expect("handler must be entered")
+        .expect("entered channel must stay open");
+    h.release_tx.send(true).unwrap();
+
+    let original_err = original.await.unwrap().unwrap_err();
+    assert!(matches!(original_err, ActrError::Internal(_)));
+
+    // Retry with the same request_id: served from the dedup cache (the
+    // recorded error), handler not re-entered.
+    let retried = h.inner.handle_incoming(envelope, None).await;
+    assert!(
+        matches!(retried, Err(ActrError::Internal(_))),
+        "retried tell must observe the cached handler error, got {retried:?}"
+    );
+    assert_eq!(
+        h.runs.load(Ordering::SeqCst),
+        1,
+        "retried tell must not re-run the failed handler"
+    );
+}
+
+/// Interop pin: a REQUEST arriving with `timeout_ms == 0` (buggy or
+/// pre-contract sender) is still dispatched and answered — receiver-side
+/// permissiveness is part of the #254 contract.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn request_with_zero_timeout_is_still_dispatched() {
+    let mut h = tell_dedup_harness(|| Ok(FrameworkBytes::from_static(b"answered"))).await;
+    let mut envelope = tell_envelope("zero-timeout-request");
+    envelope.direction = Some(Direction::Request as i32);
+    envelope.timeout_ms = 0;
+
+    let inner_a = h.inner.clone();
+    let env_a = envelope.clone();
+    let call = tokio::spawn(async move { inner_a.handle_incoming(env_a, None).await });
+
+    tokio::time::timeout(Duration::from_secs(5), h.entered_rx.recv())
+        .await
+        .expect("zero-timeout request must still reach the handler")
+        .expect("entered channel must stay open");
+    h.release_tx.send(true).unwrap();
+
+    let response = call.await.unwrap().unwrap();
+    assert_eq!(
+        response,
+        FrameworkBytes::from_static(b"answered"),
+        "a zero-timeout REQUEST must still be answered"
+    );
+    assert_eq!(h.runs.load(Ordering::SeqCst), 1);
 }

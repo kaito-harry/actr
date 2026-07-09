@@ -1,6 +1,9 @@
 use super::RustGenerator;
-use crate::commands::codegen::scaffold::{ScaffoldMethod, ScaffoldService};
-use crate::commands::codegen::{GenContext, LanguageGenerator, ProtoModel, TypeRef};
+use crate::commands::codegen::scaffold::{ScaffoldCatalog, ScaffoldMethod, ScaffoldService};
+use crate::commands::codegen::{
+    ActrGenMetadata, GenContext, LanguageGenerator, ProtoModel, SupportedLanguage, TypeRef,
+    write_metadata,
+};
 use actr_config::ConfigParser;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -22,14 +25,18 @@ fn scaffold_service() -> ScaffoldService {
             output_type: "PingResponse".to_string(),
             route_key: "demo.shell.EmptyShell/Ping".to_string(),
             input_ref: TypeRef {
+                proto_type: "demo.shell.PingRequest".to_string(),
                 type_name: "PingRequest".to_string(),
                 proto_package: "demo.shell".to_string(),
-                ..Default::default()
+                proto_file: "bridge.proto".to_string(),
+                generated_type: None,
             },
             output_ref: TypeRef {
+                proto_type: "demo.shell.PingResponse".to_string(),
                 type_name: "PingResponse".to_string(),
                 proto_package: "demo.shell".to_string(),
-                ..Default::default()
+                proto_file: "bridge.proto".to_string(),
+                generated_type: None,
             },
         }],
     }
@@ -121,8 +128,12 @@ realm_id = 1001
         debug: false,
         skip_validation: false,
     };
+    let metadata =
+        ActrGenMetadata::from_proto_model(SupportedLanguage::Rust, &context.proto_model).unwrap();
+    write_metadata(&context.output, &metadata).unwrap();
+    let catalog = ScaffoldCatalog::from_metadata(&metadata);
 
-    tokio_test::block_on(RustGenerator.generate_scaffold(&context)).unwrap();
+    tokio_test::block_on(RustGenerator.generate_scaffold(&context, &catalog)).unwrap();
 
     let handler_path = src_dir.join("empty_shell.rs");
     assert!(
@@ -148,7 +159,7 @@ realm_id = 1001
     assert!(lib.contains("EmptyShellWorkload<EmptyShellImpl>"));
 
     std::fs::write(&handler_path, "pub struct UserImplemented;\n").unwrap();
-    tokio_test::block_on(RustGenerator.generate_scaffold(&context)).unwrap();
+    tokio_test::block_on(RustGenerator.generate_scaffold(&context, &catalog)).unwrap();
     assert_eq!(
         std::fs::read_to_string(&handler_path).unwrap(),
         "pub struct UserImplemented;\n",
@@ -253,12 +264,14 @@ fn message_imports_use_nested_parent_modules() {
         type_name: "InnerRequest".to_string(),
         proto_package: "ask".to_string(),
         proto_file: "remote/ask/ask.proto".to_string(),
+        generated_type: None,
     };
     svc.methods[0].output_ref = TypeRef {
         proto_type: "ask.Outer.InnerResponse".to_string(),
         type_name: "InnerResponse".to_string(),
         proto_package: "ask".to_string(),
         proto_file: "remote/ask/ask.proto".to_string(),
+        generated_type: None,
     };
 
     let imports = super::message_imports(&svc);

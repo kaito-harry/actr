@@ -36,16 +36,32 @@ struct SpyGenerator {
     format_calls: AtomicUsize,
     validate_calls: AtomicUsize,
     finalize_calls: AtomicUsize,
+    emit_metadata: bool,
 }
 
 #[async_trait]
 impl LanguageGenerator for SpyGenerator {
-    async fn generate_infrastructure(&self, _context: &GenContext) -> Result<Vec<PathBuf>> {
+    async fn generate_infrastructure(&self, context: &GenContext) -> Result<Vec<PathBuf>> {
         self.infrastructure_calls.fetch_add(1, Ordering::SeqCst);
+        if self.emit_metadata {
+            write_metadata(
+                &context.output,
+                &ActrGenMetadata {
+                    plugin_version: "test-plugin".into(),
+                    language: "rust".into(),
+                    local_services: vec![],
+                    remote_services: vec![],
+                },
+            )?;
+        }
         Ok(vec![])
     }
 
-    async fn generate_scaffold(&self, _context: &GenContext) -> Result<Vec<PathBuf>> {
+    async fn generate_scaffold(
+        &self,
+        _context: &GenContext,
+        _catalog: &ScaffoldCatalog,
+    ) -> Result<Vec<PathBuf>> {
         self.scaffold_calls.fetch_add(1, Ordering::SeqCst);
         Ok(vec![])
     }
@@ -118,9 +134,36 @@ realm_id = 1001
 }
 
 fn run_pipeline_with_spy(context: &GenContext) -> SpyGenerator {
-    let spy = SpyGenerator::default();
+    let spy = SpyGenerator {
+        emit_metadata: true,
+        ..SpyGenerator::default()
+    };
     tokio_test::block_on(run_codegen_pipeline(SupportedLanguage::Rust, &spy, context)).unwrap();
     spy
+}
+
+#[test]
+fn pipeline_requires_plugin_metadata_after_infrastructure() {
+    let tmp = TempDir::new().unwrap();
+    let context = test_context(&tmp, true, true, true);
+    let spy = SpyGenerator::default();
+
+    let err = tokio_test::block_on(run_codegen_pipeline(
+        SupportedLanguage::Rust,
+        &spy,
+        &context,
+    ))
+    .expect_err("pipeline must fail when the plugin did not write metadata");
+
+    assert!(
+        err.to_string().contains("actr-gen-meta.json"),
+        "expected missing metadata error, got: {err}"
+    );
+    assert_eq!(spy.infrastructure_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(spy.scaffold_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(spy.format_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(spy.validate_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(spy.finalize_calls.load(Ordering::SeqCst), 0);
 }
 
 #[test]

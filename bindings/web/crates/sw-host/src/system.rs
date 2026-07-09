@@ -124,7 +124,7 @@ impl System {
     ///
     /// Installs the HostGate message handler and routes messages to the correct target:
     /// - Local actor -> TODO (Phase 2)
-    /// - Remote actor -> `Gate.send_message()`
+    /// - Remote actor -> `Gate.relay_envelope()`
     pub fn init_message_handler(&self) {
         let local_actor_id = Rc::clone(&self.local_actor_id);
         let outgate = Rc::clone(&self.outgate);
@@ -164,11 +164,13 @@ impl System {
                         );
                         host_gate.reject_request(&envelope.request_id);
                     } else {
-                        // Remote invocation: send through the gate.
+                        // Remote invocation: relay the HostGate-stamped
+                        // envelope through the peer gate without changing
+                        // its Request/Tell direction.
                         match gate {
                             Some(ref g) => {
-                                if let Err(e) = g.send_message(&target_id, envelope.clone()).await {
-                                    log::error!("[System] Gate send_message failed: {:?}", e);
+                                if let Err(e) = g.relay_envelope(&target_id, envelope.clone()).await {
+                                    log::error!("[System] Gate relay_envelope failed: {:?}", e);
                                     // Reject the pending HostGate oneshot so
                                     // send_request() returns an error instead of
                                     // hanging forever.

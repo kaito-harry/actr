@@ -154,7 +154,7 @@ async fn test_real_disconnect_stream_send_recovers_and_stale_close_is_ignored() 
 
     let source_peer = harness.peer(SOURCE_SERIAL);
     let target_id = harness.peer(TARGET_SERIAL).id.clone();
-    let dest = Dest::actor(target_id.clone());
+    let dest = Dest::peer(target_id.clone());
 
     assert!(
         source_peer.transport_manager.has_dest(&dest).await,

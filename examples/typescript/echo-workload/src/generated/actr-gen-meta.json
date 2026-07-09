@@ -13,23 +13,53 @@
         {
           "name": "Echo",
           "snake_name": "echo",
-          "input_type": "EchoRequest",
-          "output_type": "EchoResponse",
-          "route_key": "echo.EchoService.Echo"
+          "route_key": "echo.EchoService.Echo",
+          "input_ref": {
+            "proto_type": "echo.EchoRequest",
+            "type_name": "EchoRequest",
+            "proto_package": "echo",
+            "proto_file": "local/echo.proto"
+          },
+          "output_ref": {
+            "proto_type": "echo.EchoResponse",
+            "type_name": "EchoResponse",
+            "proto_package": "echo",
+            "proto_file": "local/echo.proto"
+          }
         },
         {
           "name": "PrepareStream",
           "snake_name": "prepare_stream",
-          "input_type": "StreamPrepareRequest",
-          "output_type": "StreamPrepareResponse",
-          "route_key": "echo.EchoService.PrepareStream"
+          "route_key": "echo.EchoService.PrepareStream",
+          "input_ref": {
+            "proto_type": "echo.StreamPrepareRequest",
+            "type_name": "StreamPrepareRequest",
+            "proto_package": "echo",
+            "proto_file": "local/echo.proto"
+          },
+          "output_ref": {
+            "proto_type": "echo.StreamPrepareResponse",
+            "type_name": "StreamPrepareResponse",
+            "proto_package": "echo",
+            "proto_file": "local/echo.proto"
+          }
         },
         {
           "name": "ReleaseStream",
           "snake_name": "release_stream",
-          "input_type": "StreamReleaseRequest",
-          "output_type": "StreamReleaseResponse",
-          "route_key": "echo.EchoService.ReleaseStream"
+          "route_key": "echo.EchoService.ReleaseStream",
+          "input_ref": {
+            "proto_type": "echo.StreamReleaseRequest",
+            "type_name": "StreamReleaseRequest",
+            "proto_package": "echo",
+            "proto_file": "local/echo.proto"
+          },
+          "output_ref": {
+            "proto_type": "echo.StreamReleaseResponse",
+            "type_name": "StreamReleaseResponse",
+            "proto_package": "echo",
+            "proto_file": "local/echo.proto"
+          }
         }
       ]
     }

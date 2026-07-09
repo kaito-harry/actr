@@ -74,7 +74,7 @@ async fn answerer_failed_peer_does_not_keep_sending_on_stale_webrtc() {
     harness.add_peer(ANSWERER_SERIAL).await;
 
     let offerer_id = harness.peer(OFFERER_SERIAL).id.clone();
-    let offerer_dest = Dest::actor(offerer_id.clone());
+    let offerer_dest = Dest::peer(offerer_id.clone());
     let mut answerer_events = harness.peer(ANSWERER_SERIAL).subscribe_events();
 
     tracing::info!("Step 1: establish initial WebRTC transport via offerer -> answerer");

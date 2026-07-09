@@ -192,7 +192,9 @@ jobs:
         with:
           node-version: "24"
           cache: "npm"
-          cache-dependency-path: bindings/typescript/package.json
+          cache-dependency-path: |
+            bindings/typescript/package.json
+            tools/protoc-gen/typescript/package-lock.json
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Install protoc
@@ -215,6 +217,11 @@ jobs:
       - name: Run unit tests
         working-directory: bindings/typescript
         run: npm test
+      - name: Test TypeScript protoc plugin
+        working-directory: tools/protoc-gen/typescript
+        run: |
+          npm ci
+          npm test
       - name: Cargo check
         working-directory: bindings/typescript
         run: cargo check --locked --manifest-path Cargo.toml
@@ -273,6 +280,8 @@ jobs:
           cache-dependency-path: tools/protoc-gen/python/pyproject.toml
       - name: Install package
         run: pip install -e .
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
       - name: Set up protoc
         uses: arduino/setup-protoc@v3
         with:
@@ -301,9 +310,9 @@ jobs:
           protoc \
             --proto_path="$tmp/protos" \
             --python_out="$tmp/generated" \
-            --plugin="protoc-gen-actrpython=$(command -v framework_codegen_python)" \
-            --actrpython_opt="LocalFiles=local/echo.proto" \
-            --actrpython_out="$tmp/generated" \
+            --plugin="protoc-gen-actrframework-python=$(command -v protoc-gen-actrframework-python)" \
+            --actrframework-python_opt="LocalFiles=local/echo.proto" \
+            --actrframework-python_out="$tmp/generated" \
             "$tmp/protos/local/echo.proto"
 
           python -m compileall "$tmp/generated"

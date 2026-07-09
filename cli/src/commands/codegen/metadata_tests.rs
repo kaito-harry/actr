@@ -127,8 +127,14 @@ fn from_proto_model_resolves_imported_rpc_type_owner() {
     let method = &service.methods[0];
 
     // Bare type names stay language-agnostic.
-    assert_eq!(method.input_type, "ContinuePromptResultStreamsRequest");
-    assert_eq!(method.output_type, "ContinuePromptResultStreamsResponse");
+    assert_eq!(
+        method.input_ref.type_name,
+        "ContinuePromptResultStreamsRequest"
+    );
+    assert_eq!(
+        method.output_ref.type_name,
+        "ContinuePromptResultStreamsResponse"
+    );
 
     // Owner refs point at the declaring `ask` proto, not the local
     // `data_stream_app` service package.
@@ -319,10 +325,7 @@ fn from_proto_model_resolves_nested_qualified_type_owner() {
 }
 
 #[test]
-fn load_metadata_defaults_missing_type_refs_for_backward_compat() {
-    // Older metadata JSON written before this PR has no input_ref/output_ref
-    // fields; `#[serde(default)]` must fill empty TypeRefs so the scaffold
-    // still loads (generators fall back to the bare type name).
+fn load_metadata_rejects_missing_type_refs() {
     let dir = TempDir::new().unwrap();
     let json = r#"{
         "plugin_version": "actr-cli",
@@ -346,9 +349,10 @@ fn load_metadata_defaults_missing_type_refs_for_backward_compat() {
     }"#;
     let path = dir.path().join("actr-gen-meta.json");
     std::fs::write(&path, json).unwrap();
-    let loaded = load_metadata(dir.path()).unwrap().unwrap();
-    let method = &loaded.local_services[0].methods[0];
-    assert_eq!(method.input_type, "EchoRequest");
-    assert_eq!(method.input_ref.proto_package, "");
-    assert_eq!(method.input_ref.type_name, "");
+    let err = load_metadata(dir.path()).expect_err("missing type refs should fail");
+    let message = err.to_string();
+    assert!(
+        message.contains("missing field `input_ref`"),
+        "unexpected error message: {message}"
+    );
 }

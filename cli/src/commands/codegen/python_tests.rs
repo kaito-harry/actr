@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use crate::commands::codegen::{
-    GenContext, MethodModel, ProtoFileModel, ProtoModel, ProtoSide, ServiceModel,
+    ActrGenMetadata, GenContext, MethodModel, ProtoFileModel, ProtoModel, ProtoSide,
+    ScaffoldCatalog, ServiceModel, SupportedLanguage, write_metadata,
 };
 
 #[test]
@@ -259,10 +260,14 @@ realm_id = 1001
         debug: false,
         skip_validation: false,
     };
+    let metadata =
+        ActrGenMetadata::from_proto_model(SupportedLanguage::Python, &context.proto_model).unwrap();
+    write_metadata(&context.output, &metadata).unwrap();
+    let catalog = ScaffoldCatalog::from_metadata(&metadata);
 
     let generator = super::PythonGenerator;
     let services = generator
-        .parse_local_services(&context)
+        .parse_local_services(&catalog)
         .expect("parse local services");
     let scaffold = generator
         .generate_scaffold_content(&context, "ActrService", "Workload", &services)
@@ -359,9 +364,13 @@ realm_id = 1001
         debug: false,
         skip_validation: false,
     };
+    let metadata =
+        ActrGenMetadata::from_proto_model(SupportedLanguage::Python, &context.proto_model).unwrap();
+    write_metadata(&context.output, &metadata).unwrap();
+    let catalog = ScaffoldCatalog::from_metadata(&metadata);
 
     let services = super::PythonGenerator
-        .parse_local_services(&context)
+        .parse_local_services(&catalog)
         .expect("parse local services");
     let method = &services[0].methods[0];
 

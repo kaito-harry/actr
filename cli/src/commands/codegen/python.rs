@@ -1,4 +1,3 @@
-use crate::commands::SupportedLanguage;
 use crate::commands::codegen::scaffold::ScaffoldCatalog;
 use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
 use crate::error::{ActrCliError, Result};
@@ -21,6 +20,7 @@ const ACTR_SERVICE_TEMPLATE: &str = include_str!(concat!(
 
 // Required tools for Python codegen
 const PROTOC: &str = "protoc";
+const PROTOC_GEN_ACTR_FRAMEWORK_PYTHON: &str = "protoc-gen-actrframework-python";
 const REQUIRED_TOOLS: &[(&str, &str)] = &[(PROTOC, "Protocol Buffers compiler")];
 
 #[derive(Serialize, Clone)]
@@ -281,29 +281,36 @@ impl LanguageGenerator for PythonGenerator {
             )));
         }
 
-        // Step 2: Generate Actor framework code using protoc-gen-actrpython for all files at once
+        // Step 2: Generate Actor framework code and metadata using
+        // protoc-gen-actrframework-python for all files at once.
         let mut cmd = StdCommand::new("protoc");
         cmd.arg(format!("--proto_path={}", proto_root.display()))
             .arg(format!(
-                "--plugin=protoc-gen-actrpython={}",
+                "--plugin={}={}",
+                PROTOC_GEN_ACTR_FRAMEWORK_PYTHON,
                 plugin_path.display()
             ))
-            .arg(format!("--actrpython_opt={}", options))
-            .arg(format!("--actrpython_out={}", context.output.display()));
+            .arg(format!("--actrframework-python_opt={}", options))
+            .arg(format!(
+                "--actrframework-python_out={}",
+                context.output.display()
+            ));
 
         for proto_file in &context.proto_files {
             cmd.arg(proto_file);
         }
 
-        debug!("Executing protoc (actrpython): {:?}", cmd);
+        debug!("Executing protoc (actrframework-python): {:?}", cmd);
         let output = cmd.output().map_err(|e| {
-            ActrCliError::command_error(format!("Failed to execute protoc (actrpython): {e}"))
+            ActrCliError::command_error(format!(
+                "Failed to execute protoc (actrframework-python): {e}"
+            ))
         })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(ActrCliError::command_error(format!(
-                "protoc (actrpython) execution failed: {stderr}"
+                "protoc (actrframework-python) execution failed: {stderr}"
             )));
         }
 
@@ -322,12 +329,16 @@ impl LanguageGenerator for PythonGenerator {
         Ok(generated_files)
     }
 
-    async fn generate_scaffold(&self, context: &GenContext) -> Result<Vec<PathBuf>> {
+    async fn generate_scaffold(
+        &self,
+        context: &GenContext,
+        catalog: &ScaffoldCatalog,
+    ) -> Result<Vec<PathBuf>> {
         info!("📝 Generating Python user code scaffold...");
         let mut scaffold_files = Vec::new();
 
         // 1. Parse local services to get methods for handler implementation
-        let services = self.parse_local_services(context)?;
+        let services = self.parse_local_services(catalog)?;
 
         // 2. Determine service name for scaffolding
         let service_name = if let Some(service) = services.first() {
@@ -561,12 +572,11 @@ impl PythonGenerator {
         Ok(markers.iter().any(|marker| content.contains(marker)))
     }
 
-    fn parse_local_services(&self, context: &GenContext) -> Result<Vec<ProtoService>> {
-        let catalog = ScaffoldCatalog::load(context, SupportedLanguage::Python)?;
-
+    fn parse_local_services(&self, catalog: &ScaffoldCatalog) -> Result<Vec<ProtoService>> {
         Ok(catalog
             .local_services
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|service| ProtoService {
                 name: service.name.clone(),
                 package: service.package.clone(),
@@ -776,17 +786,18 @@ fn to_snake_case(name: &str) -> String {
 
 fn ensure_python_plugin() -> Result<PathBuf> {
     if let Some(path) = find_python_plugin()? {
-        info!("✅ Using installed framework_codegen_python");
+        info!("✅ Using installed {}", PROTOC_GEN_ACTR_FRAMEWORK_PYTHON);
         return Ok(path);
     }
 
     if let Some(path) = create_workspace_python_plugin_shim()? {
-        info!("✅ Using workspace framework_codegen_python");
+        info!("✅ Using workspace {}", PROTOC_GEN_ACTR_FRAMEWORK_PYTHON);
         return Ok(path);
     }
 
     Err(ActrCliError::command_error(
-        "framework_codegen_python not found. Install it in your active environment, \
+        "protoc-gen-actrframework-python not found. Install framework_codegen_python \
+         in your active environment, \
          for example: python -m pip install framework_codegen_python"
             .to_string(),
     ))
@@ -794,7 +805,7 @@ fn ensure_python_plugin() -> Result<PathBuf> {
 
 fn find_python_plugin() -> Result<Option<PathBuf>> {
     let output = StdCommand::new("which")
-        .arg("framework_codegen_python")
+        .arg(PROTOC_GEN_ACTR_FRAMEWORK_PYTHON)
         .output();
 
     match output {
@@ -835,7 +846,7 @@ fn create_workspace_python_plugin_shim() -> Result<Option<PathBuf>> {
             shim_dir.display()
         ))
     })?;
-    let shim_path = shim_dir.join("framework_codegen_python");
+    let shim_path = shim_dir.join(PROTOC_GEN_ACTR_FRAMEWORK_PYTHON);
     let content = format!(
         "#!/usr/bin/env sh\nPYTHONPATH='{}' exec {} -m framework_codegen_python \"$@\"\n",
         package_dir.display(),

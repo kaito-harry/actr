@@ -31,36 +31,36 @@ def generate_local_workload_module(
     # so two files in the same proto package cannot shadow each other.
     imports: dict[str, str] = {}  # alias -> import line
     imports[proto_alias] = import_line_for(proto_name, proto_module, proto_alias)
-    type_alias: dict[str, str] = {}  # fully-qualified type -> alias
+    type_refs: dict[str, tuple[str, str]] = {}  # fully-qualified type -> (alias, owner path)
 
     for service in services:
         for method in service.method:
             for full_type in (method.input_type, method.output_type):
                 cleaned = full_type.lstrip(".")
-                if cleaned in type_alias:
+                if cleaned in type_refs:
                     continue
                 owner = type_to_owner.get(cleaned)
                 if owner is None:
-                    type_alias[cleaned] = proto_alias
+                    type_refs[cleaned] = (proto_alias, extract_message_type(cleaned))
                     continue
-                _owner_package, owner_proto_name = owner
+                _owner_package, owner_proto_name, owner_type_path = owner
                 alias = pb2_alias(owner_proto_name)
                 if alias not in imports:
                     imports[alias] = import_line_for(
                         owner_proto_name, proto_module_name(owner_proto_name), alias
                     )
-                type_alias[cleaned] = alias
+                type_refs[cleaned] = (alias, ".".join(owner_type_path))
 
     sections: list[str] = [generate_preamble(list(imports.values()))]
 
     for service in services:
         ensure_no_streaming_methods(service.method)
         sections.append(
-            generate_handler_protocol(service.name, service.method, type_alias, proto_alias)
+            generate_handler_protocol(service.name, service.method, type_refs, proto_alias)
         )
         sections.append(
             generate_dispatcher(
-                package_name, service.name, service.method, type_alias, proto_alias
+                package_name, service.name, service.method, type_refs, proto_alias
             )
         )
 
@@ -84,7 +84,10 @@ def generate_preamble(import_lines: list[str]) -> str:
 
 
 def generate_handler_protocol(
-    service_name: str, methods, type_alias: dict, default_alias: str
+    service_name: str,
+    methods,
+    type_refs: dict[str, tuple[str, str]],
+    default_alias: str,
 ) -> str:
     """Generate a typed handler protocol for a service."""
     lines: list[str] = [f"class {service_name}Handler(Protocol):"]
@@ -95,10 +98,14 @@ def generate_handler_protocol(
 
     for method in methods:
         method_name = to_snake_case(method.name)
-        input_type = extract_message_type(method.input_type)
-        output_type = extract_message_type(method.output_type)
-        input_alias = type_alias.get(method.input_type.lstrip("."), default_alias)
-        output_alias = type_alias.get(method.output_type.lstrip("."), default_alias)
+        input_alias, input_type = type_refs.get(
+            method.input_type.lstrip("."),
+            (default_alias, extract_message_type(method.input_type)),
+        )
+        output_alias, output_type = type_refs.get(
+            method.output_type.lstrip("."),
+            (default_alias, extract_message_type(method.output_type)),
+        )
         lines.append(
             f"    def {method_name}(self, req: {input_alias}.{input_type}) -> {output_alias}.{output_type}: ..."
         )
@@ -107,7 +114,11 @@ def generate_handler_protocol(
 
 
 def generate_dispatcher(
-    package_name: str, service_name: str, methods, type_alias: dict, default_alias: str
+    package_name: str,
+    service_name: str,
+    methods,
+    type_refs: dict[str, tuple[str, str]],
+    default_alias: str,
 ) -> str:
     """Generate a typed route-key dispatcher for a service."""
     lines: list[str] = [
@@ -124,10 +135,14 @@ def generate_dispatcher(
     for method in methods:
         route_key = make_route_key(package_name, service_name, method.name)
         method_name = to_snake_case(method.name)
-        input_type = extract_message_type(method.input_type)
-        output_type = extract_message_type(method.output_type)
-        input_alias = type_alias.get(method.input_type.lstrip("."), default_alias)
-        output_alias = type_alias.get(method.output_type.lstrip("."), default_alias)
+        input_alias, input_type = type_refs.get(
+            method.input_type.lstrip("."),
+            (default_alias, extract_message_type(method.input_type)),
+        )
+        output_alias, output_type = type_refs.get(
+            method.output_type.lstrip("."),
+            (default_alias, extract_message_type(method.output_type)),
+        )
         lines.extend(
             [
                 f"        if route_key == \"{route_key}\":",

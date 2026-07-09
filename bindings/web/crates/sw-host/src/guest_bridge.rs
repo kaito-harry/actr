@@ -246,20 +246,20 @@ fn actr_id_to_js(id: &ActrId) -> JsValue {
     obj.into()
 }
 
-/// Parse a WIT `dest` variant JS object: `{ tag: 'shell' | 'local' | 'actor', val?: ActrId }`.
+/// Parse a WIT `dest` variant JS object: `{ tag: 'host' | 'workload' | 'peer', val?: ActrId }`.
 fn parse_dest(value: &JsValue) -> Result<Dest, JsValue> {
     let tag = js_sys::Reflect::get(value, &JsValue::from_str("tag"))?
         .as_string()
         .ok_or_else(|| JsValue::from_str("dest.tag missing or not a string"))?;
     match tag.as_str() {
-        "shell" => Ok(Dest::Shell),
-        "local" => Ok(Dest::Local),
-        "actor" => {
+        "host" => Ok(Dest::Host),
+        "workload" => Ok(Dest::Workload),
+        "peer" => {
             let val = js_sys::Reflect::get(value, &JsValue::from_str("val"))?;
             if val.is_undefined() || val.is_null() {
-                return Err(JsValue::from_str("dest.actor missing val"));
+                return Err(JsValue::from_str("dest.peer missing val"));
             }
-            Ok(Dest::Actor(parse_actr_id(&val)?))
+            Ok(Dest::Peer(parse_actr_id(&val)?))
         }
         other => Err(JsValue::from_str(&format!("unknown dest tag: {other}"))),
     }
@@ -365,8 +365,8 @@ pub async fn host_call_raw_async(
 
 /// WIT `host.call(target, route_key, payload) -> result<list<u8>, actr-error>`
 ///
-/// The web runtime only supports `dest::actor` for typed calls today (it has
-/// no in-browser Shell/Local routing); other variants return
+/// The web runtime only supports `dest::peer` for typed calls today (it has
+/// no in-browser Host/Workload routing); other variants return
 /// `not-implemented`. Keeps the WIT contract uniform between server and
 /// browser — the variant arm exists, it just isn't wired.
 #[wasm_bindgen]
@@ -381,10 +381,10 @@ pub async fn host_call_async(
     let payload_bytes = payload.to_vec();
 
     let actor_id = match dest {
-        Dest::Actor(id) => id,
-        Dest::Shell | Dest::Local => {
+        Dest::Peer(id) => id,
+        Dest::Host | Dest::Workload => {
             return Err(actr_error_to_js(ActrError::NotImplemented(
-                "host.call with Shell/Local dest is unsupported in the web runtime".into(),
+                "host.call with Host/Workload dest is unsupported in the web runtime".into(),
             )));
         }
     };
@@ -408,8 +408,9 @@ pub async fn host_call_async(
 
 /// WIT `host.tell(target, route_key, payload) -> result<_, actr-error>`.
 ///
-/// Fire-and-forget semantics. The web runtime maps this to `call_raw` with
-/// `timeout_ms=0`; the result is discarded. Only `Dest::Actor` is wired.
+/// Fire-and-forget semantics: the envelope is stamped `Direction::Tell` via
+/// `tell_raw`, no pending entry is registered, and no response ever arrives.
+/// Only `Dest::Peer` is wired.
 #[wasm_bindgen]
 pub async fn host_tell_async(
     request_id: String,
@@ -422,16 +423,16 @@ pub async fn host_tell_async(
     let payload_bytes = payload.to_vec();
 
     let actor_id = match dest {
-        Dest::Actor(id) => id,
-        Dest::Shell | Dest::Local => {
+        Dest::Peer(id) => id,
+        Dest::Host | Dest::Workload => {
             return Err(actr_error_to_js(ActrError::NotImplemented(
-                "host.tell with Shell/Local dest is unsupported in the web runtime".into(),
+                "host.tell with Host/Workload dest is unsupported in the web runtime".into(),
             )));
         }
     };
 
-    match ctx.call_raw(&actor_id, &route_key, &payload_bytes, 0).await {
-        Ok(_) => Ok(()),
+    match ctx.tell_raw(&actor_id, &route_key, payload_bytes).await {
+        Ok(()) => Ok(()),
         Err(e) => Err(actr_error_to_js(e)),
     }
 }

@@ -206,7 +206,7 @@ impl WebAisClient {
             .map_err(|e| WebError::Network(format!("failed to call setTimeout: {e:?}")))?;
 
         // Build Request
-        let request = web_sys::Request::new_with_str_and_init(&url, &init)
+        let request = web_sys::Request::new_with_str_and_init(url, &init)
             .map_err(|e| WebError::Network(format!("failed to create Request: {e:?}")))?;
 
         // Call fetch() via global scope (works in both Window and ServiceWorker)

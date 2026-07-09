@@ -7,7 +7,6 @@ fn remote_echo_service() -> ServiceInfo {
     ServiceInfo {
         service_name: "EchoService".to_string(),
         proto_package: "echo".to_string(),
-        proto_file_name: "echo.proto".to_string(),
         is_local: false,
         remote_target_type: Some("acme:EchoService:1.0.0".to_string()),
         methods: vec![MethodInfo {
@@ -17,7 +16,6 @@ fn remote_echo_service() -> ServiceInfo {
             request_import: "echo.Echo".to_string(),
             response_import: "echo.Echo".to_string(),
         }],
-        needs_outer_class_suffix: false,
     }
 }
 
@@ -25,7 +23,6 @@ fn local_client_service() -> ServiceInfo {
     ServiceInfo {
         service_name: "ClientService".to_string(),
         proto_package: "client".to_string(),
-        proto_file_name: "client.proto".to_string(),
         is_local: true,
         remote_target_type: None,
         methods: vec![MethodInfo {
@@ -35,7 +32,6 @@ fn local_client_service() -> ServiceInfo {
             request_import: "client.Client".to_string(),
             response_import: "client.Client".to_string(),
         }],
-        needs_outer_class_suffix: false,
     }
 }
 
@@ -185,14 +181,172 @@ realm_id = 1001
         debug: false,
         skip_validation: false,
     };
+    std::fs::create_dir_all(&context.output).unwrap();
+    std::fs::write(
+        context.output.join("actr-gen-meta.json"),
+        r#"{
+  "plugin_version": "test",
+  "language": "kotlin",
+  "local_services": [{
+    "name": "Client",
+    "package": "client",
+    "proto_file": "local/client.proto",
+    "handler_interface": "ClientHandler",
+    "workload_type": "ClientWorkload",
+    "dispatcher_type": "ClientDispatcher",
+    "methods": [{
+      "name": "Foo",
+      "snake_name": "foo",
+      "route_key": "client.Client.Foo",
+      "input_ref": {
+        "proto_type": "ask.Outer.InnerRequest",
+        "type_name": "Outer.InnerRequest",
+        "proto_package": "ask",
+        "proto_file": "remote/ask/ask.proto",
+        "generated_type": "ask.Ask.Outer.InnerRequest"
+      },
+      "output_ref": {
+        "proto_type": "ask.Outer.InnerResponse",
+        "type_name": "Outer.InnerResponse",
+        "proto_package": "ask",
+        "proto_file": "remote/ask/ask.proto",
+        "generated_type": "ask.Ask.Outer.InnerResponse"
+      }
+    }]
+  }],
+  "remote_services": []
+}"#,
+    )
+    .unwrap();
 
+    let catalog = ScaffoldCatalog::load(&context, SupportedLanguage::Kotlin).unwrap();
     let services = KotlinGenerator
-        .collect_services(&context)
+        .collect_services(&catalog)
         .expect("collect services");
     let method = &services[0].methods[0];
 
-    assert_eq!(method.request_type, "Outer.InnerRequest");
-    assert_eq!(method.response_type, "Outer.InnerResponse");
+    assert_eq!(method.request_type, "ask.Ask.Outer.InnerRequest");
+    assert_eq!(method.response_type, "ask.Ask.Outer.InnerResponse");
+}
+
+#[test]
+fn collect_services_uses_descriptor_generated_kotlin_types() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let config_path = tmp.path().join("manifest.toml");
+    std::fs::write(
+        &config_path,
+        r#"edition = 1
+exports = []
+
+[package]
+name = "Demo"
+manufacturer = "acme"
+version = "0.1.0"
+
+[system.signaling]
+url = "ws://127.0.0.1:8080"
+
+[system.ais_endpoint]
+url = "http://127.0.0.1:8080/ais"
+
+[system.deployment]
+realm_id = 1001
+"#,
+    )
+    .unwrap();
+    let config = actr_config::ConfigParser::from_manifest_file(&config_path).unwrap();
+    let output = tmp.path().join("generated");
+    std::fs::create_dir_all(&output).unwrap();
+    std::fs::write(
+        output.join("actr-gen-meta.json"),
+        r#"{
+  "plugin_version": "test",
+  "language": "kotlin",
+  "local_services": [{
+    "name": "Client",
+    "package": "client",
+    "proto_file": "local/client.proto",
+    "handler_interface": "ClientHandler",
+    "workload_type": "ClientWorkload",
+    "dispatcher_type": "ClientDispatcher",
+    "methods": [{
+      "name": "Call",
+      "snake_name": "call",
+      "route_key": "client.Client.Call",
+      "input_ref": {
+        "proto_type": "types.Request",
+        "type_name": "Request",
+        "proto_package": "types",
+        "proto_file": "types.proto",
+        "generated_type": "com.example.types.UserTypesProto.Request"
+      },
+      "output_ref": {
+        "proto_type": "types.Response",
+        "type_name": "Response",
+        "proto_package": "types",
+        "proto_file": "types.proto",
+        "generated_type": "com.example.types.Response"
+      }
+    }]
+  }],
+  "remote_services": []
+}"#,
+    )
+    .unwrap();
+
+    let local_file = ProtoFileModel {
+        proto_file: "local/client.proto".into(),
+        relative_path: "local/client.proto".into(),
+        package: "client".to_string(),
+        side: ProtoSide::Local,
+        declared_type_names: vec!["WrongRequest".to_string(), "WrongResponse".to_string()],
+        services: vec![ServiceModel {
+            name: "Client".to_string(),
+            package: "client".to_string(),
+            proto_file: "local/client.proto".into(),
+            relative_path: "local/client.proto".into(),
+            side: ProtoSide::Local,
+            methods: vec![MethodModel {
+                name: "Call".to_string(),
+                snake_name: "call".to_string(),
+                input_type: "client.WrongRequest".to_string(),
+                output_type: "client.WrongResponse".to_string(),
+                route_key: "client.Client.Call".to_string(),
+            }],
+            actr_type: None,
+        }],
+    };
+    let context = GenContext {
+        proto_files: vec![],
+        proto_model: ProtoModel {
+            files: vec![local_file.clone()],
+            local_services: local_file.services,
+            remote_services: vec![],
+        },
+        input_path: tmp.path().join("protos"),
+        output,
+        config_path,
+        config,
+        no_scaffold: false,
+        overwrite_user_code: false,
+        no_format: false,
+        debug: false,
+        skip_validation: false,
+    };
+
+    let catalog = ScaffoldCatalog::load(&context, SupportedLanguage::Kotlin).unwrap();
+    let services = KotlinGenerator
+        .collect_services(&catalog)
+        .expect("collect services");
+    let method = &services[0].methods[0];
+
+    assert_eq!(
+        method.request_type,
+        "com.example.types.UserTypesProto.Request"
+    );
+    assert_eq!(method.response_type, "com.example.types.Response");
+    assert!(method.request_import.is_empty());
+    assert!(method.response_import.is_empty());
 }
 
 #[test]
@@ -259,7 +413,6 @@ fn unified_handler_scaffold_imports_and_resolves_imported_rpc_types() {
     let service = ServiceInfo {
         service_name: "DataStreamAppService".to_string(),
         proto_package: "data_stream_app".to_string(),
-        proto_file_name: "data_stream_app.proto".to_string(),
         is_local: true,
         remote_target_type: None,
         methods: vec![MethodInfo {
@@ -269,7 +422,6 @@ fn unified_handler_scaffold_imports_and_resolves_imported_rpc_types() {
             request_import: "ask.Ask".to_string(),
             response_import: "ask.Ask".to_string(),
         }],
-        needs_outer_class_suffix: false,
     };
 
     let imports = super::kotlin_type_imports(std::iter::once(&service));
@@ -277,9 +429,6 @@ fn unified_handler_scaffold_imports_and_resolves_imported_rpc_types() {
         imports.contains("import ask.Ask.*"),
         "expected `ask.Ask` import, got:\n{imports}"
     );
-    // The local service's own package is still imported.
-    assert!(imports.contains("import data_stream_app.DataStreamApp.*"));
-
     let scaffold = generate_unified_handler_scaffold(&[service], "com.example.generated");
     // Signature uses the bare message name, resolved via the `ask.Ask` import.
     assert!(scaffold.contains("request: ContinuePromptResultStreamsRequest"));

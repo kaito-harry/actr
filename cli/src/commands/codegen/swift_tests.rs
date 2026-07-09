@@ -45,6 +45,7 @@ fn swift_type_name_uses_declaring_package_for_imported_types() {
         type_name: "ContinuePromptResultStreamsRequest".to_string(),
         proto_package: "ask".to_string(),
         proto_file: "remote/ask-service/ask.proto".to_string(),
+        generated_type: None,
     };
     assert_eq!(
         generator.swift_type_name(&imported),
@@ -57,6 +58,7 @@ fn swift_type_name_uses_declaring_package_for_imported_types() {
         type_name: "EchoRequest".to_string(),
         proto_package: "echo".to_string(),
         proto_file: "local/echo.proto".to_string(),
+        generated_type: None,
     };
     assert_eq!(generator.swift_type_name(&local), "Echo_EchoRequest");
 }
@@ -69,6 +71,7 @@ fn swift_type_name_preserves_nested_parent_scope() {
         type_name: "InnerRequest".to_string(),
         proto_package: "ask".to_string(),
         proto_file: "remote/ask/ask.proto".to_string(),
+        generated_type: None,
     };
 
     assert_eq!(generator.swift_type_name(&nested), "Ask_Outer.InnerRequest");

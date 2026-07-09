@@ -22,6 +22,10 @@ fn client_websocket_response_reader_accepts_only_response_direction() {
         PayloadType::RpcReliable,
     ));
     assert!(!ClientWebSocketHandle::is_response_envelope(
+        &envelope_with_direction(Some(Direction::Tell as i32)),
+        PayloadType::RpcReliable,
+    ));
+    assert!(!ClientWebSocketHandle::is_response_envelope(
         &envelope_with_direction(Some(Direction::Unspecified as i32)),
         PayloadType::RpcReliable,
     ));
@@ -48,7 +52,7 @@ async fn test_no_ws_connection_without_discovery() {
         pending_requests: None,
     };
     let factory = DefaultWireBuilder::new(None, config);
-    let dest = Dest::actor(ActrId::default());
+    let dest = Dest::peer(ActrId::default());
     let connections = factory.create_connections(&dest).await.unwrap();
     assert!(connections.is_empty());
 }
@@ -72,7 +76,7 @@ async fn test_ws_connection_from_discovery() {
         pending_requests: None,
     };
     let factory = DefaultWireBuilder::new(None, config);
-    let dest = Dest::actor(actor_id);
+    let dest = Dest::peer(actor_id);
     let connections = factory.create_connections(&dest).await.unwrap();
     assert_eq!(connections.len(), 1);
     assert_eq!(connections[0].connection_type(), ConnType::WebSocket);
@@ -113,7 +117,7 @@ async fn cancelled_token_aborts_before_any_connection() {
     let token = CancellationToken::new();
     token.cancel();
 
-    let dest = Dest::actor(actor_id);
+    let dest = Dest::peer(actor_id);
     let res = factory
         .create_connections_with_cancel(&dest, Some(token))
         .await;
@@ -138,7 +142,7 @@ async fn resolve_websocket_url_miss_then_hit_for_actor() {
     // Cache miss → None.
     assert!(
         factory
-            .resolve_websocket_url(&Dest::actor(id.clone()))
+            .resolve_websocket_url(&Dest::peer(id.clone()))
             .await
             .is_none()
     );
@@ -149,7 +153,7 @@ async fn resolve_websocket_url_miss_then_hit_for_actor() {
         .insert(id.clone(), "ws://host:7".to_string());
     assert_eq!(
         factory
-            .resolve_websocket_url(&Dest::actor(id))
+            .resolve_websocket_url(&Dest::peer(id))
             .await
             .as_deref(),
         Some("ws://host:7")

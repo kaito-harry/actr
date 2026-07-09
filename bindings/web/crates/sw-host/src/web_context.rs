@@ -87,6 +87,14 @@ pub trait WebContext {
         timeout_ms: i64,
     ) -> ActorResult<Vec<u8>>;
 
+    /// Send a raw fire-and-forget message without waiting for a response.
+    ///
+    /// The envelope is stamped `Direction::Tell`; the receiver runs the
+    /// handler but never replies, and no pending entry is registered here.
+    /// `payload` is moved into the envelope with no extra copy.
+    async fn tell_raw(&self, target: &ActrId, route_key: &str, payload: Vec<u8>)
+    -> ActorResult<()>;
+
     /// Discover the target actor through signaling service discovery.
     async fn discover(&self, target_type: &ActrType) -> ActorResult<ActrId>;
 

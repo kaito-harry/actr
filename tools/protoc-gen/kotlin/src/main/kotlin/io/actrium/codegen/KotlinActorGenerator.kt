@@ -71,12 +71,13 @@ class KotlinActorGenerator(
         }
     }
 
-    /** Resolve the declaring owner for a fully-qualified proto type, falling
-     * back to the current service's file for types absent from the descriptor
-     * set (well-known types, external imports). */
-    private fun resolveOwner(typeName: String): TypeOwner {
+    /** Resolve the declaring owner for a proto RPC type from the descriptor set. */
+    private fun resolveOwner(typeName: String, kind: String, methodName: String): TypeOwner {
         val cleaned = typeName.trimStart('.')
-        return typeOwner[cleaned] ?: TypeOwner(packageName, protoFileName)
+        return typeOwner[cleaned]
+                ?: throw IllegalArgumentException(
+                        "Cannot resolve $kind type `$cleaned` for $serviceName.$methodName in " +
+                                "$protoFileName: RPC types must be declared in one of the parsed proto files")
     }
 
     /** Java/Kotlin outer class name for a proto file: PascalCase of the file
@@ -94,8 +95,8 @@ class KotlinActorGenerator(
         val methodSignatures =
                 methods.joinToString("\n\n") { method ->
                     val methodName = method.name.toSnakeCase()
-                    val inputType = kotlinTypeName(method.inputType)
-                    val outputType = kotlinTypeName(method.outputType)
+                    val inputType = kotlinTypeName(method.inputType, "input", method.name)
+                    val outputType = kotlinTypeName(method.outputType, "output", method.name)
 
                     """
             |    /**
@@ -136,7 +137,7 @@ class KotlinActorGenerator(
                 methods.joinToString("\n") { method ->
                     val routeKey = "$packageName.$serviceName.${method.name}"
                     val methodName = method.name.toSnakeCase()
-                    val inputType = kotlinTypeName(method.inputType)
+                    val inputType = kotlinTypeName(method.inputType, "input", method.name)
 
                     """
             |            "$routeKey" -> {
@@ -178,9 +179,9 @@ class KotlinActorGenerator(
     }
 
     /** Resolve a fully-qualified proto type to the generated JVM type name. */
-    private fun kotlinTypeName(typeName: String): String {
+    fun kotlinTypeName(typeName: String, kind: String, methodName: String): String {
         val cleaned = typeName.trimStart('.')
-        val owner = resolveOwner(typeName)
+        val owner = resolveOwner(typeName, kind, methodName)
         val packagePrefix = owner.javaPackage.ifEmpty { owner.packageName }
         val messagePath =
                 if (owner.messagePath.isEmpty()) listOf(extractMessageType(cleaned))
@@ -203,7 +204,9 @@ class KotlinActorGenerator(
 
     /** Convert string to snake_case */
     private fun String.toSnakeCase(): String {
-        return this.replace(Regex("([a-z])([A-Z])"), "$1_$2").lowercase()
+        return this.replace(Regex("(.)([A-Z][a-z]+)"), "$1_$2")
+                .replace(Regex("([a-z0-9])([A-Z])"), "$1_$2")
+                .lowercase()
     }
 
     /** Convert string to PascalCase */

@@ -1,8 +1,10 @@
 use crate::commands::SupportedLanguage;
+#[cfg(test)]
 use crate::commands::codegen::proto_model::{
     MethodModel, ProtoFileModel, ProtoModel, ServiceModel, TypeOwnerIndex,
 };
 use crate::error::{ActrCliError, Result};
+#[cfg(test)]
 use actr_protocol::ActrType;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -11,23 +13,28 @@ pub const ACTR_GEN_META_FILE: &str = "actr-gen-meta.json";
 
 /// Structured reference to a proto message type used as an RPC input/output.
 ///
-/// `input_type`/`output_type` on [`MethodMetadata`] keep the bare,
-/// language-agnostic message name; `input_ref`/`output_ref` carry the
-/// declaring package and proto file so each language generator can emit
-/// owner-qualified type references instead of assuming the current service's
-/// package.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+/// `input_ref`/`output_ref` on [`MethodMetadata`] carry the bare message name
+/// (`type_name`) together with the declaring package and proto file, so each
+/// language generator can emit owner-qualified type references instead of
+/// assuming the current service's package.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TypeRef {
     /// Fully-qualified proto type as written in the RPC signature
     /// (leading `.` stripped), e.g. `ask.ContinuePromptResultStreamsRequest`.
     pub proto_type: String,
-    /// Bare message name, e.g. `ContinuePromptResultStreamsRequest`.
+    /// Owner-relative proto type name, e.g. `ContinuePromptResultStreamsRequest`
+    /// or `Outer.InnerRequest`.
     pub type_name: String,
     /// Declaring proto package, e.g. `ask`.
     pub proto_package: String,
     /// Declaring proto file (path relative to the proto root), e.g.
     /// `remote/ask-service/ask.proto`.
     pub proto_file: String,
+    /// Optional language-specific generated type name. Kotlin uses this to
+    /// preserve descriptor options such as `java_package`,
+    /// `java_outer_classname`, and `java_multiple_files`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -61,20 +68,17 @@ pub struct RemoteServiceMetadata {
     pub methods: Vec<MethodMetadata>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MethodMetadata {
     pub name: String,
     pub snake_name: String,
-    pub input_type: String,
-    pub output_type: String,
     pub route_key: String,
-    #[serde(default)]
     pub input_ref: TypeRef,
-    #[serde(default)]
     pub output_ref: TypeRef,
 }
 
 impl ActrGenMetadata {
+    #[cfg(test)]
     pub fn from_proto_model(language: SupportedLanguage, proto_model: &ProtoModel) -> Result<Self> {
         let owner_index = TypeOwnerIndex::from_files(&proto_model.files);
         let local_services = proto_model
@@ -115,6 +119,29 @@ pub fn load_metadata(output_dir: &Path) -> Result<Option<ActrGenMetadata>> {
     Ok(Some(metadata))
 }
 
+pub fn load_required_metadata(
+    output_dir: &Path,
+    language: SupportedLanguage,
+) -> Result<ActrGenMetadata> {
+    let path = metadata_path(output_dir);
+    let metadata = load_metadata(output_dir)?.ok_or_else(|| {
+        ActrCliError::config_error(format!(
+            "ACTR plugin metadata is required but {} was not found",
+            path.display()
+        ))
+    })?;
+    let expected_language = language_key(language);
+    if metadata.language != expected_language {
+        return Err(ActrCliError::config_error(format!(
+            "ACTR plugin metadata language mismatch in {}: expected `{}`, found `{}`",
+            path.display(),
+            expected_language,
+            metadata.language
+        )));
+    }
+    Ok(metadata)
+}
+
 pub fn write_metadata(output_dir: &Path, metadata: &ActrGenMetadata) -> Result<PathBuf> {
     std::fs::create_dir_all(output_dir).map_err(|e| {
         ActrCliError::config_error(format!(
@@ -132,7 +159,7 @@ pub fn write_metadata(output_dir: &Path, metadata: &ActrGenMetadata) -> Result<P
     Ok(path)
 }
 
-fn language_key(language: SupportedLanguage) -> &'static str {
+pub(crate) fn language_key(language: SupportedLanguage) -> &'static str {
     match language {
         SupportedLanguage::Rust => "rust",
         SupportedLanguage::Python => "python",
@@ -142,6 +169,7 @@ fn language_key(language: SupportedLanguage) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn build_local_service_metadata(
     service: &ServiceModel,
     files: &[ProtoFileModel],
@@ -165,6 +193,7 @@ fn build_local_service_metadata(
     })
 }
 
+#[cfg(test)]
 fn build_remote_service_metadata(
     service: &ServiceModel,
     files: &[ProtoFileModel],
@@ -194,6 +223,7 @@ fn build_remote_service_metadata(
     })
 }
 
+#[cfg(test)]
 fn build_method_metadata(
     method: &MethodModel,
     service: &ServiceModel,
@@ -219,14 +249,13 @@ fn build_method_metadata(
     Ok(MethodMetadata {
         name: method.name.clone(),
         snake_name: method.snake_name.clone(),
-        input_type: input_ref.type_name.clone(),
-        output_type: output_ref.type_name.clone(),
         route_key: method.route_key.clone(),
         input_ref,
         output_ref,
     })
 }
 
+#[cfg(test)]
 fn resolve_type_ref(
     referenced: &str,
     service: &ServiceModel,
@@ -247,6 +276,7 @@ fn resolve_type_ref(
         type_name: type_name.clone(),
         proto_package: service.package.clone(),
         proto_file: service.relative_path.to_string_lossy().to_string(),
+        generated_type: None,
     };
 
     let Some(current) = current_file else {
@@ -267,6 +297,7 @@ fn resolve_type_ref(
             type_name: owner.type_name,
             proto_package: owner.proto_package,
             proto_file: owner.proto_file,
+            generated_type: None,
         }),
         Ok(None) if normalized.contains('.') => Err(unresolved_qualified_type_error(
             kind,
@@ -289,6 +320,7 @@ fn resolve_type_ref(
     }
 }
 
+#[cfg(test)]
 fn unresolved_qualified_type_error(
     kind: &str,
     normalized: &str,

@@ -6,9 +6,11 @@ import com.google.protobuf.DescriptorProtos.FileDescriptorProto
 import com.google.protobuf.DescriptorProtos.FileOptions
 import com.google.protobuf.DescriptorProtos.ServiceDescriptorProto
 import com.google.protobuf.compiler.PluginProtos.CodeGeneratorRequest
+import com.google.protobuf.compiler.PluginProtos.CodeGeneratorResponse
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 
 class KotlinActorGeneratorTest {
     @Test
@@ -88,7 +90,7 @@ class KotlinActorGeneratorTest {
                         )
                         .build()
 
-        val generated = generateCode(request).fileList.single().content
+        val generated = actorContent(generateCode(request))
 
         assertContains(
                 generated,
@@ -152,13 +154,23 @@ class KotlinActorGeneratorTest {
                         )
                         .build()
 
-        val generated = generateCode(request).fileList.single().content
+        val response = generateCode(request)
+        val generated = actorContent(response)
+        val metadata = response.fileList.single { it.name == "actr-gen-meta.json" }.content
 
         assertContains(generated, "request: com.example.user.v1.UserTypesProto.Request")
         assertContains(generated, "): com.example.response.v1.Response")
         assertContains(
                 generated,
                 "val request = com.example.user.v1.UserTypesProto.Request.parseFrom(envelope.payload)",
+        )
+        assertContains(
+                metadata,
+                "\"generated_type\": \"com.example.user.v1.UserTypesProto.Request\"",
+        )
+        assertContains(
+                metadata,
+                "\"generated_type\": \"com.example.response.v1.Response\"",
         )
     }
 
@@ -197,8 +209,161 @@ class KotlinActorGeneratorTest {
                         )
                         .build()
 
-        val generated = generateCode(request).fileList.single().content
+        val generated = actorContent(generateCode(request))
 
         assertContains(generated, "com.example.request.v1.RequestOuterClass.Request")
     }
+
+    @Test
+    fun generateCodeErrorsOnUnresolvedUnqualifiedRpcType() {
+        val request =
+                CodeGeneratorRequest.newBuilder()
+                        .addFileToGenerate("local.proto")
+                        .addProtoFile(
+                                FileDescriptorProto.newBuilder()
+                                        .setName("local.proto")
+                                        .setPackage("local")
+                                        .addService(
+                                                ServiceDescriptorProto.newBuilder()
+                                                        .setName("LocalService")
+                                                        .addMethod(
+                                                                MethodDescriptorProto.newBuilder()
+                                                                        .setName("Call")
+                                                                        .setInputType("MissingRequest")
+                                                                        .setOutputType("MissingResponse")
+                                                        )
+                                        )
+                        )
+                        .build()
+
+        val error = assertFailsWith<IllegalArgumentException> { generateCode(request) }
+
+        assertContains(error.message ?: "", "Cannot resolve input type `MissingRequest`")
+    }
+
+    @Test
+    fun generateCodeWritesMetadataWithDescriptorOwnerRefs() {
+        val request =
+                CodeGeneratorRequest.newBuilder()
+                        .addFileToGenerate("ask.proto")
+                        .addFileToGenerate("local.proto")
+                        .setParameter("LocalFiles=local.proto,RemoteFiles=ask.proto,RemoteFileMapping=ask.proto=acme:Ask:1.0.0")
+                        .addProtoFile(
+                                FileDescriptorProto.newBuilder()
+                                        .setName("ask.proto")
+                                        .setPackage("ask")
+                                        .addMessageType(
+                                                DescriptorProto.newBuilder()
+                                                        .setName("Request"))
+                                        .addMessageType(
+                                                DescriptorProto.newBuilder()
+                                                        .setName("Response"))
+                                        .addService(
+                                                ServiceDescriptorProto.newBuilder()
+                                                        .setName("AskService")
+                                                        .addMethod(
+                                                                MethodDescriptorProto.newBuilder()
+                                                                        .setName("Ask")
+                                                                        .setInputType(".ask.Request")
+                                                                        .setOutputType(".ask.Response")
+                                                        )
+                                        )
+                        )
+                        .addProtoFile(
+                                FileDescriptorProto.newBuilder()
+                                        .setName("local.proto")
+                                        .setPackage("local")
+                                        .addService(
+                                                ServiceDescriptorProto.newBuilder()
+                                                        .setName("LocalService")
+                                                        .addMethod(
+                                                                MethodDescriptorProto.newBuilder()
+                                                                        .setName("Call")
+                                                                        .setInputType(".ask.Request")
+                                                                        .setOutputType(".ask.Response")
+                                                        )
+                                        )
+                        )
+                        .build()
+
+        val metadata =
+                generateCode(request).fileList.single { it.name == "actr-gen-meta.json" }.content
+
+        assertContains(metadata, "\"language\": \"kotlin\"")
+        assertContains(metadata, "\"local_services\"")
+        assertContains(metadata, "\"remote_services\"")
+        assertContains(metadata, "\"actr_type\": \"acme:Ask:1.0.0\"")
+        assertContains(metadata, "\"input_ref\": {\"proto_type\": \"ask.Request\"")
+        assertContains(metadata, "\"proto_package\": \"ask\"")
+        assertContains(metadata, "\"proto_file\": \"ask.proto\"")
+    }
+
+    @Test
+    fun generateCodeErrorsOnUnresolvedQualifiedRpcType() {
+        val request =
+                CodeGeneratorRequest.newBuilder()
+                        .addFileToGenerate("local.proto")
+                        .addProtoFile(
+                                FileDescriptorProto.newBuilder()
+                                        .setName("local.proto")
+                                        .setPackage("local")
+                                        .addService(
+                                                ServiceDescriptorProto.newBuilder()
+                                                        .setName("LocalService")
+                                                        .addMethod(
+                                                                MethodDescriptorProto.newBuilder()
+                                                                        .setName("Call")
+                                                                        .setInputType(
+                                                                                ".external.MissingRequest")
+                                                                        .setOutputType(
+                                                                                ".external.MissingResponse")
+                                                        )
+                                        )
+                        )
+                        .build()
+
+        val error = assertFailsWith<IllegalArgumentException> { generateCode(request) }
+
+        assertContains(error.message ?: "", "Cannot resolve input type `external.MissingRequest`")
+    }
+
+    @Test
+    fun metadataUsesCanonicalMethodNamesAndProtoPaths() {
+        val request =
+                CodeGeneratorRequest.newBuilder()
+                        .addFileToGenerate(".\\remote\\ask")
+                        .setParameter(
+                                "RemoteFiles=./remote/ask,RemoteFileMapping=./remote/ask=acme:Ask:1.0.0")
+                        .addProtoFile(
+                                FileDescriptorProto.newBuilder()
+                                        .setName(".\\remote\\ask")
+                                        .setPackage("ask")
+                                        .addMessageType(
+                                                DescriptorProto.newBuilder().setName("Request"))
+                                        .addMessageType(
+                                                DescriptorProto.newBuilder().setName("Response"))
+                                        .addService(
+                                                ServiceDescriptorProto.newBuilder()
+                                                        .setName("AskService")
+                                                        .addMethod(
+                                                                MethodDescriptorProto.newBuilder()
+                                                                        .setName("HTTPServer")
+                                                                        .setInputType(".ask.Request")
+                                                                        .setOutputType(".ask.Response")
+                                                        )
+                                        )
+                        )
+                        .build()
+
+        val response = generateCode(request)
+        val metadata = response.fileList.single { it.name == "actr-gen-meta.json" }.content
+
+        assertContains(metadata, "\"proto_file\": \"remote/ask.proto\"")
+        assertContains(metadata, "\"snake_name\": \"http_server\"")
+        assertContains(actorContent(response), "suspend fun http_server(")
+    }
+}
+
+private fun actorContent(response: CodeGeneratorResponse): String {
+    return response.fileList.single { it.name != "actr-gen-meta.json" }.content
 }

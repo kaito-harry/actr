@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "framework_codegen_python"
-version = "0.4.12"
+version = "0.4.13"
 description = "Protoc plugn for generating Actr Python glue code"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -13,7 +13,7 @@ authors = [{name = "Actor-RTC Contributors"}]
 license = {text = "Apache-2.0"}
 
 [project.scripts]
-framework_codegen_python = "framework_codegen_python.__main__:main"
+protoc-gen-actrframework-python = "framework_codegen_python.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

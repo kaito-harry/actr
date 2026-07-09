@@ -120,7 +120,7 @@ impl DefaultWireBuilder {
 
     /// Look up the direct WebSocket URL for the target node, sourced only from service discovery.
     async fn resolve_websocket_url(&self, dest: &Dest) -> Option<String> {
-        if let Dest::Actor(actor_id) = dest {
+        if let Dest::Peer(actor_id) = dest {
             let map = self.discovered_ws_addresses.read().await;
             if let Some(url) = map.get(actor_id) {
                 tracing::debug!(
@@ -242,13 +242,13 @@ impl ClientWebSocketHandle {
         match envelope.direction {
             Some(raw) => match Direction::try_from(raw) {
                 Ok(Direction::Response) => true,
-                Ok(Direction::Request) => {
+                Ok(Direction::Request | Direction::Tell) => {
                     tracing::warn!(
                         request_id = %envelope.request_id,
                         route_key = %envelope.route_key,
                         payload_type = ?payload_type,
                         direction = raw,
-                        "ClientWebSocketHandle: request-labeled envelope received on response reader, dropping"
+                        "ClientWebSocketHandle: request/tell-labeled envelope received on response reader, dropping"
                     );
                     false
                 }
@@ -403,8 +403,8 @@ impl WireBuilder for DefaultWireBuilder {
         // 4. Attempt to create a WebRTC connection.
         if self.config.enable_webrtc {
             if let Some(coordinator) = &self.webrtc_coordinator {
-                // WebRTC is only supported for actor destinations.
-                if dest.is_actor() {
+                // WebRTC is only supported for peer destinations.
+                if dest.is_peer() {
                     tracing::debug!("🏭 [Factory] Creating WebRTC connection to: {:?}", dest);
 
                     // Check cancellation before long-running operation

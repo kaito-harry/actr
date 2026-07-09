@@ -992,7 +992,7 @@ impl DuplexStreamServiceHandler for DuplexStreamServiceImpl {
                     ..Default::default()
                 };
 
-                ctx.send_data_chunk(&Dest::Actor(client), echo_chunk, payload_type)
+                ctx.send_data_chunk(&Dest::Peer(client), echo_chunk, payload_type)
                     .await?;
 
                 {

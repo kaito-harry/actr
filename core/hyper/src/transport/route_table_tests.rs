@@ -45,3 +45,21 @@ fn rpc_signal_lane_types() {
 fn media_rtp_has_no_lane() {
     assert!(PayloadType::MediaRtp.data_lane_types().is_empty());
 }
+
+#[test]
+fn is_rpc_accepts_only_rpc_payload_types() {
+    assert!(PayloadType::RpcReliable.is_rpc());
+    assert!(PayloadType::RpcSignal.is_rpc());
+    assert!(!PayloadType::StreamReliable.is_rpc());
+    assert!(!PayloadType::StreamLatencyFirst.is_rpc());
+    assert!(!PayloadType::MediaRtp.is_rpc());
+}
+
+#[test]
+fn is_stream_accepts_only_stream_payload_types() {
+    assert!(PayloadType::StreamReliable.is_stream());
+    assert!(PayloadType::StreamLatencyFirst.is_stream());
+    assert!(!PayloadType::RpcReliable.is_stream());
+    assert!(!PayloadType::RpcSignal.is_stream());
+    assert!(!PayloadType::MediaRtp.is_stream());
+}

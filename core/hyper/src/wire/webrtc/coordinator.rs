@@ -3950,15 +3950,15 @@ impl WebRtcCoordinator {
     /// The entire method has a 30-second overall timeout.
     ///
     /// # Arguments
-    /// - `dest`: destination (must be Actor type)
+    /// - `dest`: destination (must be Peer type)
     /// - `cancel_token`: optional cancellation token to terminate the operation
     ///
     /// # Returns
     /// - `Ok(WebRtcConnection)`: ready WebRTC connection
-    /// - `Err`: WebRTC only supports Actor targets, connection cancelled, or connection establishment failed
+    /// - `Err`: WebRTC only supports Peer targets, connection cancelled, or connection establishment failed
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, fields(actr_id = %self.local_id_snapshot(), target_id = ?dest.as_actor_id().map(|id| id)))
+        tracing::instrument(skip_all, fields(actr_id = %self.local_id_snapshot(), target_id = ?dest.as_peer_id().map(|id| id)))
     )]
     pub(crate) async fn create_connection(
         self: &Arc<Self>,
@@ -3969,8 +3969,8 @@ impl WebRtcCoordinator {
         const OVERALL_TIMEOUT: Duration = Duration::from_secs(30);
 
         // Extract target_id first (before timeout wrapper) for cleanup
-        let target_id = dest.as_actor_id().ok_or_else(|| {
-            ActrError::InvalidArgument("WebRTC only supports Actor targets, not Shell".to_string())
+        let target_id = dest.as_peer_id().ok_or_else(|| {
+            ActrError::InvalidArgument("WebRTC only supports Peer targets, not Host".to_string())
         })?;
 
         // Wrap the entire operation with overall timeout
@@ -4011,9 +4011,9 @@ impl WebRtcCoordinator {
             }
         }
 
-        // 1. Check if dest is Actor
-        let target_id = dest.as_actor_id().ok_or_else(|| {
-            ActrError::InvalidArgument("WebRTC only supports Actor targets, not Shell".to_string())
+        // 1. Check if dest is Peer
+        let target_id = dest.as_peer_id().ok_or_else(|| {
+            ActrError::InvalidArgument("WebRTC only supports Peer targets, not Host".to_string())
         })?;
 
         tracing::debug!("🏭 [Factory] Creating WebRTC connection to {:?}", target_id);

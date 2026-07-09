@@ -132,7 +132,7 @@ async fn handle_start_server_stream<C: RtContext>(
         "server-stream: request received",
     );
 
-    let dest = actr_framework::Dest::Actor(caller_id);
+    let dest = actr_framework::Dest::Peer(caller_id);
     let stream_id = req.client_stream_id.clone();
     let text = req.text.clone();
     let count = req.chunk_count;
@@ -184,7 +184,7 @@ async fn handle_setup_bidi<C: RtContext>(
 
     let client_rx_id = req.client_rx_stream_id.clone();
     let ctx_clone = ctx.clone();
-    let dest = actr_framework::Dest::Actor(caller_id);
+    let dest = actr_framework::Dest::Peer(caller_id);
 
     ctx.register_stream(
         req.server_rx_stream_id.clone(),

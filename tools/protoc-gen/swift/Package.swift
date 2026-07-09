@@ -20,5 +20,9 @@ let package = Package(
                 .product(name: "SwiftProtobufPluginLibrary", package: "swift-protobuf"),
             ]
         ),
+        .testTarget(
+            name: "framework-codegen-swiftTests",
+            dependencies: ["framework-codegen-swift"]
+        ),
     ]
 )

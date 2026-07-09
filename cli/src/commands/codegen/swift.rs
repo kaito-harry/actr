@@ -1,4 +1,3 @@
-use crate::commands::SupportedLanguage;
 use crate::commands::codegen::TypeRef;
 use crate::commands::codegen::proto_model::ProtoSide;
 use crate::commands::codegen::scaffold::ScaffoldCatalog;
@@ -316,8 +315,6 @@ impl LanguageGenerator for SwiftGenerator {
 
         if !local_paths.is_empty() {
             options.push_str(&format!(",LocalFiles={}", local_paths.join(":")));
-            // Keep LocalFile for backward compatibility with older plugin versions
-            options.push_str(&format!(",LocalFile={}", local_paths[0]));
         }
 
         // Step 1: Generate basic Swift protobuf types for files that contain messages, enums or extensions
@@ -350,20 +347,11 @@ impl LanguageGenerator for SwiftGenerator {
             }
         }
 
-        // Step 2: Generate Actor framework code using protoc-gen-actrframework-swift
-        // We filter to files that have either services (to generate Actor/Workload)
-        // or messages (to generate RpcRequest extensions).
-        // For local files, we always include them even if empty to ensure the Workload is generated.
-        let actr_proto_files: Vec<_> = context
-            .proto_files
-            .iter()
-            .filter(|p| {
-                let is_remote = p.to_string_lossy().contains("/remote/");
-                !is_remote || self.has_messages_enums_or_extensions(p) || self.has_services(p)
-            })
-            .collect();
-
-        if !actr_proto_files.is_empty() {
+        // Step 2: Generate Actor framework code using protoc-gen-actrframework-swift.
+        // The ACTR plugin consumes the full descriptor graph. Language protobuf
+        // generation above may filter inputs, but metadata/type ownership must
+        // not lose imported proto files.
+        if !context.proto_files.is_empty() {
             let mut cmd = StdCommand::new("protoc");
             cmd.arg(format!("--proto_path={}", proto_root.display()))
                 .arg(format!("--actrframework-swift_opt={}", options))
@@ -378,7 +366,7 @@ impl LanguageGenerator for SwiftGenerator {
                 ));
             }
 
-            for proto_file in actr_proto_files {
+            for proto_file in &context.proto_files {
                 cmd.arg(proto_file);
             }
 
@@ -418,12 +406,16 @@ impl LanguageGenerator for SwiftGenerator {
         Ok(generated_files)
     }
 
-    async fn generate_scaffold(&self, context: &GenContext) -> Result<Vec<PathBuf>> {
+    async fn generate_scaffold(
+        &self,
+        context: &GenContext,
+        catalog: &ScaffoldCatalog,
+    ) -> Result<Vec<PathBuf>> {
         info!("📝 Generating Swift user code scaffold...");
         let mut scaffold_files = Vec::new();
 
         // 1. Parse local services to get methods for handler implementation
-        let mut services = self.parse_local_services(context)?;
+        let mut services = self.parse_local_services(catalog)?;
 
         if services.len() > 1 {
             let service_names: Vec<&str> = services.iter().map(|s| s.name.as_str()).collect();
@@ -435,7 +427,7 @@ impl LanguageGenerator for SwiftGenerator {
             )));
         }
 
-        let remote_targets = self.remote_targets_for_scaffold(context)?;
+        let remote_targets = self.remote_targets_for_scaffold(context, catalog)?;
         let handler_service = if let Some(service) = services.first_mut() {
             service.workload_name = self
                 .extract_workload_name_for_service(&context.output, &service.name)
@@ -1083,28 +1075,6 @@ impl SwiftGenerator {
         false
     }
 
-    fn has_services(&self, path: &Path) -> bool {
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty()
-                || trimmed.starts_with("//")
-                || trimmed.starts_with("/*")
-                || trimmed.starts_with('*')
-            {
-                continue;
-            }
-            if trimmed.starts_with("service ") {
-                return true;
-            }
-        }
-        false
-    }
-
     /// Flattens the output directory structure by moving all swift files from
     /// subdirectories to the root of the output directory.
     fn flatten_output_directory(&self, output_dir: &Path) -> Result<()> {
@@ -1316,33 +1286,22 @@ struct RemoteTargetRoute {
 }
 
 impl SwiftGenerator {
-    fn parse_local_services(&self, context: &GenContext) -> Result<Vec<ProtoService>> {
-        let catalog = ScaffoldCatalog::load(context, SupportedLanguage::Swift)?;
-
+    fn parse_local_services(&self, catalog: &ScaffoldCatalog) -> Result<Vec<ProtoService>> {
         Ok(catalog
             .local_services
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|service| {
                 let swift_package_prefix = swift_package_prefix_from_package(&service.package);
 
                 let methods = service
                     .methods
                     .into_iter()
-                    .map(|method| {
-                        let mut chars = method.name.chars();
-                        let swift_name = match chars.next() {
-                            None => String::new(),
-                            Some(first) => {
-                                first.to_lowercase().collect::<String>() + chars.as_str()
-                            }
-                        };
-
-                        ProtoMethod {
-                            name: method.name,
-                            swift_name,
-                            input_type: self.swift_type_name(&method.input_ref),
-                            output_type: self.swift_type_name(&method.output_ref),
-                        }
+                    .map(|method| ProtoMethod {
+                        name: method.name,
+                        swift_name: lower_camel_identifier_from_alias(&method.snake_name),
+                        input_type: self.swift_type_name(&method.input_ref),
+                        output_type: self.swift_type_name(&method.output_ref),
                     })
                     .collect();
 
@@ -1481,8 +1440,11 @@ impl SwiftGenerator {
         }
     }
 
-    fn remote_targets_for_scaffold(&self, context: &GenContext) -> Result<Vec<RemoteTarget>> {
-        let catalog = ScaffoldCatalog::load(context, SupportedLanguage::Swift)?;
+    fn remote_targets_for_scaffold(
+        &self,
+        context: &GenContext,
+        catalog: &ScaffoldCatalog,
+    ) -> Result<Vec<RemoteTarget>> {
         let dependency_actr_types = context
             .config
             .dependencies

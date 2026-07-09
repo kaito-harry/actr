@@ -64,12 +64,12 @@ interface types {
     // Dispatch destination for host-routed calls (the Component Model
     // analogue of actr_framework::Dest encoded via guest abi::DestV1).
     variant dest {
-        // Deliver to the parent shell actor hosting this workload.
-        shell,
-        // Deliver to the local node (current actor instance).
-        local,
-        // Deliver to the named actor.
-        actor(actr-id),
+        // Deliver to this node's host side (the process embedding the workload).
+        host,
+        // Deliver to this node's workload (self when sent from the workload).
+        workload,
+        // Deliver to the named remote peer.
+        peer(actr-id),
     }
 
     // RPC envelope (mirrors actr_protocol::RpcEnvelope). The payload is

@@ -1,4 +1,9 @@
-import type { DescFile, DescMethod, DescService } from "@bufbuild/protobuf";
+import type {
+  DescFile,
+  DescMessage,
+  DescMethod,
+  DescService,
+} from "@bufbuild/protobuf";
 import {
   createEcmaScriptPlugin,
   runNodeJs,
@@ -17,12 +22,19 @@ type AnalyzedMethod = {
   requestCompanionName: string;
 };
 
+type TypeRef = {
+  proto_type: string;
+  type_name: string;
+  proto_package: string;
+  proto_file: string;
+};
+
 type MethodMetadata = {
   name: string;
   snake_name: string;
-  input_type: string;
-  output_type: string;
   route_key: string;
+  input_ref: TypeRef;
+  output_ref: TypeRef;
 };
 
 type RemoteServiceMetadata = {
@@ -34,7 +46,17 @@ type RemoteServiceMetadata = {
   methods: MethodMetadata[];
 };
 
-const VERSION = "0.4.12";
+type LocalServiceMetadata = {
+  name: string;
+  package: string;
+  proto_file: string;
+  handler_interface: string;
+  workload_type: string;
+  dispatcher_type: string;
+  methods: MethodMetadata[];
+};
+
+const VERSION = "0.4.13";
 
 const plugin = createEcmaScriptPlugin<PluginParams>({
   name: "protoc-gen-actrframework-typescript",
@@ -48,6 +70,7 @@ const plugin = createEcmaScriptPlugin<PluginParams>({
 runNodeJs(plugin);
 
 function generateTypeScript(schema: Schema<PluginParams>): void {
+  const localServiceMetadata: LocalServiceMetadata[] = [];
   const remoteServiceMetadata: RemoteServiceMetadata[] = [];
   const fallbackTargetType = buildFallbackTargetType(
     schema.options.remoteFileMapping,
@@ -60,16 +83,16 @@ function generateTypeScript(schema: Schema<PluginParams>): void {
     }
 
     const role = inferRole(file, schema.options);
-    const analyzedMethods = analyzeFileMethods(file);
-    validateUniqueRequestBindings(requestOwners, analyzedMethods);
+    const analyzedMethods = analyzeFileMethods(file, role === "remote");
 
-    if (role !== "remote") {
-      throw new Error(
-        `${file.name}: TypeScript local-service generation is no longer supported by protoc-gen-actrframework-typescript. ` +
-          "Use @actrium/actr-workload to author a package-first workload and build it with actr-workload-ts.",
+    if (role === "local") {
+      localServiceMetadata.push(
+        ...buildLocalServiceMetadata(file, analyzedMethods),
       );
+      continue;
     }
 
+    validateUniqueRequestBindings(requestOwners, analyzedMethods);
     generateClientFile(schema, file, analyzedMethods);
 
     const explicitTargetType = parseActrType(
@@ -80,7 +103,7 @@ function generateTypeScript(schema: Schema<PluginParams>): void {
     if (!targetType) {
       throw new Error(
         `No actr_type mapping found for remote file ${file.name}. ` +
-          "Use RemoteFileMapping=remote/path.proto=manufacturer:Service.",
+          "Use RemoteFileMapping=remote/path.proto=manufacturer:Service:version.",
       );
     }
 
@@ -95,7 +118,7 @@ function generateTypeScript(schema: Schema<PluginParams>): void {
       {
         plugin_version: VERSION,
         language: "typescript",
-        local_services: [],
+        local_services: localServiceMetadata,
         remote_services: remoteServiceMetadata,
       },
       null,
@@ -206,11 +229,13 @@ function generateClientFile(
 
 function buildFallbackTargetType(
   remoteFileMapping: Map<string, string>,
-): { manufacturer: string; name: string } | null {
+): { manufacturer: string; name: string; version: string } | null {
   const mappingTypes = Array.from(remoteFileMapping.values())
     .map(parseActrType)
     .filter(
-      (value): value is { manufacturer: string; name: string } =>
+      (
+        value,
+      ): value is { manufacturer: string; name: string; version: string } =>
         value !== null,
     );
   return mappingTypes.length === 1 ? mappingTypes[0] : null;
@@ -293,7 +318,10 @@ function inferRole(file: DescFile, params: PluginParams): "local" | "remote" {
   return file.services.length > 0 ? "local" : "remote";
 }
 
-function analyzeFileMethods(file: DescFile): AnalyzedMethod[] {
+function analyzeFileMethods(
+  file: DescFile,
+  requireUniqueRequestCompanions: boolean,
+): AnalyzedMethod[] {
   const analyzedMethods: AnalyzedMethod[] = [];
   const companionNames = new Set<string>();
 
@@ -306,13 +334,18 @@ function analyzeFileMethods(file: DescFile): AnalyzedMethod[] {
       }
 
       const requestCompanionName = requestCompanionNameForMethod(method);
-      if (companionNames.has(requestCompanionName)) {
+      if (
+        requireUniqueRequestCompanions &&
+        companionNames.has(requestCompanionName)
+      ) {
         throw new Error(
           `${service.typeName}.${method.name}: request companion '${requestCompanionName}' is duplicated within ${file.name}. ` +
             "Each request type name must map to exactly one RPC in the generated file.",
         );
       }
-      companionNames.add(requestCompanionName);
+      if (requireUniqueRequestCompanions) {
+        companionNames.add(requestCompanionName);
+      }
 
       analyzedMethods.push({
         service,
@@ -325,17 +358,34 @@ function analyzeFileMethods(file: DescFile): AnalyzedMethod[] {
   return analyzedMethods;
 }
 
+function buildLocalServiceMetadata(
+  file: DescFile,
+  analyzedMethods: AnalyzedMethod[],
+): LocalServiceMetadata[] {
+  return groupAnalyzedMethodsByService(analyzedMethods).map(
+    ([service, methods]) => ({
+      name: service.name,
+      package: packageNameForService(service),
+      proto_file: protoFilePath(file),
+      handler_interface: `${service.name}Handler`,
+      workload_type: `${service.name}Workload`,
+      dispatcher_type: `${service.name}Dispatcher`,
+      methods: methods.map((entry) => buildMethodMetadata(entry.method)),
+    }),
+  );
+}
+
 function buildRemoteServiceMetadata(
   file: DescFile,
   analyzedMethods: AnalyzedMethod[],
-  targetType: { manufacturer: string; name: string },
+  targetType: { manufacturer: string; name: string; version: string },
 ): RemoteServiceMetadata[] {
   return groupAnalyzedMethodsByService(analyzedMethods).map(
     ([service, methods]) => ({
       name: service.name,
       package: packageNameForService(service),
-      proto_file: normalizePath(file.name),
-      actr_type: `${targetType.manufacturer}:${targetType.name}`,
+      proto_file: protoFilePath(file),
+      actr_type: `${targetType.manufacturer}:${targetType.name}:${targetType.version}`,
       client_type: `${service.name}Client`,
       methods: methods.map((entry) => buildMethodMetadata(entry.method)),
     }),
@@ -361,10 +411,27 @@ function buildMethodMetadata(method: DescMethod): MethodMetadata {
   return {
     name: method.name,
     snake_name: toSnakeCase(method.name),
-    input_type: method.input.name,
-    output_type: method.output.name,
     route_key: routeKeyForMethod(method),
+    input_ref: buildTypeRef(method.input),
+    output_ref: buildTypeRef(method.output),
   };
+}
+
+function buildTypeRef(message: DescMessage): TypeRef {
+  return {
+    proto_type: message.typeName,
+    type_name: relativeTypeName(message),
+    proto_package: message.file.proto.package,
+    proto_file: protoFilePath(message.file),
+  };
+}
+
+function relativeTypeName(message: DescMessage): string {
+  const packageName = message.file.proto.package;
+  const packagePrefix = packageName ? `${packageName}.` : "";
+  return message.typeName.startsWith(packagePrefix)
+    ? message.typeName.slice(packagePrefix.length)
+    : message.typeName;
 }
 
 function packageNameForService(service: DescService): string {
@@ -403,32 +470,46 @@ function routeKeyForMethod(method: DescMethod): string {
 
 function parseActrType(
   value: string,
-): { manufacturer: string; name: string } | null {
+): { manufacturer: string; name: string; version: string } | null {
   const parts = value.split(":");
-  if (parts.length < 2 || parts.length > 3) {
+  if (parts.length !== 3) {
     return null;
   }
-  const [manufacturer, name] = parts;
-  if (!manufacturer || !name) {
+  const [manufacturer, name, version] = parts;
+  if (!manufacturer || !name || !version) {
     return null;
   }
   return {
     manufacturer,
     name,
+    version,
   };
 }
 
 function normalizePath(value: string): string {
-  return value.replaceAll("\\", "/");
+  let normalized = value.replaceAll("\\", "/");
+  while (normalized.startsWith("./")) {
+    normalized = normalized.slice(2);
+  }
+  return normalized;
+}
+
+function protoFilePath(file: DescFile): string {
+  return normalizeProtoPath(file.name);
+}
+
+function normalizeProtoPath(value: string): string {
+  const normalized = normalizePath(value);
+  return normalized.endsWith(".proto") ? normalized : `${normalized}.proto`;
 }
 
 function normalizeProtoFileKey(value: string): string {
-  const normalized = normalizePath(value);
-  return normalized.endsWith(".proto")
-    ? normalized.slice(0, -".proto".length)
-    : normalized;
+  return normalizeProtoPath(value).slice(0, -".proto".length);
 }
 
 function toSnakeCase(value: string): string {
-  return value.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+  return value
+    .replace(/(.)([A-Z][a-z]+)/g, "$1_$2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase();
 }

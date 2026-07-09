@@ -8,7 +8,8 @@ type ActrId = {
   };
 };
 
-type Dest = { tag: 'shell' } | { tag: 'local' } | { tag: 'actor'; val: ActrId };
+type Dest =
+  { tag: 'host' } | { tag: 'workload' } | { tag: 'peer'; val: ActrId };
 
 type DataChunk = {
   streamId: string;

@@ -1041,7 +1041,7 @@ async fn in_flight_duplicate_waits_for_original_result_and_times_out_without_com
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_timeout_then_late_old_response_does_not_complete_new_request() {
     let target = make_actor_id(2);
-    let dest = Dest::actor(target.clone());
+    let dest = Dest::peer(target.clone());
     let (gate, _lane, _stats, transport) =
         gate_with_lane_and_transport(ScriptedLane::new(vec![Ok(()), Ok(())]), Duration::ZERO);
 
@@ -1407,7 +1407,7 @@ async fn create_transport_cancelled_by_close_action_does_not_leave_stale_dest() 
         let started = f.started;
         let release = f.release;
         let target = make_actor_id(2);
-        let dest = Dest::actor(target);
+        let dest = Dest::peer(target);
 
         let send_task = tokio::spawn({
             let transport = transport.clone();
@@ -1465,7 +1465,7 @@ async fn cleanup_during_inflight_rpc_is_bounded_and_next_rpc_is_clean() {
     let (gate, lane, _stats, transport) =
         gate_with_lane_and_transport(ScriptedLane::new(vec![Ok(()), Ok(())]), Duration::ZERO);
     let target = make_actor_id(2);
-    let dest = Dest::actor(target.clone());
+    let dest = Dest::peer(target.clone());
 
     let first = tokio::spawn({
         let gate = gate.clone();
@@ -1575,7 +1575,7 @@ async fn timeout_cleanup_without_wire_identity_does_not_close_replacement_transp
         Duration::ZERO,
     );
     let target = make_actor_id(2);
-    let dest = Dest::actor(target.clone());
+    let dest = Dest::peer(target.clone());
 
     let stale_request = tokio::spawn({
         let gate = gate.clone();
@@ -1648,7 +1648,7 @@ async fn timeout_cleanup_without_wire_identity_does_not_close_replacement_transp
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_timeout_does_not_close_replaced_webrtc_session() {
     let target = make_actor_id(2);
-    let dest = Dest::actor(target.clone());
+    let dest = Dest::peer(target.clone());
     let lane = Arc::new(ScriptedLane::new(vec![Ok(()), Ok(()), Ok(())]));
     let stats = Arc::new(BuilderStats::default());
     let builder = Arc::new(SequencedIdentityWireBuilder {

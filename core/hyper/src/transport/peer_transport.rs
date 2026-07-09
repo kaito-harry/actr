@@ -176,7 +176,7 @@ impl PeerTransport {
     #[cfg_attr(feature = "opentelemetry", tracing::instrument(
         skip_all,
         name = "PeerTransport.get_or_create_transport",
-        fields(dest = ?dest.as_actor_id().map(|id| id))
+        fields(dest = ?dest.as_peer_id().map(|id| id))
     ))]
     pub(crate) async fn get_or_create_transport(
         &self,

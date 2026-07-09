@@ -19,14 +19,14 @@ fn actr_type(mfr: &str, name: &str, ver: &str) -> ActrType {
 #[tokio::test]
 async fn select_gate_shell_and_local_use_inproc() {
     let c = ctx();
-    assert!(c.select_gate(&Dest::Shell).is_ok());
-    assert!(c.select_gate(&Dest::Local).is_ok());
+    assert!(c.select_gate(&Dest::Host).is_ok());
+    assert!(c.select_gate(&Dest::Workload).is_ok());
 }
 
 #[tokio::test]
-async fn select_gate_actor_errors_when_outproc_unset() {
+async fn select_gate_peer_errors_when_outproc_unset() {
     // Build a context with outproc_gate = None (unlike the test_support
-    // helper, which sets Some). Actor dest must fail.
+    // helper, which sets Some). Peer dest must fail.
     use crate::inbound::{DataChunkRegistry, MediaFrameRegistry};
     use crate::outbound::{Gate, HostGate};
     use crate::wire::webrtc::{ReconnectConfig, SignalingConfig, WebSocketSignalingClient};
@@ -54,7 +54,7 @@ async fn select_gate_actor_errors_when_outproc_unset() {
         None,
         0,
     );
-    match c.select_gate(&Dest::Actor(ActrId::default())) {
+    match c.select_gate(&Dest::Peer(ActrId::default())) {
         Err(ActrError::Internal(_)) => {}
         Err(_) => panic!("expected Internal error, got a different ActrError variant"),
         Ok(_) => panic!("expected error, got Ok"),
@@ -65,7 +65,7 @@ async fn select_gate_actor_errors_when_outproc_unset() {
 async fn select_gate_actor_ok_when_outproc_set() {
     // The test_support helper sets outproc_gate = Some(inproc) → Actor ok.
     let c = ctx();
-    assert!(c.select_gate(&Dest::Actor(ActrId::default())).is_ok());
+    assert!(c.select_gate(&Dest::Peer(ActrId::default())).is_ok());
 }
 
 // ── extract_target_id ───────────────────────────────────────────────────
@@ -74,14 +74,14 @@ async fn select_gate_actor_ok_when_outproc_set() {
 async fn extract_target_id_resolves_self_for_local_dests() {
     let c = ctx();
     let self_id = c.self_id().clone();
-    assert_eq!(c.extract_target_id(&Dest::Shell), &self_id);
-    assert_eq!(c.extract_target_id(&Dest::Local), &self_id);
+    assert_eq!(c.extract_target_id(&Dest::Host), &self_id);
+    assert_eq!(c.extract_target_id(&Dest::Workload), &self_id);
 
     let remote = ActrId {
         serial_number: 99,
         ..ActrId::default()
     };
-    assert_eq!(c.extract_target_id(&Dest::Actor(remote.clone())), &remote);
+    assert_eq!(c.extract_target_id(&Dest::Peer(remote.clone())), &remote);
 }
 
 // ── ensure_session_ready ────────────────────────────────────────────────
@@ -302,4 +302,127 @@ async fn get_dependency_fingerprint_missing_dependency() {
         c.get_dependency_fingerprint(&actr_type("acme", "Sensor", "1.0.0")),
         None
     );
+}
+
+// ── sender-side call/tell argument validation (#254 / #256) ──────────────
+
+#[tokio::test]
+async fn call_raw_rejects_zero_timeout() {
+    let c = ctx();
+    let err = c
+        .call_raw(
+            &Dest::Workload,
+            "pkg.Service.Method".to_string(),
+            PayloadType::RpcReliable,
+            Bytes::from_static(b"payload"),
+            0,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ActrError::InvalidArgument(_)),
+        "timeout_ms == 0 must be rejected at the call entry point, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn call_raw_rejects_negative_timeout() {
+    // A negative i64 would otherwise wrap through `as u64` into an
+    // effectively infinite Duration.
+    let c = ctx();
+    let err = c
+        .call_raw(
+            &Dest::Workload,
+            "pkg.Service.Method".to_string(),
+            PayloadType::RpcReliable,
+            Bytes::from_static(b"payload"),
+            -1,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ActrError::InvalidArgument(_)),
+        "negative timeout_ms must be rejected, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn call_raw_rejects_stream_payload_type() {
+    let c = ctx();
+    let err = c
+        .call_raw(
+            &Dest::Workload,
+            "pkg.Service.Method".to_string(),
+            PayloadType::StreamReliable,
+            Bytes::from_static(b"payload"),
+            5000,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ActrError::InvalidArgument(_)),
+        "StreamReliable must be rejected on the call path, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn call_raw_rejects_media_payload_type() {
+    let c = ctx();
+    let err = c
+        .call_raw(
+            &Dest::Workload,
+            "pkg.Service.Method".to_string(),
+            PayloadType::MediaRtp,
+            Bytes::from_static(b"payload"),
+            5000,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ActrError::InvalidArgument(_)),
+        "MediaRtp must be rejected on the call path, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn tell_raw_rejects_stream_payload_type() {
+    let c = ctx();
+    let err = c
+        .tell_raw(
+            &Dest::Workload,
+            "pkg.Service.Method".to_string(),
+            PayloadType::StreamLatencyFirst,
+            Bytes::from_static(b"payload"),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ActrError::InvalidArgument(_)),
+        "StreamLatencyFirst must be rejected on the tell path, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn tell_raw_accepts_rpc_signal_and_stamps_tell() {
+    // The tell path accepts both RPC payload types and puts a
+    // Direction::Tell envelope on the wire with timeout_ms == 0 as filler.
+    let transport = Arc::new(HostTransport::new());
+    let c = runtime_context_with_host_transport(ActrId::default(), transport.clone());
+    let lane = transport
+        .get_lane(PayloadType::RpcSignal, None)
+        .await
+        .unwrap();
+
+    c.tell_raw(
+        &Dest::Workload,
+        "pkg.Service.Method".to_string(),
+        PayloadType::RpcSignal,
+        Bytes::from_static(b"payload"),
+    )
+    .await
+    .unwrap();
+
+    let sent = lane.recv_envelope().await.unwrap();
+    assert_eq!(sent.direction, Some(Direction::Tell as i32));
+    assert_eq!(sent.timeout_ms, 0);
 }

@@ -157,12 +157,12 @@ pub enum ActrError {
 /// Lowered from WIT `variant dest`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Dest {
-    #[serde(rename = "shell")]
-    Shell,
-    #[serde(rename = "local")]
-    Local,
-    #[serde(rename = "actor")]
-    Actor(ActrId),
+    #[serde(rename = "host")]
+    Host,
+    #[serde(rename = "workload")]
+    Workload,
+    #[serde(rename = "peer")]
+    Peer(ActrId),
 }
 
 /// Lowered from WIT `variant error-category`.

@@ -246,7 +246,7 @@ class EchoServiceHandlerImpl implements EchoServiceHandler {
       const incoming = textDecoder.decode(toUint8Array(chunk.payload));
       console.log(`typescript echo: stream ${inboundStreamId} ${incoming}`);
       await sendDataChunk(
-        { actor: sender },
+        { peer: sender },
         {
           streamId: replyStreamId,
           sequence: BigInt(chunk.sequence) + 1n,
@@ -548,7 +548,7 @@ impl RelayServiceHandler for RelayServiceImpl {
         eprintln!("relay: calling echo");
         let echo_response: EchoResponse = ctx
             .call(
-                &Dest::Actor(echo_actor.clone()),
+                &Dest::Peer(echo_actor.clone()),
                 EchoRequest {
                     message: req.message,
                 },
@@ -632,7 +632,7 @@ async fn release_echo_stream<C: Context>(
     let inbound_stream_id = format!("demo1-{label}-to-echo");
     let release: StreamReleaseResponse = ctx
         .call(
-            &Dest::Actor(echo_actor),
+            &Dest::Peer(echo_actor),
             StreamReleaseRequest {
                 stream_id: inbound_stream_id.clone(),
             },
@@ -680,7 +680,7 @@ async fn start_stream_round_trip<C: Context>(
 
     let prepare: StreamPrepareResponse = ctx
         .call(
-            &Dest::Actor(echo_actor.clone()),
+            &Dest::Peer(echo_actor.clone()),
             StreamPrepareRequest {
                 inbound_stream_id: inbound_stream_id.clone(),
                 reply_stream_id: reply_stream_id.clone(),
@@ -696,7 +696,7 @@ async fn start_stream_round_trip<C: Context>(
     }
 
     ctx.send_data_chunk(
-        &Dest::Actor(echo_actor),
+        &Dest::Peer(echo_actor),
         DataChunk {
             stream_id: inbound_stream_id,
             sequence: 1,

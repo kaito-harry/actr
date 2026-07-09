@@ -1,6 +1,6 @@
 {
   "name": "framework-codegen-typescript",
-  "version": "0.4.12",
+  "version": "0.4.13",
   "private": true,
   "description": "TypeScript protoc plugin for Actor-RTC framework",
   "bin": {
@@ -9,7 +9,8 @@
   "scripts": {
     "build": "tsc",
     "bundle": "esbuild src/main.ts --bundle --platform=node --target=node20 --outfile=dist/bundle.js",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "npm run bundle && node --test tests/*.test.mjs"
   },
   "engines": {
     "node": ">=20"

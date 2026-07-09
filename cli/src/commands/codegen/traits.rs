@@ -1,4 +1,5 @@
 use crate::commands::codegen::proto_model::ProtoModel;
+use crate::commands::codegen::scaffold::ScaffoldCatalog;
 use crate::error::Result;
 use actr_config::ManifestConfig;
 use async_trait::async_trait;
@@ -39,7 +40,11 @@ pub trait LanguageGenerator: Send + Sync {
     async fn generate_infrastructure(&self, context: &GenContext) -> Result<Vec<PathBuf>>;
 
     /// Generate user code scaffold
-    async fn generate_scaffold(&self, context: &GenContext) -> Result<Vec<PathBuf>>;
+    async fn generate_scaffold(
+        &self,
+        context: &GenContext,
+        catalog: &ScaffoldCatalog,
+    ) -> Result<Vec<PathBuf>>;
 
     /// Format generated code using language-specific tools
     async fn format_code(&self, context: &GenContext, files: &[PathBuf]) -> Result<()>;

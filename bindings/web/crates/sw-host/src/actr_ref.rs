@@ -186,17 +186,19 @@ impl<W: Workload> ActrRef<W> {
         // Encode the message.
         let payload: Bytes = message.encode_to_vec().into();
 
-        // Create envelope with initial traceparent and tracestate set to None
+        // Create envelope with initial traceparent and tracestate set to None.
+        // One-way messages carry the explicit Direction::Tell label; the zero
+        // timeout is documented filler, not a tell marker.
         let mut envelope = RpcEnvelope {
             route_key: R::route_key().to_string(),
             payload: Some(payload),
             error: None,
-            direction: Some(Direction::Request as i32),
+            direction: Some(Direction::Tell as i32),
             traceparent: None,
             tracestate: None,
             request_id: format!("req-{}", js_sys::Math::random()),
             metadata: vec![],
-            timeout_ms: 0, // One-way messages have no timeout.
+            timeout_ms: 0,
         };
 
         // Inject trace context to RPC envelope

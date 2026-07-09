@@ -1,6 +1,5 @@
 use crate::commands::SupportedLanguage;
-use crate::commands::codegen::metadata::{ActrGenMetadata, TypeRef, load_metadata};
-use crate::commands::codegen::proto_model::ProtoModel;
+use crate::commands::codegen::metadata::{ActrGenMetadata, TypeRef, load_required_metadata};
 use crate::commands::codegen::traits::GenContext;
 use crate::error::Result;
 use std::path::PathBuf;
@@ -24,7 +23,7 @@ pub struct ScaffoldService {
     pub methods: Vec<ScaffoldMethod>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ScaffoldMethod {
     pub name: String,
     pub snake_name: String,
@@ -37,17 +36,11 @@ pub struct ScaffoldMethod {
 
 impl ScaffoldCatalog {
     pub fn load(context: &GenContext, language: SupportedLanguage) -> Result<Self> {
-        let expected_language = language_key(language);
-        let metadata = match load_metadata(&context.output)?
-            .filter(|metadata| metadata.language == expected_language)
-        {
-            Some(metadata) => metadata,
-            None => ActrGenMetadata::from_proto_model(language, &context.proto_model)?,
-        };
+        let metadata = load_required_metadata(&context.output, language)?;
         Ok(Self::from_metadata(&metadata))
     }
 
-    fn from_metadata(metadata: &ActrGenMetadata) -> Self {
+    pub(crate) fn from_metadata(metadata: &ActrGenMetadata) -> Self {
         Self {
             local_services: metadata
                 .local_services
@@ -67,8 +60,8 @@ impl ScaffoldCatalog {
                         .map(|method| ScaffoldMethod {
                             name: method.name.clone(),
                             snake_name: method.snake_name.clone(),
-                            input_type: method.input_type.clone(),
-                            output_type: method.output_type.clone(),
+                            input_type: method.input_ref.type_name.clone(),
+                            output_type: method.output_ref.type_name.clone(),
                             route_key: method.route_key.clone(),
                             input_ref: method.input_ref.clone(),
                             output_ref: method.output_ref.clone(),
@@ -94,8 +87,8 @@ impl ScaffoldCatalog {
                         .map(|method| ScaffoldMethod {
                             name: method.name.clone(),
                             snake_name: method.snake_name.clone(),
-                            input_type: method.input_type.clone(),
-                            output_type: method.output_type.clone(),
+                            input_type: method.input_ref.type_name.clone(),
+                            output_type: method.output_ref.type_name.clone(),
                             route_key: method.route_key.clone(),
                             input_ref: method.input_ref.clone(),
                             output_ref: method.output_ref.clone(),
@@ -116,19 +109,6 @@ impl ScaffoldCatalog {
                 .any(|service| !service.methods.is_empty())
     }
 }
-
-fn language_key(language: SupportedLanguage) -> &'static str {
-    match language {
-        SupportedLanguage::Rust => "rust",
-        SupportedLanguage::Python => "python",
-        SupportedLanguage::Swift => "swift",
-        SupportedLanguage::Kotlin => "kotlin",
-        SupportedLanguage::TypeScript => "typescript",
-    }
-}
-
-#[allow(dead_code)]
-fn _proto_model_is_retained_for_generation_ordering(_proto_model: &ProtoModel) {}
 
 #[cfg(test)]
 #[path = "scaffold_tests.rs"]

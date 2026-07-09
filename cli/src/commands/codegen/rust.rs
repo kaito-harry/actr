@@ -1,4 +1,3 @@
-use crate::commands::SupportedLanguage;
 use crate::commands::codegen::scaffold::{ScaffoldCatalog, ScaffoldService};
 use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
 use crate::error::{ActrCliError, Result};
@@ -53,10 +52,12 @@ impl LanguageGenerator for RustGenerator {
         Ok(vec![])
     }
 
-    async fn generate_scaffold(&self, context: &GenContext) -> Result<Vec<PathBuf>> {
+    async fn generate_scaffold(
+        &self,
+        context: &GenContext,
+        catalog: &ScaffoldCatalog,
+    ) -> Result<Vec<PathBuf>> {
         info!("📝 Generating user code scaffold...");
-
-        let catalog = ScaffoldCatalog::load(context, SupportedLanguage::Rust)?;
 
         for service in &catalog.local_services {
             self.generate_service_scaffold(service, &context.output, context.overwrite_user_code)

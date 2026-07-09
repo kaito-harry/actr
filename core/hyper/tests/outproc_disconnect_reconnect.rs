@@ -1629,7 +1629,7 @@ async fn test_network_recovery_guard_times_out_after_6s_and_closes_transport() {
     harness.connect(100, 200).await;
 
     let target_id = harness.peer(200).id.clone();
-    let dest = Dest::actor(target_id.clone());
+    let dest = Dest::peer(target_id.clone());
 
     assert!(
         harness.peer(100).transport_manager.has_dest(&dest).await,
@@ -1764,7 +1764,7 @@ async fn test_data_channel_on_close_cleans_webrtc_transport() {
     harness.add_peer(200).await;
 
     let target_id = harness.peer(200).id.clone();
-    let dest = Dest::actor(target_id.clone());
+    let dest = Dest::peer(target_id.clone());
     let mut event_rx = harness.peer(100).subscribe_events();
 
     tracing::info!("Step 1: Establishing WebRTC connection 100 -> 200");

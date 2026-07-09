@@ -62,8 +62,8 @@ impl MessageDispatcher for RelayClientDispatcher {
             frame.data.len()
         );
 
-        // Call remote server via Dest::Actor
-        let response: RelayFrameResponse = ctx.call(&Dest::Actor(server_id), request).await?;
+        // Call remote server via Dest::Peer
+        let response: RelayFrameResponse = ctx.call(&Dest::Peer(server_id), request).await?;
 
         Ok(Bytes::from(prost::Message::encode_to_vec(&response)))
     }

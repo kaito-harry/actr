@@ -107,7 +107,7 @@ impl ContextBridge {
         let resp = run_on_tokio_runtime("remote call", async move {
             inner
                 .call_raw(
-                    &Dest::Actor(target_id),
+                    &Dest::Peer(target_id),
                     route_key,
                     proto_payload_type,
                     Bytes::from(payload),
@@ -139,7 +139,7 @@ impl ContextBridge {
         run_on_tokio_runtime("remote tell", async move {
             inner
                 .tell_raw(
-                    &Dest::Actor(target_id),
+                    &Dest::Peer(target_id),
                     route_key,
                     proto_payload_type,
                     Bytes::from(payload),
@@ -165,7 +165,7 @@ impl ContextBridge {
         let chunk: DataChunk = chunk.into();
         let payload_type: PayloadType = payload_type.into();
         self.inner
-            .send_data_chunk(&Dest::Actor(target_id), chunk, payload_type)
+            .send_data_chunk(&Dest::Peer(target_id), chunk, payload_type)
             .await?;
         Ok(())
     }
@@ -225,7 +225,7 @@ impl ContextBridge {
     ) -> crate::error::ActrResult<()> {
         let target_id: ActrId = target.into();
         self.inner
-            .add_media_track(&Dest::Actor(target_id), &track_id, &codec, &media_type)
+            .add_media_track(&Dest::Peer(target_id), &track_id, &codec, &media_type)
             .await?;
         Ok(())
     }
@@ -238,7 +238,7 @@ impl ContextBridge {
     ) -> crate::error::ActrResult<()> {
         let target_id: ActrId = target.into();
         self.inner
-            .remove_media_track(&Dest::Actor(target_id), &track_id)
+            .remove_media_track(&Dest::Peer(target_id), &track_id)
             .await?;
         Ok(())
     }
@@ -253,7 +253,7 @@ impl ContextBridge {
         let target_id: ActrId = target.into();
         let framework_sample: FrameworkMediaSample = sample.into();
         self.inner
-            .send_media_sample(&Dest::Actor(target_id), &track_id, framework_sample)
+            .send_media_sample(&Dest::Peer(target_id), &track_id, framework_sample)
             .await?;
         Ok(())
     }

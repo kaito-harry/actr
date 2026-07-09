@@ -51,6 +51,13 @@ pub(crate) trait PayloadTypeExt {
     #[allow(clippy::wrong_self_convention)]
     fn is_stream(self) -> bool;
 
+    /// Whether this payload type carries an `RpcEnvelope` (call/tell path).
+    ///
+    /// Only `RpcReliable` and `RpcSignal` are permitted on the call/tell
+    /// entry points; stream and media types must use their dedicated APIs.
+    #[allow(clippy::wrong_self_convention)]
+    fn is_rpc(self) -> bool;
+
     /// Get the list of supported DataLane types (ordered by priority)
     fn data_lane_types(self) -> &'static [DataLaneType];
 
@@ -71,6 +78,11 @@ impl PayloadTypeExt for PayloadType {
             self,
             PayloadType::StreamReliable | PayloadType::StreamLatencyFirst
         )
+    }
+
+    #[inline]
+    fn is_rpc(self) -> bool {
+        matches!(self, PayloadType::RpcReliable | PayloadType::RpcSignal)
     }
 
     #[inline]

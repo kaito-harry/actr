@@ -77,3 +77,27 @@ pub use connection_event::{ConnectionEvent, ConnectionState};
 
 // Connection session
 pub(crate) mod session;
+
+/// Validate a caller-supplied RPC timeout at a call entry point and convert
+/// it into a [`std::time::Duration`].
+///
+/// The wire contract (see `package.proto`) requires `timeout_ms > 0` iff
+/// `direction == DIRECTION_REQUEST`. Rejecting non-positive values here also
+/// prevents the `Duration::from_millis(timeout_ms as u64)` sign wrap that
+/// would silently turn a negative timeout into an effectively infinite one.
+///
+/// Sender-side only: this helper guards call entry points
+/// (`RuntimeContext::call_raw`, typed call construction,
+/// `PeerGate::send_request_with_type`, `HostTransport::send_request`).
+/// Receivers stay permissive — an inbound REQUEST carrying `timeout_ms == 0`
+/// from a buggy sender is still dispatched and answered.
+pub(crate) fn validate_rpc_timeout_ms(
+    timeout_ms: i64,
+) -> actr_protocol::ActorResult<std::time::Duration> {
+    if timeout_ms <= 0 {
+        return Err(actr_protocol::ActrError::InvalidArgument(format!(
+            "RPC call timeout_ms must be > 0, got {timeout_ms} (fire-and-forget messaging must use tell, not a zero timeout)"
+        )));
+    }
+    Ok(std::time::Duration::from_millis(timeout_ms as u64))
+}
