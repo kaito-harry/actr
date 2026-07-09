@@ -29,7 +29,8 @@ fn generated_handler_impl_contains_rpc_method_stubs() {
     assert!(handler.contains("Use targetType with ctx.discover(targetType:)"));
     assert!(handler.contains("public func echo("));
     assert!(handler.contains("req: Echo_EchoRequest"));
-    assert!(handler.contains("async throws -> Echo_EchoResponse"));
+    assert!(handler.contains("ctx: any ActrContext"));
+    assert!(handler.contains("async throws(ActrError) -> Echo_EchoResponse"));
     assert!(handler.contains("ActrError.NotImplemented"));
 }
 

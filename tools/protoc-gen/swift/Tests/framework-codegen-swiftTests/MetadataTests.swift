@@ -56,6 +56,48 @@ final class MetadataTests: XCTestCase {
       "remote/ask.proto")
   }
 
+  func testPayloadTypeUsesMethodOptionAndStreamingDefault() throws {
+    var signalMethod = Google_Protobuf_MethodDescriptorProto()
+    signalMethod.name = "Signal"
+    signalMethod.options = try methodOptionsWithPayloadType(1)
+
+    let explicitPayloadType = try ActrFrameworkGenerator.payloadType(
+      for: signalMethod,
+      packageName: "echo",
+      serviceName: "EchoService")
+    XCTAssertEqual(explicitPayloadType, .rpcSignal)
+    XCTAssertEqual(explicitPayloadType.swiftCase, ".rpcSignal")
+
+    var streamingMethod = Google_Protobuf_MethodDescriptorProto()
+    streamingMethod.name = "Upload"
+    streamingMethod.clientStreaming = true
+
+    XCTAssertEqual(
+      try ActrFrameworkGenerator.payloadType(
+        for: streamingMethod,
+        packageName: "echo",
+        serviceName: "EchoService"),
+      .streamReliable)
+  }
+
+  func testUnsupportedPayloadTypeReportsMethodContext() throws {
+    var method = Google_Protobuf_MethodDescriptorProto()
+    method.name = "Broken"
+    method.options = try methodOptionsWithPayloadType(99)
+
+    XCTAssertThrowsError(
+      try ActrFrameworkGenerator.payloadType(
+        for: method,
+        packageName: "echo",
+        serviceName: "EchoService")
+    ) { error in
+      XCTAssertEqual(
+        error.localizedDescription,
+        "Unsupported (actr.payload_type) value 99 for EchoService.Broken"
+      )
+    }
+  }
+
   func testUnresolvedTypeErrorPreservesTrailingDotAndIncludesContext() {
     XCTAssertThrowsError(
       try ActrFrameworkGenerator.resolveTypeRef(
@@ -75,5 +117,21 @@ final class MetadataTests: XCTestCase {
   private func encodedJSON<T: Encodable>(_ value: T) throws -> [String: Any] {
     let data = try JSONEncoder().encode(value)
     return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+  }
+
+  private func methodOptionsWithPayloadType(_ payloadType: UInt64) throws -> Google_Protobuf_MethodOptions {
+    var bytes: [UInt8] = []
+    appendVarint(UInt64(50_001 << 3), to: &bytes)
+    appendVarint(payloadType, to: &bytes)
+    return try Google_Protobuf_MethodOptions(serializedBytes: Data(bytes))
+  }
+
+  private func appendVarint(_ value: UInt64, to bytes: inout [UInt8]) {
+    var remaining = value
+    while remaining >= 0x80 {
+      bytes.append(UInt8(remaining & 0x7f) | 0x80)
+      remaining >>= 7
+    }
+    bytes.append(UInt8(remaining))
   }
 }

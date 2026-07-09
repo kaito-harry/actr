@@ -42,23 +42,21 @@ public final class ActrRef: Sendable {
     ///
     /// - Parameters:
     ///   - message: The request message conforming to `RpcRequest`
-    ///   - payloadType: Payload transmission type (default: .rpcReliable)
     ///   - timeoutMs: Timeout in milliseconds (default: 30000)
     /// - Returns: The response message
     public func call<Req: RpcRequest>(
         _ message: Req,
-        payloadType: PayloadType = .rpcReliable,
         timeoutMs: Int64 = 30000
-    ) async throws -> Req.Response {
+    ) async throws(ActrError) -> Req.Response {
         do {
-            let requestData = try message.serializedData()
+            let requestData = try encodeProtobufMessage(message, context: "\(Req.self) request")
             let responseData = try await inner.call(
                 routeKey: Req.routeKey,
-                payloadType: payloadType.bridge,
+                payloadType: Req.payloadType.bridge,
                 requestPayload: requestData,
                 timeoutMs: timeoutMs
             )
-            return try Req.Response(serializedBytes: responseData)
+            return try decodeProtobufMessage(Req.Response.self, from: responseData, context: "\(Req.Response.self) response")
         } catch {
             throw ActrError(error: error)
         }

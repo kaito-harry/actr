@@ -195,6 +195,41 @@ impl From<actr_protocol::PayloadType> for PayloadType {
     }
 }
 
+/// Workload log severity emitted through a Context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, uniffi::Enum)]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    #[default]
+    Info,
+    Warn,
+    Error,
+}
+
+impl From<LogLevel> for actr_framework::LogLevel {
+    fn from(level: LogLevel) -> Self {
+        match level {
+            LogLevel::Trace => actr_framework::LogLevel::Trace,
+            LogLevel::Debug => actr_framework::LogLevel::Debug,
+            LogLevel::Info => actr_framework::LogLevel::Info,
+            LogLevel::Warn => actr_framework::LogLevel::Warn,
+            LogLevel::Error => actr_framework::LogLevel::Error,
+        }
+    }
+}
+
+impl From<actr_framework::LogLevel> for LogLevel {
+    fn from(level: actr_framework::LogLevel) -> Self {
+        match level {
+            actr_framework::LogLevel::Trace => LogLevel::Trace,
+            actr_framework::LogLevel::Debug => LogLevel::Debug,
+            actr_framework::LogLevel::Info => LogLevel::Info,
+            actr_framework::LogLevel::Warn => LogLevel::Warn,
+            actr_framework::LogLevel::Error => LogLevel::Error,
+        }
+    }
+}
+
 /// Network event types for runtime lifecycle callbacks
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
 pub enum NetworkAvailability {

@@ -17,6 +17,7 @@ import SwiftProtobuf
 /// extension EchoRequest: RpcRequest {
 ///     typealias Response = EchoResponse
 ///     static var routeKey: String { "echo.EchoService.Echo" }
+///     static var payloadType: PayloadType { .rpcReliable }
 /// }
 /// ```
 public protocol RpcRequest: Message, Sendable {
@@ -27,4 +28,11 @@ public protocol RpcRequest: Message, Sendable {
     ///
     /// Format: "package.Service.Method" (e.g., "echo.EchoService.Echo")
     static var routeKey: String { get }
+
+    /// Returns the payload lane for this RPC method.
+    static var payloadType: PayloadType { get }
+}
+
+public extension RpcRequest {
+    static var payloadType: PayloadType { .rpcReliable }
 }

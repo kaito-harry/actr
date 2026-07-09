@@ -1104,6 +1104,11 @@ public protocol ContextBridgeProtocol: AnyObject, Sendable {
     func callRaw(target: ActrId, routeKey: String, payloadType: PayloadType, payload: Data, timeoutMs: Int64) async throws  -> Data
     
     /**
+     * Caller actor ID when this context was created from an inbound actor call.
+     */
+    func callerId()  -> ActrId?
+
+    /**
      * Discover an actor of the specified type
      *
      * # Arguments
@@ -1113,6 +1118,11 @@ public protocol ContextBridgeProtocol: AnyObject, Sendable {
      * The ActrId of a discovered actor
      */
     func discover(targetType: ActrType) async throws  -> ActrId
+
+    /**
+     * Emit a workload-scoped log record through the runtime's context logging hook.
+     */
+    func log(level: LogLevel, msg: String)
     
     /**
      * Register a callback for incoming media track samples
@@ -1128,6 +1138,16 @@ public protocol ContextBridgeProtocol: AnyObject, Sendable {
      * Remove a media track from the WebRTC connection with the target.
      */
     func removeMediaTrack(target: ActrId, trackId: String) async throws 
+
+    /**
+     * Request ID associated with the current dispatch or lifecycle context.
+     */
+    func requestId()  -> String
+
+    /**
+     * Current actor ID associated with this context.
+     */
+    func selfId()  -> ActrId
     
     /**
      * Send a DataChunk to a remote actor (Fast Path)
@@ -1273,6 +1293,17 @@ open func callRaw(target: ActrId, routeKey: String, payloadType: PayloadType, pa
 }
     
     /**
+     * Caller actor ID when this context was created from an inbound actor call.
+     */
+open func callerId() -> ActrId?  {
+    return try!  FfiConverterOptionTypeActrId.lift(try! rustCall() {
+    uniffi_actr_fn_method_contextbridge_caller_id(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
      * Discover an actor of the specified type
      *
      * # Arguments
@@ -1296,6 +1327,18 @@ open func discover(targetType: ActrType)async throws  -> ActrId  {
             liftFunc: FfiConverterTypeActrId_lift,
             errorHandler: FfiConverterTypeActrError_lift
         )
+}
+
+    /**
+     * Emit a workload-scoped log record through the runtime's context logging hook.
+     */
+open func log(level: LogLevel, msg: String)  {try! rustCall() {
+    uniffi_actr_fn_method_contextbridge_log(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeLogLevel_lower(level),
+        FfiConverterString.lower(msg),$0
+    )
+}
 }
     
     /**
@@ -1356,6 +1399,28 @@ open func removeMediaTrack(target: ActrId, trackId: String)async throws   {
             liftFunc: { $0 },
             errorHandler: FfiConverterTypeActrError_lift
         )
+}
+
+    /**
+     * Request ID associated with the current dispatch or lifecycle context.
+     */
+open func requestId() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_actr_fn_method_contextbridge_request_id(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * Current actor ID associated with this context.
+     */
+open func selfId() -> ActrId  {
+    return try!  FfiConverterTypeActrId_lift(try! rustCall() {
+    uniffi_actr_fn_method_contextbridge_self_id(
+            self.uniffiCloneHandle(),$0
+    )
+})
 }
     
     /**
@@ -3714,6 +3779,97 @@ public func FfiConverterTypeErrorKind_lift(_ buf: RustBuffer) throws -> ErrorKin
 #endif
 public func FfiConverterTypeErrorKind_lower(_ value: ErrorKind) -> RustBuffer {
     return FfiConverterTypeErrorKind.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Workload log severity emitted through a Context.
+ */
+
+public enum LogLevel: Equatable, Hashable {
+
+    case trace
+    case debug
+    case info
+    case warn
+    case error
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension LogLevel: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLogLevel: FfiConverterRustBuffer {
+    typealias SwiftType = LogLevel
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LogLevel {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .trace
+
+        case 2: return .debug
+
+        case 3: return .info
+
+        case 4: return .warn
+
+        case 5: return .error
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: LogLevel, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .trace:
+            writeInt(&buf, Int32(1))
+
+
+        case .debug:
+            writeInt(&buf, Int32(2))
+
+
+        case .info:
+            writeInt(&buf, Int32(3))
+
+
+        case .warn:
+            writeInt(&buf, Int32(4))
+
+
+        case .error:
+            writeInt(&buf, Int32(5))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLogLevel_lift(_ buf: RustBuffer) throws -> LogLevel {
+    return try FfiConverterTypeLogLevel.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLogLevel_lower(_ value: LogLevel) -> RustBuffer {
+    return FfiConverterTypeLogLevel.lower(value)
 }
 
 
@@ -6222,6 +6378,30 @@ fileprivate struct FfiConverterOptionTypeContextBridge: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeActrId: FfiConverterRustBuffer {
+    typealias SwiftType = ActrId?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeActrId.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeActrId.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeWebRtcPeerStatusBridge: FfiConverterRustBuffer {
     typealias SwiftType = WebRtcPeerStatusBridge?
 
@@ -6769,7 +6949,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_actr_checksum_method_contextbridge_call_raw() != 51062) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_actr_checksum_method_contextbridge_caller_id() != 7075) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_actr_checksum_method_contextbridge_discover() != 38410) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_contextbridge_log() != 34242) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_method_contextbridge_register_media_track() != 43039) {
@@ -6779,6 +6965,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_method_contextbridge_remove_media_track() != 43937) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_contextbridge_request_id() != 61345) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_contextbridge_self_id() != 56416) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_method_contextbridge_send_data_chunk() != 60974) {

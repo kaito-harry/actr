@@ -111,6 +111,44 @@ public enum PayloadType: Equatable, Hashable, Sendable {
     }
 }
 
+public enum LogLevel: Equatable, Hashable, Sendable {
+    case trace
+    case debug
+    case info
+    case warn
+    case error
+
+    init(bridge: ActrBindings.LogLevel) {
+        switch bridge {
+        case .trace:
+            self = .trace
+        case .debug:
+            self = .debug
+        case .info:
+            self = .info
+        case .warn:
+            self = .warn
+        case .error:
+            self = .error
+        }
+    }
+
+    var bridge: ActrBindings.LogLevel {
+        switch self {
+        case .trace:
+            return .trace
+        case .debug:
+            return .debug
+        case .info:
+            return .info
+        case .warn:
+            return .warn
+        case .error:
+            return .error
+        }
+    }
+}
+
 public struct ConnectionNotReadyInfo: Equatable, Hashable, Sendable {
     public var retryAfterMs: UInt64?
 

@@ -16,8 +16,8 @@ public final class {{SERVICE_NAME}}HandlerImpl: {{HANDLER_NAME}} {
 {{#each METHODS}}
     public func {{swift_name}}(
         req: {{input_type}},
-        ctx: Context
-    ) async throws -> {{output_type}} {
+        ctx: any ActrContext
+    ) async throws(ActrError) -> {{output_type}} {
         throw ActrError.NotImplemented(msg: "{{name}} is not implemented")
     }
 

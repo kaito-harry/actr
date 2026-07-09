@@ -62,6 +62,26 @@ impl ContextBridge {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl ContextBridge {
+    /// Current actor ID associated with this context.
+    pub fn self_id(&self) -> crate::types::ActrId {
+        self.inner.self_id().clone().into()
+    }
+
+    /// Caller actor ID when this context was created from an inbound actor call.
+    pub fn caller_id(&self) -> Option<crate::types::ActrId> {
+        self.inner.caller_id().cloned().map(Into::into)
+    }
+
+    /// Request ID associated with the current dispatch or lifecycle context.
+    pub fn request_id(&self) -> String {
+        self.inner.request_id().to_string()
+    }
+
+    /// Emit a workload-scoped log record through the runtime's context logging hook.
+    pub fn log(&self, level: crate::types::LogLevel, msg: String) {
+        self.inner.log(level.into(), &msg);
+    }
+
     /// Call a remote actor via RPC (simplified for FFI)
     ///
     /// # Arguments

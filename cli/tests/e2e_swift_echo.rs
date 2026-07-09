@@ -49,7 +49,7 @@ import SwiftProtobuf
 public final class EchoServiceHandlerImpl: EchoServiceHandler {
     public init() {}
 
-    public func echo(req: Echo_EchoRequest, ctx _: Context) async throws -> Echo_EchoResponse {
+    public func echo(req: Echo_EchoRequest, ctx _: any ActrContext) async throws(ActrError) -> Echo_EchoResponse {
         print("Received echo request: \(req.message)")
         var response = Echo_EchoResponse()
         response.reply = req.message

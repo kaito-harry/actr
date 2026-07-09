@@ -94,14 +94,21 @@ Wrapper for a reference to a running actor. Provides methods for RPC calls, disc
 - `func waitForShutdown() async`
   - Waits for the actor shutdown to complete
 
-#### `ContextBridge`
+#### `ActrContext`
 
-Context provided to workloads during lifecycle callbacks. Provides access to RPC and discovery functionality.
+Protocol for workload-facing context values. Generated handlers accept
+`any ActrContext`, which makes RPC dispatch code testable with injected fakes.
+
+**Properties:**
+
+- `var selfId: ActrId { get }`
+- `var callerId: ActrId? { get }`
+- `var requestId: String { get }`
 
 **Methods:**
 
-- `func callRaw(target: ActrId, routeKey: String, payloadType: PayloadType, payload: Data, timeoutMs: Int64) async throws -> Data`
-  - Calls a remote actor via RPC (simplified for FFI)
+- `func callRaw(target: ActrId, routeKey: String, payloadType: PayloadType, payload: Data, timeoutMs: Int64) async throws(ActrError) -> Data`
+  - Calls a remote actor via RPC
   - **Parameters:**
     - `target`: Target actor ID
     - `routeKey`: RPC route key
@@ -109,30 +116,19 @@ Context provided to workloads during lifecycle callbacks. Provides access to RPC
     - `payload`: Request payload bytes
     - `timeoutMs`: Timeout in milliseconds
   - **Returns:** Response payload bytes
-  - **Throws:** `ActrError.Internal` if the call fails
+  - **Throws:** `ActrError` if the call fails
 
-- `func discover(targetType: ActrType) async throws -> ActrId`
+- `func discover(targetType: ActrType) async throws(ActrError) -> ActrId`
   - Discovers a single actor of the specified type
   - **Parameters:**
     - `targetType`: The type of actor to discover
   - **Returns:** The discovered actor ID
   - **Throws:** `ActrError` if discovery fails
 
-- `func registerStream(streamId: String, callback: DataChunkCallback) async throws`
-  - Registers a `DataChunkCallback` for the specified stream ID
-  - **Parameters:**
-    - `streamId`: Stream identifier to associate with the callback
-    - `callback`: Callback interface invoked on incoming stream chunks
-  - **Throws:** `ActrError` if registration fails
+- `func log(level: LogLevel, msg: String)`
+  - Emits a workload-scoped log record
 
-- `func sendDataChunk(target: ActrId, chunk: DataChunk) async throws`
-  - Sends a data chunk to a remote actor
-  - **Parameters:**
-    - `target`: Target actor ID
-    - `chunk`: Data chunk to send
-  - **Throws:** `ActrError` if sending fails
-
-- `func tellRaw(target: ActrId, routeKey: String, payloadType: PayloadType, payload: Data) async throws`
+- `func tellRaw(target: ActrId, routeKey: String, payloadType: PayloadType, payload: Data) async throws(ActrError)`
   - Sends a message to a remote actor without expecting a response (fire-and-forget)
   - **Parameters:**
     - `target`: Target actor ID
@@ -141,10 +137,66 @@ Context provided to workloads during lifecycle callbacks. Provides access to RPC
     - `payload`: Message payload bytes
   - **Throws:** `ActrError` if sending fails
 
-- `func unregisterStream(streamId: String) async throws`
+`ActrContext` also exposes runtime stream and media helpers. Concrete `Context`
+forwards these operations to the runtime; custom test contexts can rely on the
+default protocol implementations, which throw `ActrError.NotImplemented`.
+
+- `func registerStream(streamId: String, callback: any DataChunkCallback) async throws(ActrError)`
+  - Registers a `DataChunkCallback` for the specified stream ID
+  - **Parameters:**
+    - `streamId`: Stream identifier to associate with the callback
+    - `callback`: Callback interface invoked on incoming stream chunks
+  - **Throws:** `ActrError` if registration fails
+
+- `func unregisterStream(streamId: String) async throws(ActrError)`
   - Unregisters a `DataChunkCallback` for the specified stream ID
   - **Parameters:**
     - `streamId`: Stream identifier to unregister
+  - **Throws:** `ActrError` if unregistration fails
+
+- `func sendDataChunk(target: ActrId, chunk: DataChunk, payloadType: PayloadType) async throws(ActrError)`
+  - Sends a data chunk to a remote actor
+  - **Parameters:**
+    - `target`: Target actor ID
+    - `chunk`: Data chunk to send
+    - `payloadType`: Stream transmission type (e.g., `.streamReliable`, `.streamLatencyFirst`)
+  - **Throws:** `ActrError` if sending fails
+
+- `func addMediaTrack(target: ActrId, trackId: String, codec: String, mediaType: String) async throws(ActrError)`
+  - Adds a media track to a remote actor
+  - **Parameters:**
+    - `target`: Target actor ID
+    - `trackId`: Track identifier
+    - `codec`: Media codec name
+    - `mediaType`: Runtime media type name
+  - **Throws:** `ActrError` if sending fails
+
+- `func removeMediaTrack(target: ActrId, trackId: String) async throws(ActrError)`
+  - Removes a media track from a remote actor
+  - **Parameters:**
+    - `target`: Target actor ID
+    - `trackId`: Track identifier
+  - **Throws:** `ActrError` if unregistration fails
+
+- `func sendMediaSample(target: ActrId, trackId: String, sample: MediaSample) async throws(ActrError)`
+  - Sends a media sample to a remote actor
+  - **Parameters:**
+    - `target`: Target actor ID
+    - `trackId`: Track identifier
+    - `sample`: Media sample payload and metadata
+  - **Throws:** `ActrError` if sending fails
+
+- `func registerMediaTrack(trackId: String, callback: any MediaTrackCallback) async throws(ActrError)`
+  - Registers a `MediaTrackCallback` for the specified track ID
+  - **Parameters:**
+    - `trackId`: Track identifier to associate with the callback
+    - `callback`: Callback interface invoked on incoming media samples
+  - **Throws:** `ActrError` if registration fails
+
+- `func unregisterMediaTrack(trackId: String) async throws(ActrError)`
+  - Unregisters a `MediaTrackCallback` for the specified track ID
+  - **Parameters:**
+    - `trackId`: Track identifier to unregister
   - **Throws:** `ActrError` if unregistration fails
 
 #### Runtime Observers
@@ -341,19 +393,18 @@ A concurrency-safe reference to a running ACTR actor. This is an `actor` type, p
 
 **Methods:**
 
-- `func call<Req: RpcRequest>(_ message: Req, payloadType: PayloadType = .rpcReliable, timeoutMs: Int64 = 30_000) async throws -> Req.Response`
+- `func call<Req: RpcRequest>(_ message: Req, timeoutMs: Int64 = 30_000) async throws(ActrError) -> Req.Response`
   - Performs a type-safe Protobuf-based RPC call
   - **Type Parameters:**
     - `Req`: Request message type conforming to `RpcRequest`
   - **Parameters:**
     - `message`: Request message instance
-    - `payloadType`: Payload transmission type (defaults to `.rpcReliable`)
     - `timeoutMs`: Timeout in milliseconds
   - **Returns:** Response message instance (`Req.Response`)
   - **Throws:** 
-    - `ActrError.Internal` if `Req.routeKey` is empty
-    - `ActrError.Internal` if the call fails
-  - **Note:** This method automatically handles Protobuf serialization/deserialization
+    - `ActrError.DecodeFailure` if Protobuf encoding or decoding fails
+    - `ActrError` if the call fails
+  - **Note:** This method uses `Req.payloadType` and automatically handles Protobuf serialization/deserialization
 
 - `func discover(type: ActrType, limit: Int = 1) async throws -> [ActrId]`
   - Discovers actors of the given type
@@ -379,11 +430,13 @@ Swift-facing names below.
 - `ActrId`
 - `ActrType`
 - `PayloadType`
+- `LogLevel`
 - `Realm`
 - `DataChunk`
 - `DataChunkCallback`
 - `MetadataEntry`
 - `Context`
+- `ActrContext`
 - `RpcEnvelope`
 - `Workload`
 - `ErrorEvent`
