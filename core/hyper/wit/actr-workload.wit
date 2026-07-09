@@ -86,7 +86,7 @@ interface types {
         value: string,
     }
 
-    record data-chunk {
+    record data-stream {
         stream-id: string,
         sequence: u64,
         payload: list<u8>,
@@ -109,7 +109,7 @@ interface types {
         handler-error,
         signaling-failure,
         transport-failure,
-        data-chunk-delivery-uncertain,
+        data-stream-delivery-uncertain,
     }
 
     // Coarse WebRTC send-readiness state — one-to-one with
@@ -205,7 +205,7 @@ interface types {
 // `async fn` at the Rust surface.
 
 interface host {
-    use types.{actr-id, actr-type, actr-error, data-chunk, dest, payload-type};
+    use types.{actr-id, actr-type, actr-error, data-stream, dest, payload-type};
 
     // Typed-routed call: host forwards to the destination, returning the
     // encoded response payload.
@@ -237,9 +237,9 @@ interface host {
 
     unregister-stream: func(stream-id: string) -> result<_, actr-error>;
 
-    send-data-chunk: func(
+    send-data-stream: func(
         target: dest,
-        chunk: data-chunk,
+        chunk: data-stream,
         payload-type: payload-type,
     ) -> result<_, actr-error>;
 
@@ -276,7 +276,7 @@ interface workload {
         rpc-envelope,
         actr-error,
         actr-id,
-        data-chunk,
+        data-stream,
         peer-event,
         error-event,
         credential-event,
@@ -328,9 +328,9 @@ interface workload {
 
     on-mailbox-backpressure: func(event: backpressure-event);
 
-    // ── Fast path: DataChunk ────────────────────────────────────────────
+    // ── Fast path: DataStream ────────────────────────────────────────────
 
-    on-data-chunk: func(chunk: data-chunk, sender: actr-id) -> result<_, actr-error>;
+    on-data-stream: func(chunk: data-stream, sender: actr-id) -> result<_, actr-error>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────

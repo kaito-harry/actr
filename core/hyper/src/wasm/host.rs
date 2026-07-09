@@ -52,7 +52,7 @@ use super::component_bindings::actr::workload::types::Host as TypesHost;
 use super::component_bindings::actr::workload::types::{
     self as wit_types, ActrError as WitActrError, ActrId as WitActrId, ActrType as WitActrType,
     BackpressureEvent as WitBackpressureEvent, CredentialEvent as WitCredentialEvent,
-    DataChunk as WitDataChunk, Dest as WitDest, PayloadType as WitPayloadType,
+    DataStream as WitDataChunk, Dest as WitDest, PayloadType as WitPayloadType,
     PeerEvent as WitPeerEvent, Realm as WitRealm, RpcEnvelope as WitRpcEnvelope,
     WebrtcPeerStatus as WitWebrtcPeerStatus,
 };
@@ -343,7 +343,7 @@ impl HostImports for HostState {
         }
     }
 
-    async fn send_data_chunk(
+    async fn send_data_stream(
         &mut self,
         target: WitDest,
         chunk: WitDataChunk,
@@ -1327,7 +1327,7 @@ impl WasmWorkload {
         let result = self
             .bindings
             .actr_workload_workload()
-            .call_on_data_chunk(&mut self.store, &wit_chunk, &wit_sender)
+            .call_on_data_stream(&mut self.store, &wit_chunk, &wit_sender)
             .await;
         self.clear_invocation();
         let inner = match result {
