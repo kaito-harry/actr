@@ -11,7 +11,7 @@ exclude = ["examples/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.4.13"
+version = "0.4.14"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["kookyleo@gmail.com"]
