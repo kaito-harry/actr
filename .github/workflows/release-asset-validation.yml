@@ -646,23 +646,50 @@ jobs:
           SOURCE_TAG: ${{ needs.context.outputs.release_tag }}
         run: |
           set -euo pipefail
-          mkdir -p swift-sync/Sources
-          rsync -a --delete source/bindings/swift/Sources/ swift-sync/Sources/
-          rsync -a --delete source/bindings/swift/dist/ActrBindings/ swift-sync/ActrBindings/
+          sync_tag="v${PRE_VERSION}"
+          remote_tag_sha=$(git -C swift-sync ls-remote --tags origin "refs/tags/${sync_tag}" | awk 'NR == 1 {print $1}')
+          if [[ -n "$remote_tag_sha" ]]; then
+            git -C swift-sync fetch origin "refs/tags/${sync_tag}:refs/tags/${sync_tag}"
+            git -C swift-sync checkout --detach "refs/tags/${sync_tag}"
+            python3 - <<'PY'
+          from __future__ import annotations
 
-          # Build with the sync repo's CURRENT Package.swift (still pointing at the
-          # last published binary) to verify the synced Sources compile. This MUST
-          # run BEFORE we rewrite Package.swift to the not-yet-uploaded prerelease
-          # binary, otherwise swift build tries to download a release that doesn't
-          # exist yet (404). Mirrors actr-swift-package-sync release.yml ordering.
-          (
-            cd swift-sync
-            ACTR_BINDINGS_PATH=ActrBindings \
-            ACTR_BINARY_PATH="$GITHUB_WORKSPACE/source/bindings/swift/dist/ActrFFI.xcframework" \
-            swift build
-          )
+          import json
+          import os
+          from pathlib import Path
 
-          checksum=$(python3 - <<'PY'
+          metadata = json.loads(Path("swift-sync/release-metadata.json").read_text())
+          expected = {
+              "version": os.environ["PRE_VERSION"],
+              "source_repository": f"https://github.com/{os.environ['SOURCE_REPO']}",
+              "source_tag": os.environ["SOURCE_TAG"],
+              "source_sha": os.environ["SOURCE_SHA"],
+              "prerelease": True,
+          }
+          mismatches = {
+              key: (metadata.get(key), value)
+              for key, value in expected.items()
+              if metadata.get(key) != value
+          }
+          if mismatches:
+              raise SystemExit(f"existing Swift package-sync tag metadata mismatch: {mismatches}")
+          PY
+            echo "Reusing immutable Swift package-sync tag ${sync_tag}"
+          else
+            mkdir -p swift-sync/Sources
+            rsync -a --delete source/bindings/swift/Sources/ swift-sync/Sources/
+            rsync -a --delete source/bindings/swift/dist/ActrBindings/ swift-sync/ActrBindings/
+
+            # Build with the sync repo's current Package.swift before rewriting it
+            # to the not-yet-uploaded prerelease binary.
+            (
+              cd swift-sync
+              ACTR_BINDINGS_PATH=ActrBindings \
+              ACTR_BINARY_PATH="$GITHUB_WORKSPACE/source/bindings/swift/dist/ActrFFI.xcframework" \
+              swift build
+            )
+
+            checksum=$(python3 - <<'PY'
           from pathlib import Path
 
           text = Path("source/bindings/swift/dist/release.txt").read_text()
@@ -673,9 +700,9 @@ jobs:
           else:
               raise SystemExit("checksum not found")
           PY
-          )
+            )
 
-          python3 - "$checksum" <<'PY'
+            python3 - "$checksum" <<'PY'
           from __future__ import annotations
 
           import os
@@ -706,7 +733,7 @@ jobs:
           path.write_text(text)
           PY
 
-          python3 - <<'PY'
+            python3 - <<'PY'
           from __future__ import annotations
 
           import json
@@ -725,25 +752,17 @@ jobs:
           Path("swift-sync/release-metadata.json").write_text(json.dumps(payload, indent=2) + "\n")
           PY
 
-          (
-            cd swift-sync
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add Package.swift Sources ActrBindings release-metadata.json
-            git commit -m "chore(release): publish v${PRE_VERSION}" || true
-            git push origin main
-            sync_sha=$(git rev-parse HEAD)
-            remote_tag_sha=$(git ls-remote --tags origin "refs/tags/v${PRE_VERSION}" | awk '{print $1}')
-            if [[ -n "$remote_tag_sha" ]]; then
-              [[ "$remote_tag_sha" == "$sync_sha" ]] || {
-                echo "::error::Tag v${PRE_VERSION} already points to ${remote_tag_sha}, expected ${sync_sha}"
-                exit 1
-              }
-            else
-              git tag "v${PRE_VERSION}" "$sync_sha"
-              git push origin "v${PRE_VERSION}"
-            fi
-          )
+            (
+              cd swift-sync
+              git checkout --detach HEAD
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git add Package.swift Sources ActrBindings release-metadata.json
+              git commit -m "chore(release): publish ${sync_tag}"
+              git tag "$sync_tag"
+              git push origin "refs/tags/${sync_tag}"
+            )
+          fi
 
           cat > swift-release-notes.md <<EOF
           Source repository: https://github.com/${SOURCE_REPO}
@@ -904,17 +923,49 @@ jobs:
           SOURCE_TAG: ${{ needs.context.outputs.release_tag }}
         run: |
           set -euo pipefail
-          (
-            cd source/bindings/kotlin
-            ACTR_RELEASE_REPOSITORY="$SYNC_REPO" ./scripts/package-binary.sh "v${PRE_VERSION}"
-            ./gradlew :actr-kotlin:publish \
-              --no-daemon \
-              -PactrGroup=io.actrium \
-              -PactrVersion="${PRE_VERSION}" \
-              -PactrPublishUrl="https://maven.pkg.github.com/${SYNC_REPO}"
-          )
+          sync_tag="v${PRE_VERSION}"
+          remote_tag_sha=$(git -C kotlin-sync ls-remote --tags origin "refs/tags/${sync_tag}" | awk 'NR == 1 {print $1}')
+          if [[ -n "$remote_tag_sha" ]]; then
+            git -C kotlin-sync fetch origin "refs/tags/${sync_tag}:refs/tags/${sync_tag}"
+            git -C kotlin-sync checkout --detach "refs/tags/${sync_tag}"
+            python3 - <<'PY'
+          from __future__ import annotations
 
-          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          metadata = json.loads(Path("kotlin-sync/release-metadata.json").read_text())
+          expected = {
+              "version": os.environ["PRE_VERSION"],
+              "source_repository": f"https://github.com/{os.environ['SOURCE_REPO']}",
+              "source_tag": os.environ["SOURCE_TAG"],
+              "source_sha": os.environ["SOURCE_SHA"],
+              "coordinate": f"io.actrium:actr:{os.environ['PRE_VERSION']}",
+              "android_abis": ["arm64-v8a", "x86_64"],
+              "prerelease": True,
+          }
+          mismatches = {
+              key: (metadata.get(key), value)
+              for key, value in expected.items()
+              if metadata.get(key) != value
+          }
+          if mismatches:
+              raise SystemExit(f"existing Kotlin package-sync tag metadata mismatch: {mismatches}")
+          PY
+            echo "Reusing immutable Kotlin package-sync tag ${sync_tag}"
+          else
+            (
+              cd source/bindings/kotlin
+              ACTR_RELEASE_REPOSITORY="$SYNC_REPO" ./scripts/package-binary.sh "$sync_tag"
+              ./gradlew :actr-kotlin:publish \
+                --no-daemon \
+                -PactrGroup=io.actrium \
+                -PactrVersion="${PRE_VERSION}" \
+                -PactrPublishUrl="https://maven.pkg.github.com/${SYNC_REPO}"
+            )
+
+            python3 - <<'PY'
           from __future__ import annotations
 
           import json
@@ -935,25 +986,17 @@ jobs:
           Path("kotlin-sync/release-metadata.json").write_text(json.dumps(payload, indent=2) + "\n")
           PY
 
-          (
-            cd kotlin-sync
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add release-metadata.json
-            git commit -m "chore(release): publish v${PRE_VERSION}" || true
-            git push origin main
-            sync_sha=$(git rev-parse HEAD)
-            remote_tag_sha=$(git ls-remote --tags origin "refs/tags/v${PRE_VERSION}" | awk '{print $1}')
-            if [[ -n "$remote_tag_sha" ]]; then
-              [[ "$remote_tag_sha" == "$sync_sha" ]] || {
-                echo "::error::Tag v${PRE_VERSION} already points to ${remote_tag_sha}, expected ${sync_sha}"
-                exit 1
-              }
-            else
-              git tag "v${PRE_VERSION}" "$sync_sha"
-              git push origin "v${PRE_VERSION}"
-            fi
-          )
+            (
+              cd kotlin-sync
+              git checkout --detach HEAD
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git add release-metadata.json
+              git commit -m "chore(release): publish ${sync_tag}"
+              git tag "$sync_tag"
+              git push origin "refs/tags/${sync_tag}"
+            )
+          fi
 
           if gh release view "v${PRE_VERSION}" --repo "$SYNC_REPO" >/dev/null 2>&1; then
             gh release edit "v${PRE_VERSION}" \
