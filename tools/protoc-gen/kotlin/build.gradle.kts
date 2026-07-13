@@ -6,7 +6,7 @@ plugins {
 
 group = "io.actrium"
 
-version = "0.4.11"
+version = "0.4.11-rc.7"
 
 repositories { mavenCentral() }
 

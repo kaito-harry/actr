@@ -5,7 +5,7 @@
 
 [package]
 name = "actr-ts"
-version = "0.4.11"
+version = "0.4.11-rc.7"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
