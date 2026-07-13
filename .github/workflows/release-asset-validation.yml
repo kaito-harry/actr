@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       pre_release_version:
-        description: SemVer pre-release version to validate, for example 0.4.13-rc.1.
+        description: Cross-ecosystem pre-release version to validate, for example 0.4.13-rc.1.
         required: true
         type: string
       source_ref:
@@ -20,10 +20,6 @@ on:
           - auto
           - never
           - require
-      package_sync_owner:
-        description: GitHub owner for actr-swift-package-sync and actr-kotlin-package-sync. Defaults to this repository owner.
-        required: false
-        type: string
       replace_assets:
         description: Replace existing GitHub Release assets when re-running the same validation version.
         required: true
@@ -75,11 +71,10 @@ jobs:
         env:
           PRE_RELEASE_VERSION: ${{ inputs.pre_release_version }}
           INPUT_SOURCE_REF: ${{ inputs.source_ref }}
-          INPUT_PACKAGE_SYNC_OWNER: ${{ inputs.package_sync_owner }}
         run: |
           set -euo pipefail
-          [[ "$PRE_RELEASE_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*$ ]] || {
-            echo "::error::pre_release_version must be SemVer pre-release X.Y.Z-<id>, got ${PRE_RELEASE_VERSION}"
+          [[ "$PRE_RELEASE_VERSION" =~ ^((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))-(a|alpha|b|beta|c|rc|pre|preview|dev)([0-9]+|[-.](0|[1-9][0-9]*))?$ ]] || {
+            echo "::error::pre_release_version must be strict SemVer and Python-compatible (for example X.Y.Z-rc.1), got ${PRE_RELEASE_VERSION}"
             exit 1
           }
           base_version="${BASH_REMATCH[1]}"
@@ -100,7 +95,7 @@ jobs:
           source_sha=$(git rev-parse HEAD)
           short_sha=$(git rev-parse --short=12 HEAD)
           source_ref="${INPUT_SOURCE_REF:-${GITHUB_REF_NAME:-${source_sha}}}"
-          package_sync_owner="${INPUT_PACKAGE_SYNC_OWNER:-${GITHUB_REPOSITORY_OWNER}}"
+          package_sync_owner="${GITHUB_REPOSITORY_OWNER}"
           release_tag="validation-v${PRE_RELEASE_VERSION}"
 
           {
@@ -371,12 +366,110 @@ jobs:
             sort -z |
             xargs -0 -r gh release upload "$TAG" "${args[@]}"
 
+  typescript-native-assets:
+    name: Build TypeScript native package (${{ matrix.target }})
+    needs:
+      - context
+      - prepare-validation-source
+      - create-validation-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            artifact: actr.darwin-x64.node
+            build_args: ""
+            use_zig: false
+          - target: aarch64-apple-darwin
+            os: macos-14
+            artifact: actr.darwin-arm64.node
+            build_args: ""
+            use_zig: false
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: actr.linux-x64-gnu.node
+            build_args: ""
+            use_zig: false
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            artifact: actr.linux-x64-musl.node
+            build_args: --cross-compile
+            use_zig: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: actr.linux-arm64-gnu.node
+            build_args: --cross-compile
+            use_zig: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            artifact: actr.linux-arm64-musl.node
+            build_args: --cross-compile
+            use_zig: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: actr.win32-x64-msvc.node
+            build_args: ""
+            use_zig: false
+    defaults:
+      run:
+        working-directory: bindings/typescript
+    steps:
+      - name: Checkout validation source
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.context.outputs.release_tag }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: bindings/typescript/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+          version: ${{ env.PROTOC_VERSION }}
+
+      - name: Setup Zig
+        if: matrix.use_zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: "0.16.0"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build native package
+        shell: bash
+        run: npx napi build --platform --target ${{ matrix.target }} --release --output-dir artifacts ${{ matrix.build_args }}
+
+      - name: Verify native package
+        shell: bash
+        run: test -f "artifacts/${{ matrix.artifact }}"
+
+      - name: Upload native package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: bindings/typescript/artifacts/${{ matrix.artifact }}
+          if-no-files-found: error
+
   npm-package-assets:
     name: Package npm assets
     needs:
       - context
       - prepare-validation-source
       - create-validation-release
+      - typescript-native-assets
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source commit
@@ -395,6 +488,13 @@ jobs:
         run: |
           corepack enable
           corepack prepare pnpm@9.15.9 --activate
+
+      - name: Download TypeScript native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: actr.*.node
+          path: bindings/typescript/artifacts
+          merge-multiple: true
 
       - name: Package web and TypeScript npm artifacts
         run: |
@@ -424,6 +524,18 @@ jobs:
             cd bindings/typescript
             npm install
             npm run compile:ts
+            npx napi create-npm-dirs
+            npm run artifacts -- --output-dir artifacts
+            for pkg in \
+              npm/darwin-x64 \
+              npm/darwin-arm64 \
+              npm/linux-x64-gnu \
+              npm/linux-x64-musl \
+              npm/linux-arm64-gnu \
+              npm/linux-arm64-musl \
+              npm/win32-x64-msvc; do
+              npm pack "$pkg" --pack-destination "$dist"
+            done
             npm pack --pack-destination "$dist" --ignore-scripts
           )
 
@@ -439,48 +551,6 @@ jobs:
           args=(--repo "$GITHUB_REPOSITORY")
           [[ "$REPLACE_ASSETS" == "true" ]] && args+=(--clobber)
           find release/validation/npm -type f -print0 |
-            sort -z |
-            xargs -0 -r gh release upload "$TAG" "${args[@]}"
-
-  python-package-assets:
-    name: Package Python assets
-    needs:
-      - context
-      - prepare-validation-source
-      - create-validation-release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout source commit
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.context.outputs.release_tag }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Build Python distribution
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip build twine
-          rm -rf tools/protoc-gen/python/dist tools/protoc-gen/python/build tools/protoc-gen/python/*.egg-info
-          python -m build tools/protoc-gen/python
-          python -m twine check tools/protoc-gen/python/dist/*
-          mkdir -p release/validation/python
-          cp tools/protoc-gen/python/dist/* release/validation/python/
-          (cd release/validation/python && for asset in *; do sha256sum "$asset" > "$asset.sha256"; done)
-
-      - name: Upload Python assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.context.outputs.release_tag }}
-          REPLACE_ASSETS: ${{ inputs.replace_assets }}
-        run: |
-          set -euo pipefail
-          args=(--repo "$GITHUB_REPOSITORY")
-          [[ "$REPLACE_ASSETS" == "true" ]] && args+=(--clobber)
-          find release/validation/python -type f -print0 |
             sort -z |
             xargs -0 -r gh release upload "$TAG" "${args[@]}"
 
@@ -597,196 +667,17 @@ jobs:
             source/bindings/swift/dist/release.txt \
             "${args[@]}"
 
-      - name: Probe Swift package-sync publishing
-        id: probe
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PACKAGE_SYNC_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
-          MODE: ${{ inputs.publish_package_sync }}
-          SYNC_REPO: ${{ needs.context.outputs.swift_sync_repo }}
-        run: |
-          set -euo pipefail
-          publish=false
-          reason=""
-          if [[ "$MODE" == "never" ]]; then
-            reason="disabled"
-          elif ! gh repo view "$SYNC_REPO" >/dev/null 2>&1; then
-            reason="sync_repo_missing"
-          elif [[ -z "$PACKAGE_SYNC_TOKEN" ]]; then
-            reason="package_sync_token_missing"
-          else
-            publish=true
-            reason="enabled"
-          fi
-          if [[ "$MODE" == "require" && "$publish" != "true" ]]; then
-            echo "::error::Swift package-sync publishing required but ${reason}"
-            exit 1
-          fi
-          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
-          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout Swift package-sync repository
-        if: steps.probe.outputs.publish == 'true'
-        uses: actions/checkout@v5
+      - name: Upload Swift package-sync inputs
+        uses: actions/upload-artifact@v4
         with:
-          repository: ${{ needs.context.outputs.swift_sync_repo }}
-          token: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
-          ref: main
-          path: swift-sync
-          fetch-depth: 0
-
-      - name: Publish Swift package-sync prerelease
-        if: steps.probe.outputs.publish == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
-          PRE_VERSION: ${{ needs.context.outputs.pre_release_version }}
-          SYNC_REPO: ${{ needs.context.outputs.swift_sync_repo }}
-          SOURCE_REPO: ${{ needs.context.outputs.repository }}
-          SOURCE_SHA: ${{ needs.prepare-validation-source.outputs.validation_sha }}
-          SOURCE_TAG: ${{ needs.context.outputs.release_tag }}
-        run: |
-          set -euo pipefail
-          sync_tag="v${PRE_VERSION}"
-          remote_tag_sha=$(git -C swift-sync ls-remote --tags origin "refs/tags/${sync_tag}" | awk 'NR == 1 {print $1}')
-          if [[ -n "$remote_tag_sha" ]]; then
-            git -C swift-sync fetch origin "refs/tags/${sync_tag}:refs/tags/${sync_tag}"
-            git -C swift-sync checkout --detach "refs/tags/${sync_tag}"
-            python3 - <<'PY'
-          from __future__ import annotations
-
-          import json
-          import os
-          from pathlib import Path
-
-          metadata = json.loads(Path("swift-sync/release-metadata.json").read_text())
-          expected = {
-              "version": os.environ["PRE_VERSION"],
-              "source_repository": f"https://github.com/{os.environ['SOURCE_REPO']}",
-              "source_tag": os.environ["SOURCE_TAG"],
-              "source_sha": os.environ["SOURCE_SHA"],
-              "prerelease": True,
-          }
-          mismatches = {
-              key: (metadata.get(key), value)
-              for key, value in expected.items()
-              if metadata.get(key) != value
-          }
-          if mismatches:
-              raise SystemExit(f"existing Swift package-sync tag metadata mismatch: {mismatches}")
-          PY
-            echo "Reusing immutable Swift package-sync tag ${sync_tag}"
-          else
-            mkdir -p swift-sync/Sources
-            rsync -a --delete source/bindings/swift/Sources/ swift-sync/Sources/
-            rsync -a --delete source/bindings/swift/dist/ActrBindings/ swift-sync/ActrBindings/
-
-            # Build with the sync repo's current Package.swift before rewriting it
-            # to the not-yet-uploaded prerelease binary.
-            (
-              cd swift-sync
-              ACTR_BINDINGS_PATH=ActrBindings \
-              ACTR_BINARY_PATH="$GITHUB_WORKSPACE/source/bindings/swift/dist/ActrFFI.xcframework" \
-              swift build
-            )
-
-            checksum=$(python3 - <<'PY'
-          from pathlib import Path
-
-          text = Path("source/bindings/swift/dist/release.txt").read_text()
-          for line in text.splitlines():
-              if line.startswith("SHA256 checksum:"):
-                  print(line.split(":", 1)[1].strip())
-                  break
-          else:
-              raise SystemExit("checksum not found")
-          PY
-            )
-
-            python3 - "$checksum" <<'PY'
-          from __future__ import annotations
-
-          import os
-          import re
-          import sys
-          from pathlib import Path
-
-          checksum = sys.argv[1]
-          version = os.environ["PRE_VERSION"]
-          repo = os.environ["SYNC_REPO"]
-          path = Path("swift-sync/Package.swift")
-          text = path.read_text()
-          text = re.sub(
-              r'let releaseTag = env\["ACTR_BINARY_TAG"\] \?\? "v[^"]+"',
-              f'let releaseTag = env["ACTR_BINARY_TAG"] ?? "v{version}"',
-              text,
-          )
-          text = re.sub(
-              r'let remoteBinaryURL = "https://github\.com/[^"]+/ActrFFI\.xcframework\.zip"',
-              f'let remoteBinaryURL = "https://github.com/{repo}/releases/download/\\(releaseTag)/ActrFFI.xcframework.zip"',
-              text,
-          )
-          text = re.sub(
-              r'let remoteBinaryChecksum = env\["ACTR_BINARY_CHECKSUM"\] \?\? "[^"]+"',
-              f'let remoteBinaryChecksum = env["ACTR_BINARY_CHECKSUM"] ?? "{checksum}"',
-              text,
-          )
-          path.write_text(text)
-          PY
-
-            python3 - <<'PY'
-          from __future__ import annotations
-
-          import json
-          import os
-          from datetime import datetime, timezone
-          from pathlib import Path
-
-          payload = {
-              "version": os.environ["PRE_VERSION"],
-              "source_repository": f"https://github.com/{os.environ['SOURCE_REPO']}",
-              "source_tag": os.environ["SOURCE_TAG"],
-              "source_sha": os.environ["SOURCE_SHA"],
-              "generated_at": datetime.now(timezone.utc).isoformat(),
-              "prerelease": True,
-          }
-          Path("swift-sync/release-metadata.json").write_text(json.dumps(payload, indent=2) + "\n")
-          PY
-
-            (
-              cd swift-sync
-              git checkout --detach HEAD
-              git config user.name "github-actions[bot]"
-              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-              git add Package.swift Sources ActrBindings release-metadata.json
-              git commit -m "chore(release): publish ${sync_tag}"
-              git tag "$sync_tag"
-              git push origin "refs/tags/${sync_tag}"
-            )
-          fi
-
-          cat > swift-release-notes.md <<EOF
-          Source repository: https://github.com/${SOURCE_REPO}
-          Source tag: ${SOURCE_TAG}
-          Source sha: ${SOURCE_SHA}
-          EOF
-          if gh release view "v${PRE_VERSION}" --repo "$SYNC_REPO" >/dev/null 2>&1; then
-            gh release edit "v${PRE_VERSION}" \
-              --repo "$SYNC_REPO" \
-              --title "v${PRE_VERSION}" \
-              --notes-file swift-release-notes.md \
-              --prerelease
-            gh release upload "v${PRE_VERSION}" \
-              "source/bindings/swift/dist/ActrFFI.xcframework.zip" \
-              --repo "$SYNC_REPO" \
-              --clobber
-          else
-            gh release create "v${PRE_VERSION}" \
-              "source/bindings/swift/dist/ActrFFI.xcframework.zip" \
-              --repo "$SYNC_REPO" \
-              --title "v${PRE_VERSION}" \
-              --notes-file swift-release-notes.md \
-              --prerelease
-          fi
+          name: swift-package-sync-inputs
+          path: |
+            source/bindings/swift/Sources/
+            source/bindings/swift/dist/ActrBindings/
+            source/bindings/swift/dist/ActrFFI.xcframework/
+            source/bindings/swift/dist/ActrFFI.xcframework.zip
+            source/bindings/swift/dist/release.txt
+          if-no-files-found: error
 
   kotlin-package:
     name: Build Kotlin package validation assets
@@ -872,23 +763,405 @@ jobs:
             sort -z |
             xargs -0 -r gh release upload "$TAG" "${args[@]}"
 
+      - name: Upload Kotlin package-sync inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotlin-package-sync-inputs
+          path: |
+            source/bindings/kotlin/actr-kotlin/src/main/
+            source/bindings/kotlin/actr-kotlin/build/outputs/aar/actr-kotlin-release.aar
+            source/bindings/kotlin/dist/actr-kotlin-native.zip
+          if-no-files-found: error
+
+  prepare-swift-package-sync:
+    name: Prepare Swift package-sync prerelease
+    if: inputs.publish_package_sync != 'never'
+    needs:
+      - context
+      - prepare-validation-source
+      - rust-package-assets
+      - typescript-native-assets
+      - npm-package-assets
+      - cli-assets
+      - actrix-assets
+      - protoc-plugin-assets
+      - swift-package
+      - kotlin-package
+    runs-on: macos-latest
+    outputs:
+      publish: ${{ steps.probe.outputs.publish }}
+      push_tag: ${{ steps.sync-prepare.outputs.push_tag }}
+      tag_checksum: ${{ steps.sync-prepare.outputs.tag_checksum }}
+    steps:
+      - name: Probe Swift package-sync publishing
+        id: probe
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
+          MODE: ${{ inputs.publish_package_sync }}
+          SYNC_REPO: ${{ needs.context.outputs.swift_sync_repo }}
+        run: |
+          set -euo pipefail
+          publish=false
+          reason=""
+          if [[ -z "$GH_TOKEN" ]]; then
+            reason="package_sync_token_missing"
+          elif ! gh repo view "$SYNC_REPO" >/dev/null 2>&1; then
+            reason="sync_repo_missing_or_inaccessible"
+          else
+            publish=true
+            reason="enabled"
+          fi
+          if [[ "$MODE" == "require" && "$publish" != "true" ]]; then
+            echo "::error::Swift package-sync publishing required but ${reason}"
+            exit 1
+          fi
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
+          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout validation source
+        if: steps.probe.outputs.publish == 'true'
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.context.outputs.release_tag }}
+          path: source
+          persist-credentials: false
+
+      - name: Download Swift package-sync inputs
+        if: steps.probe.outputs.publish == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: swift-package-sync-inputs
+          path: source/bindings/swift
+
+      - name: Checkout Swift package-sync repository
+        if: steps.probe.outputs.publish == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ needs.context.outputs.swift_sync_repo }}
+          token: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
+          ref: main
+          path: swift-sync
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Prepare Swift package-sync tag
+        if: steps.probe.outputs.publish == 'true'
+        id: sync-prepare
+        env:
+          PRE_VERSION: ${{ needs.context.outputs.pre_release_version }}
+          SYNC_REPO: ${{ needs.context.outputs.swift_sync_repo }}
+          SOURCE_REPO: ${{ needs.context.outputs.repository }}
+          SOURCE_SHA: ${{ needs.prepare-validation-source.outputs.validation_sha }}
+          SOURCE_TAG: ${{ needs.context.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          sync_tag="v${PRE_VERSION}"
+          if git -C swift-sync rev-parse -q --verify "refs/tags/${sync_tag}" >/dev/null 2>&1; then
+            git -C swift-sync checkout --detach "refs/tags/${sync_tag}"
+            python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+
+          metadata = json.loads(Path("swift-sync/release-metadata.json").read_text())
+          expected = {
+              "version": os.environ["PRE_VERSION"],
+              "source_repository": f"https://github.com/{os.environ['SOURCE_REPO']}",
+              "source_tag": os.environ["SOURCE_TAG"],
+              "source_sha": os.environ["SOURCE_SHA"],
+              "prerelease": True,
+          }
+          mismatches = {
+              key: (metadata.get(key), value)
+              for key, value in expected.items()
+              if metadata.get(key) != value
+          }
+          if mismatches:
+              raise SystemExit(f"existing Swift package-sync tag metadata mismatch: {mismatches}")
+          PY
+            tag_checksum=$(python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          text = Path("swift-sync/Package.swift").read_text()
+          match = re.search(
+              r'let remoteBinaryChecksum = env\["ACTR_BINARY_CHECKSUM"\] \?\? "([^"]+)"',
+              text,
+          )
+          if not match:
+              raise SystemExit("existing Swift package-sync checksum not found")
+          print(match.group(1))
+          PY
+            )
+            echo "push_tag=false" >> "$GITHUB_OUTPUT"
+            echo "tag_checksum=${tag_checksum}" >> "$GITHUB_OUTPUT"
+            echo "Reusing immutable Swift package-sync tag ${sync_tag}"
+          else
+            mkdir -p swift-sync/Sources
+            rsync -a --delete source/bindings/swift/Sources/ swift-sync/Sources/
+            rsync -a --delete source/bindings/swift/dist/ActrBindings/ swift-sync/ActrBindings/
+
+            # This executes the sync repository's Package.swift without exposing
+            # PACKAGE_SYNC_GITHUB_TOKEN to the manifest process.
+            (
+              cd swift-sync
+              ACTR_BINDINGS_PATH=ActrBindings \
+              ACTR_BINARY_PATH="$GITHUB_WORKSPACE/source/bindings/swift/dist/ActrFFI.xcframework" \
+              swift build
+            )
+
+            checksum=$(python3 - <<'PY'
+          from pathlib import Path
+
+          text = Path("source/bindings/swift/dist/release.txt").read_text()
+          for line in text.splitlines():
+              if line.startswith("SHA256 checksum:"):
+                  print(line.split(":", 1)[1].strip())
+                  break
+          else:
+              raise SystemExit("checksum not found")
+          PY
+            )
+
+            python3 - "$checksum" <<'PY'
+          from __future__ import annotations
+
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          checksum = sys.argv[1]
+          version = os.environ["PRE_VERSION"]
+          repo = os.environ["SYNC_REPO"]
+          path = Path("swift-sync/Package.swift")
+          text = path.read_text()
+          text = re.sub(
+              r'let releaseTag = env\["ACTR_BINARY_TAG"\] \?\? "v[^"]+"',
+              f'let releaseTag = env["ACTR_BINARY_TAG"] ?? "v{version}"',
+              text,
+          )
+          text = re.sub(
+              r'let remoteBinaryURL = "https://github\.com/[^"]+/ActrFFI\.xcframework\.zip"',
+              f'let remoteBinaryURL = "https://github.com/{repo}/releases/download/\\(releaseTag)/ActrFFI.xcframework.zip"',
+              text,
+          )
+          text = re.sub(
+              r'let remoteBinaryChecksum = env\["ACTR_BINARY_CHECKSUM"\] \?\? "[^"]+"',
+              f'let remoteBinaryChecksum = env["ACTR_BINARY_CHECKSUM"] ?? "{checksum}"',
+              text,
+          )
+          path.write_text(text)
+          PY
+
+            python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          payload = {
+              "version": os.environ["PRE_VERSION"],
+              "source_repository": f"https://github.com/{os.environ['SOURCE_REPO']}",
+              "source_tag": os.environ["SOURCE_TAG"],
+              "source_sha": os.environ["SOURCE_SHA"],
+              "generated_at": datetime.now(timezone.utc).isoformat(),
+              "prerelease": True,
+          }
+          Path("swift-sync/release-metadata.json").write_text(json.dumps(payload, indent=2) + "\n")
+          PY
+
+            (
+              cd swift-sync
+              git checkout --detach HEAD
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git add Package.swift Sources ActrBindings release-metadata.json
+              git commit -m "chore(release): publish ${sync_tag}"
+              git tag "$sync_tag"
+            )
+            echo "push_tag=true" >> "$GITHUB_OUTPUT"
+            echo "tag_checksum=${checksum}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload prepared Swift package-sync tree
+        if: steps.probe.outputs.publish == 'true' && steps.sync-prepare.outputs.push_tag == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: swift-package-sync-prepared
+          path: |
+            swift-sync/Package.swift
+            swift-sync/Sources/
+            swift-sync/ActrBindings/
+            swift-sync/release-metadata.json
+          if-no-files-found: error
+
+  publish-swift-package-sync:
+    name: Publish Swift package-sync prerelease
+    if: inputs.publish_package_sync != 'never' && needs.prepare-swift-package-sync.outputs.publish == 'true'
+    needs:
+      - context
+      - prepare-validation-source
+      - rust-package-assets
+      - typescript-native-assets
+      - npm-package-assets
+      - cli-assets
+      - actrix-assets
+      - protoc-plugin-assets
+      - swift-package
+      - kotlin-package
+      - prepare-swift-package-sync
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Swift package-sync inputs
+        uses: actions/download-artifact@v4
+        with:
+          name: swift-package-sync-inputs
+          path: swift-inputs
+
+      - name: Download prepared Swift package-sync tree
+        if: needs.prepare-swift-package-sync.outputs.push_tag == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: swift-package-sync-prepared
+          path: swift-prepared
+
+      - name: Checkout fresh Swift package-sync repository
+        if: needs.prepare-swift-package-sync.outputs.push_tag == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ needs.context.outputs.swift_sync_repo }}
+          token: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
+          ref: main
+          path: swift-sync
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create fresh Swift package-sync tag
+        if: needs.prepare-swift-package-sync.outputs.push_tag == 'true'
+        env:
+          PRE_VERSION: ${{ needs.context.outputs.pre_release_version }}
+        run: |
+          set -euo pipefail
+          sync_tag="v${PRE_VERSION}"
+          test -f swift-prepared/Package.swift
+          test ! -L swift-prepared/Package.swift
+          test -f swift-prepared/release-metadata.json
+          test ! -L swift-prepared/release-metadata.json
+          test -z "$(find swift-prepared/Sources swift-prepared/ActrBindings -type l -print -quit)"
+          rsync -a --delete swift-prepared/Sources/ swift-sync/Sources/
+          rsync -a --delete swift-prepared/ActrBindings/ swift-sync/ActrBindings/
+          cp swift-prepared/Package.swift swift-sync/Package.swift
+          cp swift-prepared/release-metadata.json swift-sync/release-metadata.json
+          (
+            cd swift-sync
+            git checkout --detach HEAD
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Package.swift Sources ActrBindings release-metadata.json
+            git commit -m "chore(release): publish ${sync_tag}"
+            git tag "$sync_tag"
+          )
+
+      - name: Publish Swift package-sync tag and release
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
+          PRE_VERSION: ${{ needs.context.outputs.pre_release_version }}
+          SYNC_REPO: ${{ needs.context.outputs.swift_sync_repo }}
+          SOURCE_REPO: ${{ needs.context.outputs.repository }}
+          SOURCE_SHA: ${{ needs.prepare-validation-source.outputs.validation_sha }}
+          SOURCE_TAG: ${{ needs.context.outputs.release_tag }}
+          PUSH_TAG: ${{ needs.prepare-swift-package-sync.outputs.push_tag }}
+          TAG_CHECKSUM: ${{ needs.prepare-swift-package-sync.outputs.tag_checksum }}
+          REPLACE_ASSETS: ${{ inputs.replace_assets }}
+        run: |
+          set -euo pipefail
+          sync_tag="v${PRE_VERSION}"
+          asset=swift-inputs/dist/ActrFFI.xcframework.zip
+          if [[ "$PUSH_TAG" == "true" ]]; then
+            basic_auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+            echo "::add-mask::${basic_auth}"
+            git -C swift-sync \
+              -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${basic_auth}" \
+              push origin "refs/tags/${sync_tag}"
+          fi
+
+          cat > swift-release-notes.md <<EOF
+          Source repository: https://github.com/${SOURCE_REPO}
+          Source tag: ${SOURCE_TAG}
+          Source sha: ${SOURCE_SHA}
+          EOF
+          if gh release view "$sync_tag" --repo "$SYNC_REPO" >/dev/null 2>&1; then
+            gh release edit "$sync_tag" \
+              --repo "$SYNC_REPO" \
+              --title "$sync_tag" \
+              --notes-file swift-release-notes.md \
+              --prerelease
+            if [[ "$PUSH_TAG" == "true" ]]; then
+              upload_args=(--repo "$SYNC_REPO")
+              [[ "$REPLACE_ASSETS" == "true" ]] && upload_args+=(--clobber)
+              gh release upload "$sync_tag" "$asset" "${upload_args[@]}"
+            elif ! gh release view "$sync_tag" --repo "$SYNC_REPO" --json assets \
+              --jq 'any(.assets[]; .name == "ActrFFI.xcframework.zip")' | grep -qx true; then
+              new_checksum=$(sha256sum "$asset" | awk '{print $1}')
+              [[ "$new_checksum" == "$TAG_CHECKSUM" ]] || {
+                echo "::error::Rebuilt Swift asset checksum ${new_checksum} does not match immutable tag checksum ${TAG_CHECKSUM}"
+                exit 1
+              }
+              gh release upload "$sync_tag" "$asset" --repo "$SYNC_REPO"
+            else
+              echo "Reusing immutable Swift package-sync asset for ${sync_tag}"
+            fi
+          else
+            if [[ "$PUSH_TAG" != "true" ]]; then
+              new_checksum=$(sha256sum "$asset" | awk '{print $1}')
+              [[ "$new_checksum" == "$TAG_CHECKSUM" ]] || {
+                echo "::error::Rebuilt Swift asset checksum ${new_checksum} does not match immutable tag checksum ${TAG_CHECKSUM}"
+                exit 1
+              }
+            fi
+            gh release create "$sync_tag" "$asset" \
+              --repo "$SYNC_REPO" \
+              --title "$sync_tag" \
+              --notes-file swift-release-notes.md \
+              --prerelease
+          fi
+
+  publish-kotlin-package-sync:
+    name: Publish Kotlin package-sync prerelease
+    if: inputs.publish_package_sync != 'never'
+    needs:
+      - context
+      - prepare-validation-source
+      - rust-package-assets
+      - typescript-native-assets
+      - npm-package-assets
+      - cli-assets
+      - actrix-assets
+      - protoc-plugin-assets
+      - swift-package
+      - kotlin-package
+    runs-on: ubuntu-latest
+    steps:
       - name: Probe Kotlin package-sync publishing
         id: probe
         env:
-          GH_TOKEN: ${{ github.token }}
-          PACKAGE_SYNC_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
           MODE: ${{ inputs.publish_package_sync }}
           SYNC_REPO: ${{ needs.context.outputs.kotlin_sync_repo }}
         run: |
           set -euo pipefail
           publish=false
           reason=""
-          if [[ "$MODE" == "never" ]]; then
-            reason="disabled"
-          elif ! gh repo view "$SYNC_REPO" >/dev/null 2>&1; then
-            reason="sync_repo_missing"
-          elif [[ -z "$PACKAGE_SYNC_TOKEN" ]]; then
+          if [[ -z "$GH_TOKEN" ]]; then
             reason="package_sync_token_missing"
+          elif ! gh repo view "$SYNC_REPO" >/dev/null 2>&1; then
+            reason="sync_repo_missing_or_inaccessible"
           else
             publish=true
             reason="enabled"
@@ -900,6 +1173,29 @@ jobs:
           echo "publish=${publish}" >> "$GITHUB_OUTPUT"
           echo "reason=${reason}" >> "$GITHUB_OUTPUT"
 
+      - name: Checkout validation source
+        if: steps.probe.outputs.publish == 'true'
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.context.outputs.release_tag }}
+          path: source
+          persist-credentials: false
+
+      - name: Setup Java
+        if: steps.probe.outputs.publish == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Download Kotlin package-sync inputs
+        if: steps.probe.outputs.publish == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: kotlin-package-sync-inputs
+          path: source/bindings/kotlin
+
       - name: Checkout Kotlin package-sync repository
         if: steps.probe.outputs.publish == 'true'
         uses: actions/checkout@v5
@@ -909,13 +1205,13 @@ jobs:
           ref: main
           path: kotlin-sync
           fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
 
-      - name: Publish Kotlin package-sync prerelease
+      - name: Prepare Kotlin package-sync tag
         if: steps.probe.outputs.publish == 'true'
+        id: sync-prepare
         env:
-          GH_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
-          GITHUB_ACTOR: ${{ github.actor }}
-          GITHUB_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
           PRE_VERSION: ${{ needs.context.outputs.pre_release_version }}
           SYNC_REPO: ${{ needs.context.outputs.kotlin_sync_repo }}
           SOURCE_REPO: ${{ needs.context.outputs.repository }}
@@ -924,9 +1220,7 @@ jobs:
         run: |
           set -euo pipefail
           sync_tag="v${PRE_VERSION}"
-          remote_tag_sha=$(git -C kotlin-sync ls-remote --tags origin "refs/tags/${sync_tag}" | awk 'NR == 1 {print $1}')
-          if [[ -n "$remote_tag_sha" ]]; then
-            git -C kotlin-sync fetch origin "refs/tags/${sync_tag}:refs/tags/${sync_tag}"
+          if git -C kotlin-sync rev-parse -q --verify "refs/tags/${sync_tag}" >/dev/null 2>&1; then
             git -C kotlin-sync checkout --detach "refs/tags/${sync_tag}"
             python3 - <<'PY'
           from __future__ import annotations
@@ -953,16 +1247,12 @@ jobs:
           if mismatches:
               raise SystemExit(f"existing Kotlin package-sync tag metadata mismatch: {mismatches}")
           PY
+            echo "push_tag=false" >> "$GITHUB_OUTPUT"
             echo "Reusing immutable Kotlin package-sync tag ${sync_tag}"
           else
             (
               cd source/bindings/kotlin
               ACTR_RELEASE_REPOSITORY="$SYNC_REPO" ./scripts/package-binary.sh "$sync_tag"
-              ./gradlew :actr-kotlin:publish \
-                --no-daemon \
-                -PactrGroup=io.actrium \
-                -PactrVersion="${PRE_VERSION}" \
-                -PactrPublishUrl="https://maven.pkg.github.com/${SYNC_REPO}"
             )
 
             python3 - <<'PY'
@@ -994,27 +1284,58 @@ jobs:
               git add release-metadata.json
               git commit -m "chore(release): publish ${sync_tag}"
               git tag "$sync_tag"
-              git push origin "refs/tags/${sync_tag}"
             )
+            echo "push_tag=true" >> "$GITHUB_OUTPUT"
           fi
 
-          if gh release view "v${PRE_VERSION}" --repo "$SYNC_REPO" >/dev/null 2>&1; then
-            gh release edit "v${PRE_VERSION}" \
+      - name: Publish Kotlin Maven package, tag, and release
+        if: steps.probe.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
+          PRE_VERSION: ${{ needs.context.outputs.pre_release_version }}
+          SYNC_REPO: ${{ needs.context.outputs.kotlin_sync_repo }}
+          PUSH_TAG: ${{ steps.sync-prepare.outputs.push_tag }}
+          REPLACE_ASSETS: ${{ inputs.replace_assets }}
+        run: |
+          set -euo pipefail
+          sync_tag="v${PRE_VERSION}"
+          if [[ "$PUSH_TAG" == "true" ]]; then
+            package_actor=$(gh api user --jq .login)
+            (
+              cd source/bindings/kotlin
+              GITHUB_ACTOR="$package_actor" \
+              GITHUB_TOKEN="$GH_TOKEN" \
+              ./gradlew :actr-kotlin:publish \
+                --no-daemon \
+                -PactrGroup=io.actrium \
+                -PactrVersion="${PRE_VERSION}" \
+                -PactrPublishUrl="https://maven.pkg.github.com/${SYNC_REPO}"
+            )
+            basic_auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+            echo "::add-mask::${basic_auth}"
+            git -C kotlin-sync \
+              -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${basic_auth}" \
+              push origin "refs/tags/${sync_tag}"
+          fi
+
+          if gh release view "$sync_tag" --repo "$SYNC_REPO" >/dev/null 2>&1; then
+            gh release edit "$sync_tag" \
               --repo "$SYNC_REPO" \
-              --title "v${PRE_VERSION}" \
+              --title "$sync_tag" \
               --notes-file kotlin-sync/release-metadata.json \
               --prerelease
-            gh release upload "v${PRE_VERSION}" \
+            upload_args=(--repo "$SYNC_REPO")
+            [[ "$REPLACE_ASSETS" == "true" ]] && upload_args+=(--clobber)
+            gh release upload "$sync_tag" \
               source/bindings/kotlin/dist/actr-kotlin-native.zip \
               source/bindings/kotlin/actr-kotlin/build/outputs/aar/actr-kotlin-release.aar \
-              --repo "$SYNC_REPO" \
-              --clobber
+              "${upload_args[@]}"
           else
-            gh release create "v${PRE_VERSION}" \
+            gh release create "$sync_tag" \
               source/bindings/kotlin/dist/actr-kotlin-native.zip \
               source/bindings/kotlin/actr-kotlin/build/outputs/aar/actr-kotlin-release.aar \
               --repo "$SYNC_REPO" \
-              --title "v${PRE_VERSION}" \
+              --title "$sync_tag" \
               --notes-file kotlin-sync/release-metadata.json \
               --prerelease
           fi

@@ -410,10 +410,62 @@ parse_args() {
 
 validate_version() {
   if [[ "$PRE_RELEASE" == true ]]; then
-    [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*$ ]] || fail "Pre-release version must follow semver X.Y.Z-<id> format"
+    if ! is_strict_semver "$VERSION" || [[ "${VERSION%%+*}" != *-* ]]; then
+      fail "Pre-release version must follow strict SemVer X.Y.Z-<id> format"
+      return 1
+    fi
+    if [[ "$SKIP_PYTHON" == false ]] && ! is_pep440_compatible_pre_release "$VERSION"; then
+      fail "Pre-release version must be PEP 440-compatible while Python publishing is enabled (for example X.Y.Z-rc.1); use --skip-python for other SemVer identifiers"
+      return 1
+    fi
   else
-    [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Version must be a stable semver in X.Y.Z format"
+    if ! is_strict_semver "$VERSION" || [[ "$VERSION" == *[-+]* ]]; then
+      fail "Version must be a stable SemVer in X.Y.Z format"
+      return 1
+    fi
   fi
+}
+
+is_strict_semver() {
+  local version=$1 version_without_build core prerelease build identifier
+  local -a prerelease_identifiers
+  local numeric_identifier='(0|[1-9][0-9]*)'
+  local core_pattern="^${numeric_identifier}\\.${numeric_identifier}\\.${numeric_identifier}$"
+  local identifiers_pattern='^[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*$'
+
+  version_without_build=${version%%+*}
+  if [[ "$version" == *+* ]]; then
+    build=${version#*+}
+    [[ "$build" =~ $identifiers_pattern ]] || return 1
+  fi
+
+  core=${version_without_build%%-*}
+  [[ "$core" =~ $core_pattern ]] || return 1
+
+  if [[ "$version_without_build" == *-* ]]; then
+    prerelease=${version_without_build#*-}
+    [[ "$prerelease" =~ $identifiers_pattern ]] || return 1
+    IFS='.' read -r -a prerelease_identifiers <<<"$prerelease"
+    for identifier in "${prerelease_identifiers[@]}"; do
+      if [[ "$identifier" =~ ^[0-9]+$ && ! "$identifier" =~ ^$numeric_identifier$ ]]; then
+        return 1
+      fi
+    done
+  fi
+
+  return 0
+}
+
+is_pep440_compatible_pre_release() {
+  local version=$1 version_without_build prerelease
+  local pep440_pre_pattern='^(a|alpha|b|beta|c|rc|pre|preview|dev)([0-9]+|[-.](0|[1-9][0-9]*))?$'
+
+  # Release metadata accepted by SemVer is not necessarily valid PEP 440
+  # local-version metadata, so keep Python-enabled releases unambiguous.
+  [[ "$version" != *+* ]] || return 1
+  version_without_build=${version%%+*}
+  prerelease=${version_without_build#*-}
+  [[ "$prerelease" =~ $pep440_pre_pattern ]]
 }
 
 ensure_clean_worktree() {

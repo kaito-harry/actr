@@ -81,15 +81,49 @@ release_tag() {
 
 version_from_release_tag() {
   local tag=$1
-  if [[ "$tag" =~ ^validation-v(.+)$ ]]; then
-    printf '%s' "${BASH_REMATCH[1]}"
-    return
+  local version
+  case "$tag" in
+    validation-v*) version=${tag#validation-v} ;;
+    v*) version=${tag#v} ;;
+    *) fail "Unsupported release tag: $tag" ;;
+  esac
+
+  is_strict_semver "$version" || fail "Unsupported release tag: $tag"
+  if [[ "$tag" == validation-v* && "$version" != *-* ]]; then
+    fail "Unsupported release tag: $tag"
   fi
-  if [[ "$tag" =~ ^v(.+)$ ]]; then
-    printf '%s' "${BASH_REMATCH[1]}"
-    return
+
+  printf '%s' "$version"
+}
+
+is_strict_semver() {
+  local version=$1 version_without_build core prerelease build identifier
+  local -a prerelease_identifiers
+  local numeric_identifier='(0|[1-9][0-9]*)'
+  local core_pattern="^${numeric_identifier}\\.${numeric_identifier}\\.${numeric_identifier}$"
+  local identifiers_pattern='^[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*$'
+
+  version_without_build=${version%%+*}
+  if [[ "$version" == *+* ]]; then
+    build=${version#*+}
+    [[ "$build" =~ $identifiers_pattern ]] || return 1
   fi
-  fail "Unsupported release tag: $tag"
+
+  core=${version_without_build%%-*}
+  [[ "$core" =~ $core_pattern ]] || return 1
+
+  if [[ "$version_without_build" == *-* ]]; then
+    prerelease=${version_without_build#*-}
+    [[ "$prerelease" =~ $identifiers_pattern ]] || return 1
+    IFS='.' read -r -a prerelease_identifiers <<<"$prerelease"
+    for identifier in "${prerelease_identifiers[@]}"; do
+      if [[ "$identifier" =~ ^[0-9]+$ && ! "$identifier" =~ ^$numeric_identifier$ ]]; then
+        return 1
+      fi
+    done
+  fi
+
+  return 0
 }
 
 use_zigbuild() {
@@ -267,8 +301,8 @@ command_publish() {
       fail "GitHub release upload failed for $(basename "$asset") (HTTP $status)"
     asset_count=$((asset_count + 1))
   done < <(find "$ASSETS_DIR" -maxdepth 1 -type f \( \
-    -name 'actr-v*.tar.gz' -o -name 'actr-v*.tar.gz.sha256' \
-    -o -name 'actr-v*.zip' -o -name 'actr-v*.zip.sha256' \) | sort)
+    -name "actr-v${VERSION}-*.tar.gz" -o -name "actr-v${VERSION}-*.tar.gz.sha256" \
+    -o -name "actr-v${VERSION}-*.zip" -o -name "actr-v${VERSION}-*.zip.sha256" \) | sort)
 
   ((asset_count > 0)) || fail "No actr CLI assets found in $ASSETS_DIR"
   append_state actr-cli-release success "uploaded_${asset_count}_assets" "$url"

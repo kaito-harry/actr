@@ -76,6 +76,8 @@ dependencies {
 publishing {
     publications {
         create<MavenPublication>("maven") {
+            artifactId = "actr"
+
             afterEvaluate {
                 from(components["release"])
             }

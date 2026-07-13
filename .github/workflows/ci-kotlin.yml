@@ -36,6 +36,28 @@ jobs:
       - name: Build Kotlin binding
         working-directory: bindings/kotlin
         run: ./gradlew :actr-kotlin:build --no-daemon
+      - name: Validate Maven publication coordinates
+        working-directory: bindings/kotlin
+        run: |
+          ./gradlew :actr-kotlin:generatePomFileForMavenPublication \
+            --no-daemon \
+            -PactrGroup=io.actrium \
+            -PactrVersion=9.8.7-rc.1
+          python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          pom = Path("actr-kotlin/build/publications/maven/pom-default.xml")
+          root = ElementTree.parse(pom).getroot()
+          actual = (
+              root.findtext("{*}groupId"),
+              root.findtext("{*}artifactId"),
+              root.findtext("{*}version"),
+          )
+          expected = ("io.actrium", "actr", "9.8.7-rc.1")
+          if actual != expected:
+              raise SystemExit(f"Maven coordinates mismatch: expected {expected}, got {actual}")
+          PY
 
   gen-test:
     name: Kotlin Codegen Test

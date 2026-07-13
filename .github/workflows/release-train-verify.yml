@@ -6,9 +6,13 @@ on:
       - "*"
     paths:
       - ".github/workflows/release-prepare.yml"
+      - ".github/workflows/release-asset-validation.yml"
       - ".github/workflows/release-train.yml"
       - ".github/workflows/release-train-verify.yml"
+      - ".github/workflows/_protoc-plugins-release.yml"
+      - "scripts/release-actr-cli.sh"
       - "scripts/release-train.sh"
+      - "scripts/tests/release-asset-validation.sh"
       - "scripts/tests/release-train-*.sh"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -27,9 +31,13 @@ on:
       - main
     paths:
       - ".github/workflows/release-prepare.yml"
+      - ".github/workflows/release-asset-validation.yml"
       - ".github/workflows/release-train.yml"
       - ".github/workflows/release-train-verify.yml"
+      - ".github/workflows/_protoc-plugins-release.yml"
+      - "scripts/release-actr-cli.sh"
       - "scripts/release-train.sh"
+      - "scripts/tests/release-asset-validation.sh"
       - "scripts/tests/release-train-*.sh"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -88,6 +96,7 @@ jobs:
 
       - name: Run release train script unit checks
         run: |
+          bash scripts/tests/release-asset-validation.sh
           bash scripts/tests/release-train-package-sync.sh
           bash scripts/tests/release-train-modes.sh
 

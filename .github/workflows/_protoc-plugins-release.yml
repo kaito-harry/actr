@@ -295,10 +295,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: 3.11
-      - name: Install build tool
-        run: python -m pip install -U build
+      - name: Install build tools
+        run: python -m pip install -U build twine
       - name: Build
         run: (cd tools/protoc-gen/python && python -m build)
+      - name: Validate distributions
+        run: python -m twine check tools/protoc-gen/python/dist/*
       - name: Package
         run: |
           set -euo pipefail
@@ -308,7 +310,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: framework_codegen_python
+          name: protoc-gen-actrframework-python
           path: |
             dist/*.whl
             dist/*.whl.sha256
@@ -324,9 +326,10 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     steps:
-      - name: Download all artifacts
+      - name: Download protoc plugin artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: protoc-gen-*
           path: dist
       - name: Upload assets to release
         env:
