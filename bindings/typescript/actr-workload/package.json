@@ -1,6 +1,6 @@
 {
   "name": "@actrium/actr-workload",
-  "version": "0.4.14",
+  "version": "0.4.15",
   "description": "TypeScript workload authoring and component build tools for ACTR",
   "type": "module",
   "main": "./dist/index.js",
