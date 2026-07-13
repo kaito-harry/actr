@@ -42,7 +42,10 @@ jobs:
           ./gradlew :actr-kotlin:generatePomFileForMavenPublication \
             --no-daemon \
             -PactrGroup=io.actrium \
-            -PactrVersion=9.8.7-rc.1
+            -PactrVersion=9.8.7-rc.1 \
+            -PactrSourceRepository=Actrium/actr \
+            -PactrSourceTag=validation-v9.8.7-rc.1 \
+            -PactrSourceSha=0123456789abcdef
           python3 - <<'PY'
           from pathlib import Path
           from xml.etree import ElementTree
@@ -57,6 +60,23 @@ jobs:
           expected = ("io.actrium", "actr", "9.8.7-rc.1")
           if actual != expected:
               raise SystemExit(f"Maven coordinates mismatch: expected {expected}, got {actual}")
+          properties = root.find("{*}properties")
+          if properties is None:
+              raise SystemExit("Maven provenance properties are missing")
+          actual_provenance = {
+              child.tag.rsplit("}", 1)[-1]: child.text
+              for child in properties
+          }
+          expected_provenance = {
+              "actr.source.repository": "Actrium/actr",
+              "actr.source.tag": "validation-v9.8.7-rc.1",
+              "actr.source.sha": "0123456789abcdef",
+          }
+          if actual_provenance != expected_provenance:
+              raise SystemExit(
+                  f"Maven provenance mismatch: expected {expected_provenance}, "
+                  f"got {actual_provenance}"
+              )
           PY
 
   gen-test:

@@ -14,14 +14,14 @@ on:
       publish_package_sync:
         description: Publish Swift/Kotlin pre-release packages to matching package-sync repositories.
         required: true
-        default: auto
+        default: never
         type: choice
         options:
           - auto
           - never
           - require
       replace_assets:
-        description: Replace existing GitHub Release assets when re-running the same validation version.
+        description: Replace source validation release assets on rerun; published package-sync assets remain hash-locked.
         required: true
         default: true
         type: boolean
@@ -36,9 +36,7 @@ concurrency:
 
 permissions:
   actions: read
-  contents: write
-  id-token: write
-  packages: write
+  contents: read
 
 env:
   PROTOC_VERSION: "29.3"
@@ -65,6 +63,7 @@ jobs:
         with:
           ref: ${{ inputs.source_ref != '' && inputs.source_ref || github.ref }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Resolve context
         id: resolve
@@ -118,12 +117,14 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       validation_sha: ${{ steps.prepare.outputs.validation_sha }}
+      push_tag: ${{ steps.prepare.outputs.push_tag }}
     steps:
       - name: Checkout requested source commit
         uses: actions/checkout@v5
         with:
           ref: ${{ needs.context.outputs.source_sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -181,26 +182,105 @@ jobs:
               exit 1
             }
             echo "Reusing existing validation tag ${TAG} at ${validation_sha}"
+            push_tag=false
           else
             scripts/release-train.sh --version "$VERSION" --prepare-only --pre-release
             validation_sha=$(git rev-parse HEAD)
             git tag "$TAG" "$validation_sha"
-            git push origin "refs/tags/${TAG}"
+            push_tag=true
           fi
-          echo "validation_sha=${validation_sha}" >> "$GITHUB_OUTPUT"
+          {
+            echo "validation_sha=${validation_sha}"
+            echo "push_tag=${push_tag}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Bundle prepared validation tag
+        if: steps.prepare.outputs.push_tag == 'true'
+        env:
+          TAG: ${{ needs.context.outputs.release_tag }}
+          SOURCE_SHA: ${{ needs.context.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          git bundle create validation-source.bundle \
+            "refs/tags/${TAG}" \
+            "^${SOURCE_SHA}"
+          git bundle verify validation-source.bundle
+
+      - name: Upload prepared validation tag
+        if: steps.prepare.outputs.push_tag == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-source-tag
+          path: validation-source.bundle
+          if-no-files-found: error
+
+  publish-validation-tag:
+    name: Publish prerelease validation tag
+    needs:
+      - context
+      - prepare-validation-source
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout requested source commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.context.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download prepared validation tag
+        if: needs.prepare-validation-source.outputs.push_tag == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: validation-source-tag
+
+      - name: Push or verify validation tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.context.outputs.release_tag }}
+          SOURCE_SHA: ${{ needs.context.outputs.source_sha }}
+          VALIDATION_SHA: ${{ needs.prepare-validation-source.outputs.validation_sha }}
+          PUSH_TAG: ${{ needs.prepare-validation-source.outputs.push_tag }}
+        run: |
+          set -euo pipefail
+          if [[ "$PUSH_TAG" == "true" ]]; then
+            git fetch validation-source.bundle "refs/tags/${TAG}:refs/tags/${TAG}"
+          else
+            git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          fi
+          tag_sha=$(git rev-parse "refs/tags/${TAG}^{commit}")
+          tag_parent=$(git rev-parse "${tag_sha}^")
+          [[ "$tag_sha" == "$VALIDATION_SHA" && "$tag_parent" == "$SOURCE_SHA" ]] || {
+            echo "::error::Validation tag ${TAG} resolved to ${tag_sha} with parent ${tag_parent}; expected ${VALIDATION_SHA} with parent ${SOURCE_SHA}"
+            exit 1
+          }
+          if [[ "$PUSH_TAG" != "true" ]]; then
+            echo "Reusing validation tag ${TAG} at ${tag_sha}"
+            exit 0
+          fi
+          basic_auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::${basic_auth}"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${basic_auth}" \
+            push origin "refs/tags/${TAG}"
 
   create-validation-release:
     name: Create validation release
     needs:
       - context
       - prepare-validation-source
+      - publish-validation-tag
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout validation source commit
         uses: actions/checkout@v5
         with:
           ref: ${{ needs.context.outputs.release_tag }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Create or verify validation tag
         env:
@@ -209,17 +289,16 @@ jobs:
         run: |
           set -euo pipefail
           git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}" >/dev/null 2>&1 || true
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
-            tag_sha=$(git rev-parse "refs/tags/${TAG}^{commit}")
-            [[ "$tag_sha" == "$SOURCE_SHA" ]] || {
-              echo "::error::Validation tag ${TAG} already points to ${tag_sha}, expected ${SOURCE_SHA}"
-              exit 1
-            }
-            echo "Validation tag ${TAG} already points to ${SOURCE_SHA}"
-          else
-            git tag "$TAG" "$SOURCE_SHA"
-            git push origin "refs/tags/${TAG}"
-          fi
+          git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1 || {
+            echo "::error::Validation tag ${TAG} was not pushed by the preparation job"
+            exit 1
+          }
+          tag_sha=$(git rev-parse "refs/tags/${TAG}^{commit}")
+          [[ "$tag_sha" == "$SOURCE_SHA" ]] || {
+            echo "::error::Validation tag ${TAG} already points to ${tag_sha}, expected ${SOURCE_SHA}"
+            exit 1
+          }
+          echo "Validation tag ${TAG} already points to ${SOURCE_SHA}"
 
       - name: Create or update GitHub prerelease
         env:
@@ -263,13 +342,14 @@ jobs:
             gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$VALIDATION_SHA" \
+              --verify-tag \
               --title "$TAG" \
               --notes-file release-notes.md \
               --prerelease
           fi
 
-  rust-package-assets:
-    name: Package Rust crate assets
+  build-rust-package-assets:
+    name: Build Rust crate validation assets
     needs:
       - context
       - prepare-validation-source
@@ -283,6 +363,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           ref: ${{ needs.context.outputs.release_tag }}
+          persist-credentials: false
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -353,6 +434,29 @@ jobs:
           (cd release/validation/crates && for asset in *.crate; do sha256sum "$asset" > "$asset.sha256"; done)
           test "$(find release/validation/crates -name '*.crate' | wc -l | tr -d ' ')" -eq "${#packages[@]}"
 
+      - name: Stage Rust crate assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-package-assets
+          path: release/validation/crates/
+          if-no-files-found: error
+
+  rust-package-assets:
+    name: Publish Rust crate validation assets
+    needs:
+      - context
+      - create-validation-release
+      - build-rust-package-assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Rust crate assets
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-package-assets
+          path: release/validation/crates
+
       - name: Upload Rust crate assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -420,6 +524,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           ref: ${{ needs.context.outputs.release_tag }}
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -463,8 +568,8 @@ jobs:
           path: bindings/typescript/artifacts/${{ matrix.artifact }}
           if-no-files-found: error
 
-  npm-package-assets:
-    name: Package npm assets
+  build-npm-package-assets:
+    name: Build npm validation assets
     needs:
       - context
       - prepare-validation-source
@@ -476,6 +581,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           ref: ${{ needs.context.outputs.release_tag }}
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -541,6 +647,29 @@ jobs:
 
           (cd "$dist" && for asset in *.tgz; do sha256sum "$asset" > "$asset.sha256"; done)
 
+      - name: Stage npm assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package-assets
+          path: release/validation/npm/
+          if-no-files-found: error
+
+  npm-package-assets:
+    name: Publish npm validation assets
+    needs:
+      - context
+      - create-validation-release
+      - build-npm-package-assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download npm assets
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-package-assets
+          path: release/validation/npm
+
       - name: Upload npm assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -560,6 +689,8 @@ jobs:
       - context
       - prepare-validation-source
       - create-validation-release
+    permissions:
+      contents: write
     uses: ./.github/workflows/_actr-cli-release.yml
     with:
       tag: ${{ needs.context.outputs.release_tag }}
@@ -568,7 +699,6 @@ jobs:
       replace_assets: ${{ inputs.replace_assets }}
       allow_validation_tag: true
       release_version: ${{ needs.context.outputs.pre_release_version }}
-    secrets: inherit
 
   actrix-assets:
     name: Build actrix validation assets
@@ -576,6 +706,8 @@ jobs:
       - context
       - prepare-validation-source
       - create-validation-release
+    permissions:
+      contents: write
     uses: ./.github/workflows/_actrix-release.yml
     with:
       tag: ${{ needs.context.outputs.release_tag }}
@@ -584,7 +716,6 @@ jobs:
       replace_assets: ${{ inputs.replace_assets }}
       allow_validation_tag: true
       release_version: ${{ needs.context.outputs.pre_release_version }}
-    secrets: inherit
 
   protoc-plugin-assets:
     name: Build protoc plugin validation assets
@@ -592,6 +723,8 @@ jobs:
       - context
       - prepare-validation-source
       - create-validation-release
+    permissions:
+      contents: write
     uses: ./.github/workflows/_protoc-plugins-release.yml
     with:
       tag: ${{ needs.context.outputs.release_tag }}
@@ -600,9 +733,8 @@ jobs:
       replace_assets: ${{ inputs.replace_assets }}
       allow_validation_tag: true
       release_version: ${{ needs.context.outputs.pre_release_version }}
-    secrets: inherit
 
-  swift-package:
+  build-swift-package:
     name: Build Swift package validation assets
     needs:
       - context
@@ -615,6 +747,7 @@ jobs:
         with:
           ref: ${{ needs.context.outputs.release_tag }}
           path: source
+          persist-credentials: false
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -653,19 +786,32 @@ jobs:
           ./build-xcframework.sh
           ./scripts/package-binary.sh "${{ needs.context.outputs.release_tag }}"
 
-      - name: Upload Swift validation assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.context.outputs.release_tag }}
-          REPLACE_ASSETS: ${{ inputs.replace_assets }}
+      - name: Prepare Swift validation recovery asset
         run: |
           set -euo pipefail
-          args=(--repo "$GITHUB_REPOSITORY")
-          [[ "$REPLACE_ASSETS" == "true" ]] && args+=(--clobber)
-          gh release upload "$TAG" \
-            source/bindings/swift/dist/ActrFFI.xcframework.zip \
-            source/bindings/swift/dist/release.txt \
-            "${args[@]}"
+          asset=source/bindings/swift/dist/ActrFFI.xcframework.zip
+          release_info=source/bindings/swift/dist/release.txt
+          checksum=$(sed -n 's/^SHA256 checksum:[[:space:]]*//p' "$release_info")
+          [[ "$checksum" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::Invalid Swift package checksum: ${checksum}"
+            exit 1
+          }
+
+          # Preserve an immutable, content-addressed recovery copy before the
+          # package-sync tag is pushed. A later run can recover the exact bytes
+          # even if rebuilding the XCFramework is not bit-for-bit identical.
+          recovery_asset="source/bindings/swift/dist/ActrFFI.xcframework.${checksum}.zip"
+          cp "$asset" "$recovery_asset"
+
+      - name: Stage Swift validation assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: swift-validation-assets
+          path: |
+            source/bindings/swift/dist/ActrFFI.xcframework.zip
+            source/bindings/swift/dist/ActrFFI.xcframework.*.zip
+            source/bindings/swift/dist/release.txt
+          if-no-files-found: error
 
       - name: Upload Swift package-sync inputs
         uses: actions/upload-artifact@v4
@@ -679,7 +825,77 @@ jobs:
             source/bindings/swift/dist/release.txt
           if-no-files-found: error
 
-  kotlin-package:
+  swift-package:
+    name: Publish Swift package validation assets
+    needs:
+      - context
+      - create-validation-release
+      - build-swift-package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Swift validation assets
+        uses: actions/download-artifact@v4
+        with:
+          name: swift-validation-assets
+          path: swift-validation
+
+      - name: Upload Swift validation assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.context.outputs.release_tag }}
+          REPLACE_ASSETS: ${{ inputs.replace_assets }}
+        run: |
+          set -euo pipefail
+          asset=swift-validation/ActrFFI.xcframework.zip
+          release_info=swift-validation/release.txt
+          checksum=$(sed -n 's/^SHA256 checksum:[[:space:]]*//p' "$release_info")
+          [[ "$checksum" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::Invalid Swift package checksum: ${checksum}"
+            exit 1
+          }
+          recovery_asset="swift-validation/ActrFFI.xcframework.${checksum}.zip"
+          recovery_name=$(basename "$recovery_asset")
+          [[ -f "$asset" && -f "$release_info" && -f "$recovery_asset" ]] || {
+            echo "::error::Swift validation artifact set is incomplete"
+            exit 1
+          }
+          [[ -z "$(find swift-validation -type l -print -quit)" ]] || {
+            echo "::error::Swift validation artifact set contains a symbolic link"
+            exit 1
+          }
+          actual_checksum=$(sha256sum "$asset" | awk '{print $1}')
+          recovery_checksum=$(sha256sum "$recovery_asset" | awk '{print $1}')
+          [[ "$actual_checksum" == "$checksum" && "$recovery_checksum" == "$checksum" ]] || {
+            echo "::error::Swift validation artifact checksum mismatch"
+            exit 1
+          }
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name' | grep -Fxq "$recovery_name"; then
+            recovery_dir=$(mktemp -d)
+            gh release download "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "$recovery_name" \
+              --dir "$recovery_dir" \
+              --clobber
+            existing_checksum=$(sha256sum "$recovery_dir/$recovery_name" | awk '{print $1}')
+            [[ "$existing_checksum" == "$checksum" ]] || {
+              echo "::error::Recovery asset ${recovery_name} has checksum ${existing_checksum}, expected ${checksum}"
+              exit 1
+            }
+          else
+            gh release upload "$TAG" "$recovery_asset" --repo "$GITHUB_REPOSITORY"
+          fi
+
+          args=(--repo "$GITHUB_REPOSITORY")
+          [[ "$REPLACE_ASSETS" == "true" ]] && args+=(--clobber)
+          gh release upload "$TAG" \
+            "$asset" \
+            "$release_info" \
+            "${args[@]}"
+
+  build-kotlin-package:
     name: Build Kotlin package validation assets
     needs:
       - context
@@ -692,6 +908,7 @@ jobs:
         with:
           ref: ${{ needs.context.outputs.release_tag }}
           path: source
+          persist-credentials: false
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -739,6 +956,14 @@ jobs:
             --no-daemon \
             -PactrGroup=io.actrium \
             -PactrVersion=${{ needs.context.outputs.pre_release_version }}
+          ./gradlew :actr-kotlin:publishMavenPublicationToValidationStagingRepository \
+            --no-daemon \
+            -PactrGroup=io.actrium \
+            -PactrVersion=${{ needs.context.outputs.pre_release_version }} \
+            -PactrSourceRepository="${GITHUB_REPOSITORY}" \
+            -PactrSourceTag=${{ needs.context.outputs.release_tag }} \
+            -PactrSourceSha=${{ needs.prepare-validation-source.outputs.validation_sha }} \
+            -PactrValidationStagingUrl="$GITHUB_WORKSPACE/release/validation/kotlin-maven"
           ACTR_RELEASE_REPOSITORY="$GITHUB_REPOSITORY" \
             ./scripts/package-binary.sh "${{ needs.context.outputs.release_tag }}"
           mkdir -p "$GITHUB_WORKSPACE/release/validation/kotlin"
@@ -747,8 +972,40 @@ jobs:
           cp dist/release.txt "$GITHUB_WORKSPACE/release/validation/kotlin/kotlin-release.txt"
           (
             cd "$GITHUB_WORKSPACE/release/validation/kotlin"
+            native_checksum=$(sha256sum actr-kotlin-native.zip | awk '{print $1}')
+            cp actr-kotlin-native.zip "actr-kotlin-native.${native_checksum}.zip"
             for asset in *.aar *.zip; do sha256sum "$asset" > "$asset.sha256"; done
           )
+
+      - name: Stage Kotlin validation assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotlin-validation-assets
+          path: release/validation/kotlin/
+          if-no-files-found: error
+
+      - name: Stage Kotlin Maven repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotlin-maven-staging
+          path: release/validation/kotlin-maven/
+          if-no-files-found: error
+
+  kotlin-package:
+    name: Publish Kotlin package validation assets
+    needs:
+      - context
+      - create-validation-release
+      - build-kotlin-package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Kotlin validation assets
+        uses: actions/download-artifact@v4
+        with:
+          name: kotlin-validation-assets
+          path: release/validation/kotlin
 
       - name: Upload Kotlin validation assets
         env:
@@ -757,21 +1014,49 @@ jobs:
           REPLACE_ASSETS: ${{ inputs.replace_assets }}
         run: |
           set -euo pipefail
+          assets=release/validation/kotlin
+          test -f "$assets/actr-kotlin-release.aar"
+          test -f "$assets/actr-kotlin-release.aar.sha256"
+          test -f "$assets/actr-kotlin-native.zip"
+          test -f "$assets/actr-kotlin-native.zip.sha256"
+          test -f "$assets/kotlin-release.txt"
+          test -z "$(find "$assets" -type l -print -quit)"
+          (
+            cd "$assets"
+            sha256sum -c actr-kotlin-release.aar.sha256
+            sha256sum -c actr-kotlin-native.zip.sha256
+          )
+
+          native_checksum=$(sha256sum "$assets/actr-kotlin-native.zip" | awk '{print $1}')
+          recovery_asset="$assets/actr-kotlin-native.${native_checksum}.zip"
+          recovery_name=$(basename "$recovery_asset")
+          test -f "$recovery_asset"
+          [[ "$(sha256sum "$recovery_asset" | awk '{print $1}')" == "$native_checksum" ]]
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name' | grep -Fxq "$recovery_name"; then
+            recovery_dir=$(mktemp -d)
+            gh release download "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "$recovery_name" \
+              --dir "$recovery_dir" \
+              --clobber
+            [[ "$(sha256sum "$recovery_dir/$recovery_name" | awk '{print $1}')" == "$native_checksum" ]] || {
+              echo "::error::Kotlin recovery asset ${recovery_name} has the wrong checksum"
+              exit 1
+            }
+          else
+            gh release upload "$TAG" "$recovery_asset" --repo "$GITHUB_REPOSITORY"
+          fi
+
           args=(--repo "$GITHUB_REPOSITORY")
           [[ "$REPLACE_ASSETS" == "true" ]] && args+=(--clobber)
-          find release/validation/kotlin -type f -print0 |
-            sort -z |
-            xargs -0 -r gh release upload "$TAG" "${args[@]}"
-
-      - name: Upload Kotlin package-sync inputs
-        uses: actions/upload-artifact@v4
-        with:
-          name: kotlin-package-sync-inputs
-          path: |
-            source/bindings/kotlin/actr-kotlin/src/main/
-            source/bindings/kotlin/actr-kotlin/build/outputs/aar/actr-kotlin-release.aar
-            source/bindings/kotlin/dist/actr-kotlin-native.zip
-          if-no-files-found: error
+          gh release upload "$TAG" \
+            "$assets/actr-kotlin-release.aar" \
+            "$assets/actr-kotlin-release.aar.sha256" \
+            "$assets/actr-kotlin-native.zip" \
+            "$assets/actr-kotlin-native.zip.sha256" \
+            "$assets/kotlin-release.txt" \
+            "${args[@]}"
 
   prepare-swift-package-sync:
     name: Prepare Swift package-sync prerelease
@@ -883,17 +1168,41 @@ jobs:
               raise SystemExit(f"existing Swift package-sync tag metadata mismatch: {mismatches}")
           PY
             tag_checksum=$(python3 - <<'PY'
+          import os
           import re
           from pathlib import Path
 
           text = Path("swift-sync/Package.swift").read_text()
-          match = re.search(
-              r'let remoteBinaryChecksum = env\["ACTR_BINARY_CHECKSUM"\] \?\? "([^"]+)"',
-              text,
-          )
-          if not match:
-              raise SystemExit("existing Swift package-sync checksum not found")
-          print(match.group(1))
+          assignments = {
+              "release tag": (
+                  r'let releaseTag = env\["ACTR_BINARY_TAG"\] \?\? "([^"]+)"',
+                  f"v{os.environ['PRE_VERSION']}",
+              ),
+              "remote binary URL": (
+                  r'let remoteBinaryURL = "([^"]+)"',
+                  f"https://github.com/{os.environ['SYNC_REPO']}/releases/download/\\(releaseTag)/ActrFFI.xcframework.zip",
+              ),
+              "remote binary checksum": (
+                  r'let remoteBinaryChecksum = env\["ACTR_BINARY_CHECKSUM"\] \?\? "([^"]+)"',
+                  None,
+              ),
+          }
+          values = {}
+          for label, (pattern, expected) in assignments.items():
+              matches = re.findall(pattern, text)
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"expected exactly one existing {label} assignment, found {len(matches)}"
+                  )
+              values[label] = matches[0]
+              if expected is not None and matches[0] != expected:
+                  raise SystemExit(
+                      f"existing Swift {label} mismatch: expected {expected}, got {matches[0]}"
+                  )
+          checksum = values["remote binary checksum"]
+          if not re.fullmatch(r"[0-9a-f]{64}", checksum):
+              raise SystemExit(f"invalid existing Swift package-sync checksum: {checksum}")
+          print(checksum)
           PY
             )
             echo "push_tag=false" >> "$GITHUB_OUTPUT"
@@ -903,15 +1212,19 @@ jobs:
             mkdir -p swift-sync/Sources
             rsync -a --delete source/bindings/swift/Sources/ swift-sync/Sources/
             rsync -a --delete source/bindings/swift/dist/ActrBindings/ swift-sync/ActrBindings/
+            rsync -a --delete \
+              source/bindings/swift/dist/ActrFFI.xcframework/ \
+              swift-sync/ActrFFI.xcframework/
 
             # This executes the sync repository's Package.swift without exposing
             # PACKAGE_SYNC_GITHUB_TOKEN to the manifest process.
             (
               cd swift-sync
               ACTR_BINDINGS_PATH=ActrBindings \
-              ACTR_BINARY_PATH="$GITHUB_WORKSPACE/source/bindings/swift/dist/ActrFFI.xcframework" \
+              ACTR_BINARY_PATH=ActrFFI.xcframework \
               swift build
             )
+            rm -rf swift-sync/ActrFFI.xcframework
 
             checksum=$(python3 - <<'PY'
           from pathlib import Path
@@ -925,6 +1238,10 @@ jobs:
               raise SystemExit("checksum not found")
           PY
             )
+            [[ "$checksum" =~ ^[0-9a-f]{64}$ ]] || {
+              echo "::error::Invalid generated Swift package checksum: ${checksum}"
+              exit 1
+            }
 
             python3 - "$checksum" <<'PY'
           from __future__ import annotations
@@ -939,20 +1256,31 @@ jobs:
           repo = os.environ["SYNC_REPO"]
           path = Path("swift-sync/Package.swift")
           text = path.read_text()
-          text = re.sub(
+
+
+          def replace_exactly_once(pattern: str, replacement: str, label: str) -> None:
+              global text
+              text, count = re.subn(pattern, lambda _: replacement, text)
+              if count != 1:
+                  raise SystemExit(
+                      f"expected exactly one {label} assignment in Package.swift, found {count}"
+                  )
+
+
+          replace_exactly_once(
               r'let releaseTag = env\["ACTR_BINARY_TAG"\] \?\? "v[^"]+"',
               f'let releaseTag = env["ACTR_BINARY_TAG"] ?? "v{version}"',
-              text,
+              "release tag",
           )
-          text = re.sub(
+          replace_exactly_once(
               r'let remoteBinaryURL = "https://github\.com/[^"]+/ActrFFI\.xcframework\.zip"',
               f'let remoteBinaryURL = "https://github.com/{repo}/releases/download/\\(releaseTag)/ActrFFI.xcframework.zip"',
-              text,
+              "remote binary URL",
           )
-          text = re.sub(
+          replace_exactly_once(
               r'let remoteBinaryChecksum = env\["ACTR_BINARY_CHECKSUM"\] \?\? "[^"]+"',
               f'let remoteBinaryChecksum = env["ACTR_BINARY_CHECKSUM"] ?? "{checksum}"',
-              text,
+              "remote binary checksum",
           )
           path.write_text(text)
           PY
@@ -1078,11 +1406,82 @@ jobs:
           SOURCE_TAG: ${{ needs.context.outputs.release_tag }}
           PUSH_TAG: ${{ needs.prepare-swift-package-sync.outputs.push_tag }}
           TAG_CHECKSUM: ${{ needs.prepare-swift-package-sync.outputs.tag_checksum }}
-          REPLACE_ASSETS: ${{ inputs.replace_assets }}
         run: |
           set -euo pipefail
           sync_tag="v${PRE_VERSION}"
-          asset=swift-inputs/dist/ActrFFI.xcframework.zip
+          local_asset=swift-inputs/dist/ActrFFI.xcframework.zip
+          [[ "$TAG_CHECKSUM" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "::error::Invalid immutable Swift tag checksum: ${TAG_CHECKSUM}"
+            exit 1
+          }
+
+          release_exists=false
+          release_is_draft=false
+          asset_exists=false
+          asset_needs_clobber=false
+          if gh release view "$sync_tag" --repo "$SYNC_REPO" >/dev/null 2>&1; then
+            release_exists=true
+            release_is_draft=$(gh release view "$sync_tag" \
+              --repo "$SYNC_REPO" \
+              --json isDraft \
+              --jq .isDraft)
+            if gh release view "$sync_tag" --repo "$SYNC_REPO" --json assets \
+              --jq '.assets[].name' | grep -Fxq ActrFFI.xcframework.zip; then
+              asset_exists=true
+              remote_dir=$(mktemp -d)
+              if gh release download "$sync_tag" \
+                --repo "$SYNC_REPO" \
+                --pattern ActrFFI.xcframework.zip \
+                --dir "$remote_dir" \
+                --clobber; then
+                asset="$remote_dir/ActrFFI.xcframework.zip"
+                remote_checksum=$(sha256sum "$asset" | awk '{print $1}')
+                if [[ "$remote_checksum" != "$TAG_CHECKSUM" ]]; then
+                  if [[ "$release_is_draft" == "true" ]]; then
+                    echo "Replacing incomplete Swift draft asset with immutable tag bytes"
+                    asset_exists=false
+                    asset_needs_clobber=true
+                  else
+                    echo "::error::Published Swift asset checksum ${remote_checksum} does not match immutable tag checksum ${TAG_CHECKSUM}"
+                    exit 1
+                  fi
+                fi
+              elif [[ "$release_is_draft" == "true" ]]; then
+                echo "Replacing unreadable Swift draft asset with immutable tag bytes"
+                asset_exists=false
+                asset_needs_clobber=true
+              else
+                echo "::error::Published Swift asset ActrFFI.xcframework.zip could not be downloaded"
+                exit 1
+              fi
+            fi
+          fi
+
+          if [[ "$asset_exists" != "true" ]]; then
+            asset="$local_asset"
+            local_checksum=$(sha256sum "$asset" | awk '{print $1}')
+            if [[ "$local_checksum" != "$TAG_CHECKSUM" ]]; then
+              recovery_name="ActrFFI.xcframework.${TAG_CHECKSUM}.zip"
+              recovery_dir=$(mktemp -d)
+              if ! gh release download "$SOURCE_TAG" \
+                --repo "$SOURCE_REPO" \
+                --pattern "$recovery_name" \
+                --dir "$recovery_dir" \
+                --clobber; then
+                echo "::error::Current Swift ZIP checksum ${local_checksum} differs from immutable tag ${TAG_CHECKSUM}, and recovery asset ${recovery_name} is unavailable"
+                exit 1
+              fi
+              recovered_asset="$recovery_dir/ActrFFI.xcframework.zip"
+              cp "$recovery_dir/$recovery_name" "$recovered_asset"
+              asset="$recovered_asset"
+              local_checksum=$(sha256sum "$asset" | awk '{print $1}')
+            fi
+            [[ "$local_checksum" == "$TAG_CHECKSUM" ]] || {
+              echo "::error::Swift asset checksum ${local_checksum} does not match immutable tag checksum ${TAG_CHECKSUM}"
+              exit 1
+            }
+          fi
+
           if [[ "$PUSH_TAG" == "true" ]]; then
             basic_auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
             echo "::add-mask::${basic_auth}"
@@ -1096,37 +1495,26 @@ jobs:
           Source tag: ${SOURCE_TAG}
           Source sha: ${SOURCE_SHA}
           EOF
-          if gh release view "$sync_tag" --repo "$SYNC_REPO" >/dev/null 2>&1; then
-            gh release edit "$sync_tag" \
-              --repo "$SYNC_REPO" \
-              --title "$sync_tag" \
-              --notes-file swift-release-notes.md \
-              --prerelease
-            if [[ "$PUSH_TAG" == "true" ]]; then
+          if [[ "$release_exists" == "true" ]]; then
+            if [[ "$asset_exists" != "true" ]]; then
               upload_args=(--repo "$SYNC_REPO")
-              [[ "$REPLACE_ASSETS" == "true" ]] && upload_args+=(--clobber)
+              [[ "$asset_needs_clobber" == "true" ]] && upload_args+=(--clobber)
               gh release upload "$sync_tag" "$asset" "${upload_args[@]}"
-            elif ! gh release view "$sync_tag" --repo "$SYNC_REPO" --json assets \
-              --jq 'any(.assets[]; .name == "ActrFFI.xcframework.zip")' | grep -qx true; then
-              new_checksum=$(sha256sum "$asset" | awk '{print $1}')
-              [[ "$new_checksum" == "$TAG_CHECKSUM" ]] || {
-                echo "::error::Rebuilt Swift asset checksum ${new_checksum} does not match immutable tag checksum ${TAG_CHECKSUM}"
-                exit 1
-              }
-              gh release upload "$sync_tag" "$asset" --repo "$SYNC_REPO"
             else
               echo "Reusing immutable Swift package-sync asset for ${sync_tag}"
             fi
+            edit_args=(
+              --repo "$SYNC_REPO"
+              --title "$sync_tag"
+              --notes-file swift-release-notes.md
+              --prerelease
+            )
+            [[ "$release_is_draft" == "true" ]] && edit_args+=(--draft=false)
+            gh release edit "$sync_tag" "${edit_args[@]}"
           else
-            if [[ "$PUSH_TAG" != "true" ]]; then
-              new_checksum=$(sha256sum "$asset" | awk '{print $1}')
-              [[ "$new_checksum" == "$TAG_CHECKSUM" ]] || {
-                echo "::error::Rebuilt Swift asset checksum ${new_checksum} does not match immutable tag checksum ${TAG_CHECKSUM}"
-                exit 1
-              }
-            fi
             gh release create "$sync_tag" "$asset" \
               --repo "$SYNC_REPO" \
+              --verify-tag \
               --title "$sync_tag" \
               --notes-file swift-release-notes.md \
               --prerelease
@@ -1147,6 +1535,9 @@ jobs:
       - swift-package
       - kotlin-package
     runs-on: ubuntu-latest
+    concurrency:
+      group: release-asset-validation-kotlin-maven-${{ github.repository_owner }}
+      cancel-in-progress: false
     steps:
       - name: Probe Kotlin package-sync publishing
         id: probe
@@ -1173,28 +1564,19 @@ jobs:
           echo "publish=${publish}" >> "$GITHUB_OUTPUT"
           echo "reason=${reason}" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout validation source
-        if: steps.probe.outputs.publish == 'true'
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.context.outputs.release_tag }}
-          path: source
-          persist-credentials: false
-
-      - name: Setup Java
-        if: steps.probe.outputs.publish == 'true'
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-          cache: gradle
-
-      - name: Download Kotlin package-sync inputs
+      - name: Download Kotlin validation assets
         if: steps.probe.outputs.publish == 'true'
         uses: actions/download-artifact@v4
         with:
-          name: kotlin-package-sync-inputs
-          path: source/bindings/kotlin
+          name: kotlin-validation-assets
+          path: kotlin-inputs
+
+      - name: Download staged Kotlin Maven repository
+        if: steps.probe.outputs.publish == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: kotlin-maven-staging
+          path: kotlin-maven
 
       - name: Checkout Kotlin package-sync repository
         if: steps.probe.outputs.publish == 'true'
@@ -1208,10 +1590,147 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
-      - name: Prepare Kotlin package-sync tag
+      - name: Validate Kotlin package-sync inputs
         if: steps.probe.outputs.publish == 'true'
-        id: sync-prepare
         env:
+          PRE_VERSION: ${{ needs.context.outputs.pre_release_version }}
+          SOURCE_REPO: ${{ needs.context.outputs.repository }}
+          SOURCE_SHA: ${{ needs.prepare-validation-source.outputs.validation_sha }}
+          SOURCE_TAG: ${{ needs.context.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          test -z "$(find kotlin-inputs kotlin-maven -type l -print -quit)"
+          test -f kotlin-inputs/actr-kotlin-release.aar
+          test -f kotlin-inputs/actr-kotlin-release.aar.sha256
+          test -f kotlin-inputs/actr-kotlin-native.zip
+          test -f kotlin-inputs/actr-kotlin-native.zip.sha256
+          (
+            cd kotlin-inputs
+            sha256sum -c actr-kotlin-release.aar.sha256
+            sha256sum -c actr-kotlin-native.zip.sha256
+          )
+
+          staged_pom="kotlin-maven/io/actrium/actr/${PRE_VERSION}/actr-${PRE_VERSION}.pom"
+          staged_aar="kotlin-maven/io/actrium/actr/${PRE_VERSION}/actr-${PRE_VERSION}.aar"
+          staged_module="kotlin-maven/io/actrium/actr/${PRE_VERSION}/actr-${PRE_VERSION}.module"
+          test -f "$staged_pom"
+          test -f "$staged_aar"
+          test -f "$staged_module"
+          cmp -s "$staged_aar" kotlin-inputs/actr-kotlin-release.aar || {
+            echo "::error::Staged Maven AAR differs from the validation AAR"
+            exit 1
+          }
+
+          python3 - "$staged_pom" kotlin-maven <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          import re
+          import sys
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          version = os.environ["PRE_VERSION"]
+          root = ElementTree.parse(sys.argv[1]).getroot()
+          actual_coordinate = (
+              root.findtext("{*}groupId"),
+              root.findtext("{*}artifactId"),
+              root.findtext("{*}version"),
+          )
+          expected_coordinate = ("io.actrium", "actr", version)
+          if actual_coordinate != expected_coordinate:
+              raise SystemExit(
+                  f"staged Maven coordinate mismatch: expected {expected_coordinate}, "
+                  f"got {actual_coordinate}"
+              )
+
+          properties = root.find("{*}properties")
+          actual_properties = (
+              {}
+              if properties is None
+              else {child.tag.rsplit("}", 1)[-1]: child.text for child in properties}
+          )
+          expected_properties = {
+              "actr.source.repository": os.environ["SOURCE_REPO"],
+              "actr.source.tag": os.environ["SOURCE_TAG"],
+              "actr.source.sha": os.environ["SOURCE_SHA"],
+          }
+          mismatches = {
+              key: (actual_properties.get(key), value)
+              for key, value in expected_properties.items()
+              if actual_properties.get(key) != value
+          }
+          if mismatches:
+              raise SystemExit(f"staged Maven provenance mismatch: {mismatches}")
+
+          module_path = Path(sys.argv[1]).with_suffix(".module")
+          module = json.loads(module_path.read_text())
+          expected_component = {
+              "group": "io.actrium",
+              "module": "actr",
+              "version": version,
+          }
+          component = module.get("component", {})
+          component_mismatches = {
+              key: (component.get(key), value)
+              for key, value in expected_component.items()
+              if component.get(key) != value
+          }
+          if component_mismatches:
+              raise SystemExit(
+                  f"staged Gradle module coordinate mismatch: "
+                  f"{component_mismatches}"
+              )
+
+          staging = Path(sys.argv[2])
+          checksum = r"(?:md5|sha1|sha256|sha512)"
+          version_pattern = re.escape(version)
+          allowed = re.compile(
+              rf"^io/actrium/actr/(?:"
+              rf"maven-metadata\.xml(?:\.{checksum})?"
+              rf"|{version_pattern}/actr-{version_pattern}\."
+              rf"(?:aar|pom|module)(?:\.{checksum})?"
+              rf")$"
+          )
+          files = sorted(path for path in staging.rglob("*") if path.is_file())
+          unexpected = [
+              path.relative_to(staging).as_posix()
+              for path in files
+              if not allowed.fullmatch(path.relative_to(staging).as_posix())
+          ]
+          if unexpected:
+              raise SystemExit(f"unexpected staged Maven files: {unexpected}")
+          if not files:
+              raise SystemExit("staged Maven repository is empty")
+
+          algorithms = {
+              "md5": hashlib.md5,
+              "sha1": hashlib.sha1,
+              "sha256": hashlib.sha256,
+              "sha512": hashlib.sha512,
+          }
+          for sidecar in files:
+              algorithm = sidecar.suffix.removeprefix(".")
+              if algorithm not in algorithms:
+                  continue
+              target = sidecar.with_suffix("")
+              if not target.is_file():
+                  raise SystemExit(f"checksum target is missing for {sidecar}")
+              expected = algorithms[algorithm](target.read_bytes()).hexdigest()
+              actual = sidecar.read_text().strip()
+              if actual != expected:
+                  raise SystemExit(
+                      f"invalid {algorithm} checksum for "
+                      f"{target.relative_to(staging)}: expected {expected}, got {actual}"
+                  )
+          PY
+
+      - name: Publish Kotlin Maven package, tag, and release
+        if: steps.probe.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
           PRE_VERSION: ${{ needs.context.outputs.pre_release_version }}
           SYNC_REPO: ${{ needs.context.outputs.kotlin_sync_repo }}
           SOURCE_REPO: ${{ needs.context.outputs.repository }}
@@ -1220,13 +1739,471 @@ jobs:
         run: |
           set -euo pipefail
           sync_tag="v${PRE_VERSION}"
+          package_actor=$(gh api user --jq .login)
+          maven_repo="${SYNC_REPO,,}"
+          maven_base="https://maven.pkg.github.com/${maven_repo}/io/actrium/actr/${PRE_VERSION}/actr-${PRE_VERSION}"
+          probe_dir=$(mktemp -d)
+
+          validate_maven_pom() {
+            PRE_VERSION="$PRE_VERSION" \
+            SOURCE_REPO="$SOURCE_REPO" \
+            SOURCE_TAG="$SOURCE_TAG" \
+            SOURCE_SHA="$SOURCE_SHA" \
+              python3 - "$1" <<'PY'
+          from __future__ import annotations
+
+          import os
+          import sys
+          from xml.etree import ElementTree
+
+          root = ElementTree.parse(sys.argv[1]).getroot()
+          actual_coordinate = (
+              root.findtext("{*}groupId"),
+              root.findtext("{*}artifactId"),
+              root.findtext("{*}version"),
+          )
+          expected_coordinate = ("io.actrium", "actr", os.environ["PRE_VERSION"])
+          if actual_coordinate != expected_coordinate:
+              raise SystemExit(
+                  f"existing Maven coordinate mismatch: expected {expected_coordinate}, "
+                  f"got {actual_coordinate}"
+              )
+
+          properties = root.find("{*}properties")
+          actual_properties = (
+              {}
+              if properties is None
+              else {child.tag.rsplit("}", 1)[-1]: child.text for child in properties}
+          )
+          expected_properties = {
+              "actr.source.repository": os.environ["SOURCE_REPO"],
+              "actr.source.tag": os.environ["SOURCE_TAG"],
+              "actr.source.sha": os.environ["SOURCE_SHA"],
+          }
+          mismatches = {
+              key: (actual_properties.get(key), value)
+              for key, value in expected_properties.items()
+              if actual_properties.get(key) != value
+          }
+          if mismatches:
+              raise SystemExit(f"existing Maven provenance mismatch: {mismatches}")
+          PY
+          }
+
+          probe_maven() {
+            local pom_status aar_status
+            pom_status=$(curl --silent --show-error --location \
+              --retry 3 --retry-all-errors --retry-delay 2 \
+              --user "${package_actor}:${GH_TOKEN}" \
+              --header 'Cache-Control: no-cache' \
+              --output "$probe_dir/actr.pom" \
+              --write-out '%{http_code}' \
+              "${maven_base}.pom")
+            aar_status=$(curl --silent --show-error --location \
+              --retry 3 --retry-all-errors --retry-delay 2 \
+              --user "${package_actor}:${GH_TOKEN}" \
+              --header 'Cache-Control: no-cache' \
+              --output "$probe_dir/actr.aar" \
+              --write-out '%{http_code}' \
+              "${maven_base}.aar")
+
+            if [[ "$pom_status" == "200" ]]; then
+              validate_maven_pom "$probe_dir/actr.pom"
+            fi
+            if [[ "$pom_status" == "200" && "$aar_status" == "200" ]]; then
+              maven_probe_state=published
+            elif [[ "$pom_status" == "404" && "$aar_status" == "404" ]]; then
+              maven_probe_state=missing
+            elif [[ "$pom_status" =~ ^(200|404)$ && "$aar_status" =~ ^(200|404)$ ]]; then
+              maven_probe_state="partial:${pom_status}:${aar_status}"
+            else
+              maven_probe_state="inaccessible:${pom_status}:${aar_status}"
+            fi
+          }
+
+          fetch_maven_file() {
+            local relative_path=$1 destination=$2
+            maven_http_status=$(curl --silent --show-error --location \
+              --retry 3 --retry-all-errors --retry-delay 2 \
+              --user "${package_actor}:${GH_TOKEN}" \
+              --header 'Cache-Control: no-cache' \
+              --output "$destination" \
+              --write-out '%{http_code}' \
+              "https://maven.pkg.github.com/${maven_repo}/${relative_path}")
+          }
+
+          upload_maven_file() {
+            local source_file=$1 relative_path=$2 upload_status
+            upload_status=$(curl --silent --show-error \
+              --retry 3 --retry-all-errors --retry-delay 2 \
+              --user "${package_actor}:${GH_TOKEN}" \
+              --request PUT \
+              --upload-file "$source_file" \
+              --output "$probe_dir/upload-response" \
+              --write-out '%{http_code}' \
+              "https://maven.pkg.github.com/${maven_repo}/${relative_path}")
+            case "$upload_status" in
+              200|201|204) ;;
+              *)
+                echo "::error::Maven upload failed for ${relative_path} (HTTP ${upload_status})"
+                exit 1
+                ;;
+            esac
+          }
+
+          wait_for_maven_file() {
+            local relative_path=$1 destination=$2 attempt
+            for attempt in {1..12}; do
+              fetch_maven_file "$relative_path" "$destination"
+              if [[ "$maven_http_status" == "200" ]]; then
+                return
+              fi
+              [[ "$maven_http_status" == "404" ]] || {
+                echo "::error::Maven probe failed for ${relative_path} (HTTP ${maven_http_status})"
+                exit 1
+              }
+              echo "Waiting for Maven file ${relative_path} (attempt ${attempt})"
+              sleep 5
+            done
+            echo "::error::Maven file ${relative_path} did not become visible"
+            exit 1
+          }
+
+          reconcile_maven_checksums() {
+            local canonical_file=$1 relative_path=$2 algorithm checksum
+            local checksum_file checksum_path remote_checksum_file actual_checksum
+            local checksum_verified attempt
+            for algorithm in md5 sha1 sha256 sha512; do
+              case "$algorithm" in
+                md5) checksum=$(md5sum "$canonical_file" | awk '{print $1}') ;;
+                sha1) checksum=$(sha1sum "$canonical_file" | awk '{print $1}') ;;
+                sha256) checksum=$(sha256sum "$canonical_file" | awk '{print $1}') ;;
+                sha512) checksum=$(sha512sum "$canonical_file" | awk '{print $1}') ;;
+              esac
+              checksum_file="$probe_dir/$(basename "$relative_path").${algorithm}"
+              checksum_path="${relative_path}.${algorithm}"
+              remote_checksum_file="$probe_dir/remote-$(basename "$checksum_path")"
+              printf '%s\n' "$checksum" > "$checksum_file"
+              fetch_maven_file "$checksum_path" "$remote_checksum_file"
+              checksum_verified=false
+              case "$maven_http_status" in
+                200)
+                  actual_checksum=$(tr -d '[:space:]' < "$remote_checksum_file")
+                  [[ "$actual_checksum" == "$checksum" ]] && checksum_verified=true
+                  ;;
+                404) ;;
+                *)
+                  echo "::error::Maven checksum probe failed for ${checksum_path} (HTTP ${maven_http_status})"
+                  exit 1
+                  ;;
+              esac
+              if [[ "$checksum_verified" != "true" ]]; then
+                upload_maven_file "$checksum_file" "$checksum_path"
+                for attempt in {1..12}; do
+                  fetch_maven_file "$checksum_path" "$remote_checksum_file"
+                  if [[ "$maven_http_status" == "200" ]]; then
+                    actual_checksum=$(tr -d '[:space:]' < "$remote_checksum_file")
+                    if [[ "$actual_checksum" == "$checksum" ]]; then
+                      checksum_verified=true
+                      break
+                    fi
+                  elif [[ "$maven_http_status" != "404" ]]; then
+                    echo "::error::Maven checksum probe failed for ${checksum_path} (HTTP ${maven_http_status})"
+                    exit 1
+                  fi
+                  echo "Waiting for Maven checksum ${checksum_path} (attempt ${attempt})"
+                  sleep 5
+                done
+              fi
+              [[ "$checksum_verified" == "true" ]] || {
+                echo "::error::Maven checksum ${checksum_path} did not become consistent"
+                exit 1
+              }
+            done
+          }
+
+          reconcile_maven_primary() {
+            local staged_file=$1 relative_path canonical_file
+            relative_path=${staged_file#kotlin-maven/}
+            canonical_file="$probe_dir/canonical-$(basename "$staged_file")"
+            fetch_maven_file "$relative_path" "$canonical_file"
+            case "$maven_http_status" in
+              200) ;;
+              404)
+                upload_maven_file "$staged_file" "$relative_path"
+                wait_for_maven_file "$relative_path" "$canonical_file"
+                ;;
+              *)
+                echo "::error::Maven probe failed for ${relative_path} (HTTP ${maven_http_status})"
+                exit 1
+                ;;
+            esac
+            if [[ "$staged_file" == *.pom ]]; then
+              validate_maven_pom "$canonical_file"
+            fi
+            reconcile_maven_checksums "$canonical_file" "$relative_path"
+          }
+
+          canonicalize_gradle_module() {
+            local input_module=$1 canonical_aar=$2 output_module=$3 mode=$4
+            PRE_VERSION="$PRE_VERSION" python3 - \
+              "$input_module" "$canonical_aar" "$output_module" "$mode" <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          input_path, aar_path, output_path = map(Path, sys.argv[1:4])
+          mode = sys.argv[4]
+          version = os.environ["PRE_VERSION"]
+          module = json.loads(input_path.read_text())
+          if not isinstance(module, dict) or module.get("formatVersion") != "1.1":
+              raise SystemExit(
+                  f"unsupported Gradle module formatVersion: "
+                  f"{module.get('formatVersion') if isinstance(module, dict) else None}"
+              )
+          component = module.get("component", {})
+          if not isinstance(component, dict):
+              raise SystemExit("Gradle module component must be an object")
+          expected_component = {
+              "group": "io.actrium",
+              "module": "actr",
+              "version": version,
+          }
+          mismatches = {
+              key: (component.get(key), value)
+              for key, value in expected_component.items()
+              if component.get(key) != value
+          }
+          if mismatches:
+              raise SystemExit(f"Gradle module coordinate mismatch: {mismatches}")
+
+          payload = aar_path.read_bytes()
+          expected_file = {
+              "name": f"actr-{version}.aar",
+              "url": f"actr-{version}.aar",
+              "size": len(payload),
+              "sha512": hashlib.sha512(payload).hexdigest(),
+              "sha256": hashlib.sha256(payload).hexdigest(),
+              "sha1": hashlib.sha1(payload).hexdigest(),
+              "md5": hashlib.md5(payload).hexdigest(),
+          }
+          file_count = 0
+          variants = module.get("variants")
+          if not isinstance(variants, list) or not variants:
+              raise SystemExit("Gradle module variants must be a non-empty array")
+          for variant in variants:
+              if not isinstance(variant, dict):
+                  raise SystemExit("Gradle module variant must be an object")
+              files = variant.get("files", [])
+              if not isinstance(files, list):
+                  raise SystemExit("Gradle module variant files must be an array")
+              for artifact in files:
+                  if not isinstance(artifact, dict):
+                      raise SystemExit("Gradle module artifact must be an object")
+                  if artifact.get("name") != expected_file["name"] or artifact.get("url") != expected_file["url"]:
+                      raise SystemExit(f"unexpected Gradle module artifact: {artifact}")
+                  file_count += 1
+                  if mode == "rewrite":
+                      artifact.update(expected_file)
+                  else:
+                      file_mismatches = {
+                          key: (artifact.get(key), value)
+                          for key, value in expected_file.items()
+                          if artifact.get(key) != value
+                      }
+                      if file_mismatches:
+                          raise SystemExit(
+                              f"Gradle module AAR metadata mismatch: {file_mismatches}"
+                          )
+          if file_count == 0:
+              raise SystemExit("Gradle module metadata contains no AAR artifacts")
+          output_path.write_text(json.dumps(module, indent=2) + "\n")
+          PY
+          }
+
+          compare_gradle_modules() {
+            python3 - "$1" "$2" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          expected = json.loads(Path(sys.argv[1]).read_text())
+          actual = json.loads(Path(sys.argv[2]).read_text())
+          if actual != expected:
+              raise SystemExit(
+                  "published Gradle module semantics differ from the staged validation module"
+              )
+          PY
+          }
+
+          reconcile_gradle_module() {
+            local staged_module="kotlin-maven/io/actrium/actr/${PRE_VERSION}/actr-${PRE_VERSION}.module"
+            local relative_path=${staged_module#kotlin-maven/}
+            local canonical_aar="$probe_dir/canonical-actr-${PRE_VERSION}.aar"
+            local expected_module="$probe_dir/expected-actr-${PRE_VERSION}.module"
+            local canonical_module="$probe_dir/canonical-actr-${PRE_VERSION}.module"
+            local remote_module="$probe_dir/remote-actr-${PRE_VERSION}.module"
+            test -f "$staged_module"
+            test -f "$canonical_aar"
+            canonicalize_gradle_module \
+              "$staged_module" "$canonical_aar" "$expected_module" rewrite
+            fetch_maven_file "$relative_path" "$remote_module"
+            case "$maven_http_status" in
+              200)
+                canonicalize_gradle_module \
+                  "$remote_module" "$canonical_aar" "$canonical_module" validate
+                compare_gradle_modules "$expected_module" "$canonical_module"
+                ;;
+              404)
+                upload_maven_file "$expected_module" "$relative_path"
+                wait_for_maven_file "$relative_path" "$remote_module"
+                canonicalize_gradle_module \
+                  "$remote_module" "$canonical_aar" "$canonical_module" validate
+                compare_gradle_modules "$expected_module" "$canonical_module"
+                ;;
+              *)
+                echo "::error::Gradle module probe failed for ${relative_path} (HTTP ${maven_http_status})"
+                exit 1
+                ;;
+            esac
+            reconcile_maven_checksums "$remote_module" "$relative_path"
+          }
+
+          ensure_maven_metadata() {
+            local relative_path="io/actrium/actr/maven-metadata.xml"
+            local staged_metadata="kotlin-maven/${relative_path}"
+            local remote_metadata="$probe_dir/remote-maven-metadata.xml"
+            local merged_metadata="$probe_dir/merged-maven-metadata.xml"
+            local metadata_visible=false attempt
+            test -f "$staged_metadata"
+            fetch_maven_file "$relative_path" "$remote_metadata"
+            case "$maven_http_status" in
+              200) remote_input="$remote_metadata" ;;
+              404) remote_input="" ;;
+              *)
+                echo "::error::Maven metadata probe failed (HTTP ${maven_http_status})"
+                exit 1
+                ;;
+            esac
+
+            PRE_VERSION="$PRE_VERSION" python3 - \
+              "$remote_input" "$staged_metadata" "$merged_metadata" <<'PY'
+          from __future__ import annotations
+
+          import os
+          import shutil
+          import sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          remote_path, staged_path, output_path = map(Path, sys.argv[1:])
+          version = os.environ["PRE_VERSION"]
+          source_path = remote_path if str(remote_path) and remote_path.is_file() else staged_path
+          tree = ElementTree.parse(source_path)
+          root = tree.getroot()
+          namespace = root.tag.rsplit("}", 1)[0] + "}" if "}" in root.tag else ""
+
+          def child(parent: ElementTree.Element, name: str) -> ElementTree.Element | None:
+              return parent.find(f"{namespace}{name}")
+
+          coordinate = (child(root, "groupId"), child(root, "artifactId"))
+          actual_coordinate = tuple(item.text if item is not None else None for item in coordinate)
+          if actual_coordinate != ("io.actrium", "actr"):
+              raise SystemExit(f"Maven metadata coordinate mismatch: {actual_coordinate}")
+          versioning = child(root, "versioning")
+          if versioning is None:
+              versioning = ElementTree.SubElement(root, f"{namespace}versioning")
+          versions = child(versioning, "versions")
+          if versions is None:
+              versions = ElementTree.SubElement(versioning, f"{namespace}versions")
+          existing_versions = [item.text for item in versions.findall(f"{namespace}version")]
+          if version in existing_versions:
+              shutil.copyfile(source_path, output_path)
+          else:
+              ElementTree.SubElement(versions, f"{namespace}version").text = version
+              latest = child(versioning, "latest")
+              if latest is None:
+                  latest = ElementTree.SubElement(versioning, f"{namespace}latest")
+              if not latest.text:
+                  latest.text = version
+              updated = child(versioning, "lastUpdated")
+              if updated is None:
+                  updated = ElementTree.SubElement(versioning, f"{namespace}lastUpdated")
+              updated.text = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+              ElementTree.indent(tree, space="  ")
+              tree.write(output_path, encoding="utf-8", xml_declaration=True)
+          PY
+
+            if [[ -z "$remote_input" ]] || ! cmp -s "$remote_metadata" "$merged_metadata"; then
+              upload_maven_file "$merged_metadata" "$relative_path"
+            fi
+
+            for attempt in {1..12}; do
+              fetch_maven_file "$relative_path" "$remote_metadata"
+              if [[ "$maven_http_status" == "200" ]] && \
+                PRE_VERSION="$PRE_VERSION" python3 - "$remote_metadata" <<'PY'
+          import os
+          import sys
+          from xml.etree import ElementTree
+
+          root = ElementTree.parse(sys.argv[1]).getroot()
+          coordinate = (root.findtext("{*}groupId"), root.findtext("{*}artifactId"))
+          versions = [item.text for item in root.findall("{*}versioning/{*}versions/{*}version")]
+          raise SystemExit(
+              0
+              if coordinate == ("io.actrium", "actr")
+              and os.environ["PRE_VERSION"] in versions
+              else 1
+          )
+          PY
+              then
+                metadata_visible=true
+                break
+              fi
+              echo "Waiting for Maven metadata to include ${PRE_VERSION} (attempt ${attempt})"
+              sleep 5
+            done
+            [[ "$metadata_visible" == "true" ]] || {
+              echo "::error::Published Maven metadata does not contain ${PRE_VERSION}"
+              exit 1
+            }
+            reconcile_maven_checksums "$remote_metadata" "$relative_path"
+          }
+
+          probe_maven
+          [[ "$maven_probe_state" != inaccessible:* ]] || {
+            echo "::error::Maven package is inaccessible (${maven_probe_state})"
+            exit 1
+          }
+          echo "Reconciling Maven package io.actrium:actr:${PRE_VERSION} from state ${maven_probe_state}"
+          reconcile_maven_primary "kotlin-maven/io/actrium/actr/${PRE_VERSION}/actr-${PRE_VERSION}.aar"
+          reconcile_gradle_module
+          reconcile_maven_primary "kotlin-maven/io/actrium/actr/${PRE_VERSION}/actr-${PRE_VERSION}.pom"
+          ensure_maven_metadata
+          probe_maven
+          [[ "$maven_probe_state" == "published" ]] || {
+            echo "::error::Maven package did not become complete; final state ${maven_probe_state}"
+            exit 1
+          }
+
+          canonical_aar="$probe_dir/actr.aar"
+          maven_aar_checksum=$(sha256sum "$canonical_aar" | awk '{print $1}')
+          current_native_asset=kotlin-inputs/actr-kotlin-native.zip
+          current_native_checksum=$(sha256sum "$current_native_asset" | awk '{print $1}')
+
           if git -C kotlin-sync rev-parse -q --verify "refs/tags/${sync_tag}" >/dev/null 2>&1; then
             git -C kotlin-sync checkout --detach "refs/tags/${sync_tag}"
-            python3 - <<'PY'
+            native_checksum=$(MAVEN_AAR_CHECKSUM="$maven_aar_checksum" python3 - <<'PY'
           from __future__ import annotations
 
           import json
           import os
+          import re
           from pathlib import Path
 
           metadata = json.loads(Path("kotlin-sync/release-metadata.json").read_text())
@@ -1237,6 +2214,7 @@ jobs:
               "source_sha": os.environ["SOURCE_SHA"],
               "coordinate": f"io.actrium:actr:{os.environ['PRE_VERSION']}",
               "android_abis": ["arm64-v8a", "x86_64"],
+              "maven_aar_sha256": os.environ["MAVEN_AAR_CHECKSUM"],
               "prerelease": True,
           }
           mismatches = {
@@ -1246,16 +2224,19 @@ jobs:
           }
           if mismatches:
               raise SystemExit(f"existing Kotlin package-sync tag metadata mismatch: {mismatches}")
+          native_checksum = metadata.get("native_zip_sha256", "")
+          if not re.fullmatch(r"[0-9a-f]{64}", native_checksum):
+              raise SystemExit(f"invalid Kotlin native ZIP checksum in tag: {native_checksum}")
+          print(native_checksum)
           PY
-            echo "push_tag=false" >> "$GITHUB_OUTPUT"
+            )
+            push_tag=false
             echo "Reusing immutable Kotlin package-sync tag ${sync_tag}"
           else
-            (
-              cd source/bindings/kotlin
-              ACTR_RELEASE_REPOSITORY="$SYNC_REPO" ./scripts/package-binary.sh "$sync_tag"
-            )
-
-            python3 - <<'PY'
+            native_checksum="$current_native_checksum"
+            MAVEN_AAR_CHECKSUM="$maven_aar_checksum" \
+            NATIVE_ZIP_CHECKSUM="$native_checksum" \
+              python3 - <<'PY'
           from __future__ import annotations
 
           import json
@@ -1270,12 +2251,13 @@ jobs:
               "source_sha": os.environ["SOURCE_SHA"],
               "coordinate": f"io.actrium:actr:{os.environ['PRE_VERSION']}",
               "android_abis": ["arm64-v8a", "x86_64"],
+              "maven_aar_sha256": os.environ["MAVEN_AAR_CHECKSUM"],
+              "native_zip_sha256": os.environ["NATIVE_ZIP_CHECKSUM"],
               "generated_at": datetime.now(timezone.utc).isoformat(),
               "prerelease": True,
           }
           Path("kotlin-sync/release-metadata.json").write_text(json.dumps(payload, indent=2) + "\n")
           PY
-
             (
               cd kotlin-sync
               git checkout --detach HEAD
@@ -1285,32 +2267,103 @@ jobs:
               git commit -m "chore(release): publish ${sync_tag}"
               git tag "$sync_tag"
             )
-            echo "push_tag=true" >> "$GITHUB_OUTPUT"
+            push_tag=true
           fi
 
-      - name: Publish Kotlin Maven package, tag, and release
-        if: steps.probe.outputs.publish == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
-          PRE_VERSION: ${{ needs.context.outputs.pre_release_version }}
-          SYNC_REPO: ${{ needs.context.outputs.kotlin_sync_repo }}
-          PUSH_TAG: ${{ steps.sync-prepare.outputs.push_tag }}
-          REPLACE_ASSETS: ${{ inputs.replace_assets }}
-        run: |
-          set -euo pipefail
-          sync_tag="v${PRE_VERSION}"
-          if [[ "$PUSH_TAG" == "true" ]]; then
-            package_actor=$(gh api user --jq .login)
-            (
-              cd source/bindings/kotlin
-              GITHUB_ACTOR="$package_actor" \
-              GITHUB_TOKEN="$GH_TOKEN" \
-              ./gradlew :actr-kotlin:publish \
-                --no-daemon \
-                -PactrGroup=io.actrium \
-                -PactrVersion="${PRE_VERSION}" \
-                -PactrPublishUrl="https://maven.pkg.github.com/${SYNC_REPO}"
-            )
+          release_exists=false
+          release_is_draft=false
+          aar_exists=false
+          native_exists=false
+          aar_needs_clobber=false
+          native_needs_clobber=false
+          release_dir=$(mktemp -d)
+          if gh release view "$sync_tag" --repo "$SYNC_REPO" >/dev/null 2>&1; then
+            release_exists=true
+            release_is_draft=$(gh release view "$sync_tag" \
+              --repo "$SYNC_REPO" \
+              --json isDraft \
+              --jq .isDraft)
+            release_assets=$(gh release view "$sync_tag" --repo "$SYNC_REPO" --json assets --jq '.assets[].name')
+            if grep -Fxq actr-kotlin-release.aar <<<"$release_assets"; then
+              aar_exists=true
+              if gh release download "$sync_tag" \
+                --repo "$SYNC_REPO" \
+                --pattern actr-kotlin-release.aar \
+                --dir "$release_dir" \
+                --clobber; then
+                if [[ "$(sha256sum "$release_dir/actr-kotlin-release.aar" | awk '{print $1}')" != "$maven_aar_checksum" ]]; then
+                  if [[ "$release_is_draft" == "true" ]]; then
+                    echo "Replacing incomplete Kotlin AAR draft asset with canonical Maven bytes"
+                    aar_exists=false
+                    aar_needs_clobber=true
+                  else
+                    echo "::error::Published Kotlin AAR differs from the canonical Maven AAR"
+                    exit 1
+                  fi
+                fi
+              elif [[ "$release_is_draft" == "true" ]]; then
+                echo "Replacing unreadable Kotlin AAR draft asset with canonical Maven bytes"
+                aar_exists=false
+                aar_needs_clobber=true
+              else
+                echo "::error::Published Kotlin AAR could not be downloaded"
+                exit 1
+              fi
+            fi
+            if grep -Fxq actr-kotlin-native.zip <<<"$release_assets"; then
+              native_exists=true
+              if gh release download "$sync_tag" \
+                --repo "$SYNC_REPO" \
+                --pattern actr-kotlin-native.zip \
+                --dir "$release_dir" \
+                --clobber; then
+                if [[ "$(sha256sum "$release_dir/actr-kotlin-native.zip" | awk '{print $1}')" != "$native_checksum" ]]; then
+                  if [[ "$release_is_draft" == "true" ]]; then
+                    echo "Replacing incomplete Kotlin native ZIP draft asset with immutable tag bytes"
+                    native_exists=false
+                    native_needs_clobber=true
+                  else
+                    echo "::error::Published Kotlin native ZIP differs from the immutable tag metadata"
+                    exit 1
+                  fi
+                fi
+              elif [[ "$release_is_draft" == "true" ]]; then
+                echo "Replacing unreadable Kotlin native ZIP draft asset with immutable tag bytes"
+                native_exists=false
+                native_needs_clobber=true
+              else
+                echo "::error::Published Kotlin native ZIP could not be downloaded"
+                exit 1
+              fi
+            fi
+          fi
+
+          canonical_dir=$(mktemp -d)
+          aar_asset="$canonical_dir/actr-kotlin-release.aar"
+          cp "$canonical_aar" "$aar_asset"
+          if [[ "$native_exists" == "true" ]]; then
+            native_asset="$release_dir/actr-kotlin-native.zip"
+          elif [[ "$current_native_checksum" == "$native_checksum" ]]; then
+            native_asset="$current_native_asset"
+          else
+            recovery_name="actr-kotlin-native.${native_checksum}.zip"
+            if ! gh release download "$SOURCE_TAG" \
+              --repo "$SOURCE_REPO" \
+              --pattern "$recovery_name" \
+              --dir "$canonical_dir" \
+              --clobber; then
+              echo "::error::Kotlin native ZIP recovery asset ${recovery_name} is unavailable"
+              exit 1
+            fi
+            native_asset="$canonical_dir/actr-kotlin-native.zip"
+            cp "$canonical_dir/$recovery_name" "$native_asset"
+          fi
+          [[ "$(sha256sum "$native_asset" | awk '{print $1}')" == "$native_checksum" ]] || {
+            echo "::error::Kotlin native ZIP does not match immutable tag metadata"
+            exit 1
+          }
+
+          if [[ "$push_tag" == "true" ]]; then
             basic_auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
             echo "::add-mask::${basic_auth}"
             git -C kotlin-sync \
@@ -1318,23 +2371,35 @@ jobs:
               push origin "refs/tags/${sync_tag}"
           fi
 
-          if gh release view "$sync_tag" --repo "$SYNC_REPO" >/dev/null 2>&1; then
-            gh release edit "$sync_tag" \
-              --repo "$SYNC_REPO" \
-              --title "$sync_tag" \
-              --notes-file kotlin-sync/release-metadata.json \
+          if [[ "$release_exists" == "true" ]]; then
+            if [[ "$aar_exists" == "true" ]]; then
+              echo "Reusing immutable Kotlin package-sync asset actr-kotlin-release.aar"
+            else
+              aar_upload_args=(--repo "$SYNC_REPO")
+              [[ "$aar_needs_clobber" == "true" ]] && aar_upload_args+=(--clobber)
+              gh release upload "$sync_tag" "$aar_asset" "${aar_upload_args[@]}"
+            fi
+
+            if [[ "$native_exists" == "true" ]]; then
+              echo "Reusing immutable Kotlin package-sync asset actr-kotlin-native.zip"
+            else
+              native_upload_args=(--repo "$SYNC_REPO")
+              [[ "$native_needs_clobber" == "true" ]] && native_upload_args+=(--clobber)
+              gh release upload "$sync_tag" "$native_asset" "${native_upload_args[@]}"
+            fi
+
+            edit_args=(
+              --repo "$SYNC_REPO"
+              --title "$sync_tag"
+              --notes-file kotlin-sync/release-metadata.json
               --prerelease
-            upload_args=(--repo "$SYNC_REPO")
-            [[ "$REPLACE_ASSETS" == "true" ]] && upload_args+=(--clobber)
-            gh release upload "$sync_tag" \
-              source/bindings/kotlin/dist/actr-kotlin-native.zip \
-              source/bindings/kotlin/actr-kotlin/build/outputs/aar/actr-kotlin-release.aar \
-              "${upload_args[@]}"
+            )
+            [[ "$release_is_draft" == "true" ]] && edit_args+=(--draft=false)
+            gh release edit "$sync_tag" "${edit_args[@]}"
           else
-            gh release create "$sync_tag" \
-              source/bindings/kotlin/dist/actr-kotlin-native.zip \
-              source/bindings/kotlin/actr-kotlin/build/outputs/aar/actr-kotlin-release.aar \
+            gh release create "$sync_tag" "$aar_asset" "$native_asset" \
               --repo "$SYNC_REPO" \
+              --verify-tag \
               --title "$sync_tag" \
               --notes-file kotlin-sync/release-metadata.json \
               --prerelease

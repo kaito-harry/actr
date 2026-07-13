@@ -81,7 +81,7 @@ release_tag() {
 
 version_from_release_tag() {
   local tag=$1
-  local version
+  local version version_without_build
   case "$tag" in
     validation-v*) version=${tag#validation-v} ;;
     v*) version=${tag#v} ;;
@@ -89,7 +89,8 @@ version_from_release_tag() {
   esac
 
   is_strict_semver "$version" || fail "Unsupported release tag: $tag"
-  if [[ "$tag" == validation-v* && "$version" != *-* ]]; then
+  version_without_build=${version%%+*}
+  if [[ "$tag" == validation-v* && "$version_without_build" != *-* ]]; then
     fail "Unsupported release tag: $tag"
   fi
 

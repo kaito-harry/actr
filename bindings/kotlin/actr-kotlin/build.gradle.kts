@@ -20,7 +20,12 @@ version =
 val publishUrl =
     providers
         .gradleProperty("actrPublishUrl")
-        .orElse("https://maven.pkg.github.com/Actrium/actr-kotlin-package-sync")
+        .orElse("https://maven.pkg.github.com/actrium/actr-kotlin-package-sync")
+
+val actrSourceRepository = providers.gradleProperty("actrSourceRepository")
+val actrSourceTag = providers.gradleProperty("actrSourceTag")
+val actrSourceSha = providers.gradleProperty("actrSourceSha")
+val actrValidationStagingUrl = providers.gradleProperty("actrValidationStagingUrl")
 
 val githubPackagesUsername =
     providers
@@ -86,6 +91,9 @@ publishing {
                 name.set("actr")
                 description.set("Kotlin/Android SDK for the Actrium framework")
                 url.set("https://github.com/Actrium/actr-kotlin-package-sync")
+                actrSourceRepository.orNull?.let { properties.put("actr.source.repository", it) }
+                actrSourceTag.orNull?.let { properties.put("actr.source.tag", it) }
+                actrSourceSha.orNull?.let { properties.put("actr.source.sha", it) }
 
                 licenses {
                     license {
@@ -98,12 +106,19 @@ publishing {
     }
 
     repositories {
-        maven {
-            name = "GitHubPackages"
-            url = uri(publishUrl.get())
-            credentials {
-                username = githubPackagesUsername.orNull
-                password = githubPackagesToken.orNull
+        if (actrValidationStagingUrl.isPresent) {
+            maven {
+                name = "validationStaging"
+                url = uri(actrValidationStagingUrl.get())
+            }
+        } else {
+            maven {
+                name = "GitHubPackages"
+                url = uri(publishUrl.get())
+                credentials {
+                    username = githubPackagesUsername.orNull
+                    password = githubPackagesToken.orNull
+                }
             }
         }
     }

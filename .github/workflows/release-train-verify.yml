@@ -9,6 +9,8 @@ on:
       - ".github/workflows/release-asset-validation.yml"
       - ".github/workflows/release-train.yml"
       - ".github/workflows/release-train-verify.yml"
+      - ".github/workflows/_actr-cli-release.yml"
+      - ".github/workflows/_actrix-release.yml"
       - ".github/workflows/_protoc-plugins-release.yml"
       - "scripts/release-actr-cli.sh"
       - "scripts/release-train.sh"
@@ -26,6 +28,8 @@ on:
       - "bindings/typescript/Cargo.toml"
       - "bindings/typescript/Cargo.lock"
       - "bindings/typescript/package.json"
+      - "bindings/swift/scripts/package-binary.sh"
+      - "bindings/kotlin/actr-kotlin/build.gradle.kts"
   pull_request:
     branches:
       - main
@@ -34,6 +38,8 @@ on:
       - ".github/workflows/release-asset-validation.yml"
       - ".github/workflows/release-train.yml"
       - ".github/workflows/release-train-verify.yml"
+      - ".github/workflows/_actr-cli-release.yml"
+      - ".github/workflows/_actrix-release.yml"
       - ".github/workflows/_protoc-plugins-release.yml"
       - "scripts/release-actr-cli.sh"
       - "scripts/release-train.sh"
@@ -51,6 +57,8 @@ on:
       - "bindings/typescript/Cargo.toml"
       - "bindings/typescript/Cargo.lock"
       - "bindings/typescript/package.json"
+      - "bindings/swift/scripts/package-binary.sh"
+      - "bindings/kotlin/actr-kotlin/build.gradle.kts"
 
 concurrency:
   group: release-train-basic-verify-${{ github.ref }}

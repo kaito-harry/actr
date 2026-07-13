@@ -1335,10 +1335,13 @@ test_cli_validation_tag_requires_strict_semver() {
   local version
   version=$(version_from_release_tag validation-v1.2.3-rc.1)
   assert_eq "1.2.3-rc.1" "$version" "validation tag version"
+  version=$(version_from_release_tag validation-v1.2.3-rc.1+build.x)
+  assert_eq "1.2.3-rc.1+build.x" "$version" "validation tag version with build metadata"
 
   local invalid_tag
   for invalid_tag in \
     validation-v1.2.3 \
+    validation-v1.2.3+build-x \
     validation-v01.2.3-rc.1 \
     validation-v1.2.3-rc.01 \
     validation-v1.2.3-feature..1; do

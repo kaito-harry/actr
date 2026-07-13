@@ -30,12 +30,14 @@ jobs:
           ref: ${{ inputs.source_ref }}
           path: source
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/checkout@v5
         if: inputs.publish
         with:
           ref: ${{ inputs.tag }}
           path: tag-source
           fetch-depth: 0
+          persist-credentials: false
       - name: Validate tag and workspace version
         id: release
         env:
@@ -92,9 +94,11 @@ jobs:
         with:
           ref: ${{ inputs.source_ref }}
           path: source
+          persist-credentials: false
       - uses: actions/checkout@v5
         with:
           path: automation
+          persist-credentials: false
 
       - name: Install protoc
         uses: arduino/setup-protoc@v3
@@ -182,6 +186,7 @@ jobs:
         with:
           ref: ${{ inputs.source_ref }}
           path: source
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
