@@ -638,7 +638,7 @@ jobs:
               npm/linux-arm64-gnu \
               npm/linux-arm64-musl \
               npm/win32-x64-msvc; do
-              npm pack "$pkg" --pack-destination "$dist"
+              npm pack "./$pkg" --pack-destination "$dist"
             done
             npm pack --pack-destination "$dist" --ignore-scripts
           )
