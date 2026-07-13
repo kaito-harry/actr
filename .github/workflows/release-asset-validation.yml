@@ -1688,8 +1688,8 @@ jobs:
           allowed = re.compile(
               rf"^io/actrium/actr/(?:"
               rf"maven-metadata\.xml(?:\.{checksum})?"
-              rf"|{version_pattern}/actr-{version_pattern}\."
-              rf"(?:aar|pom|module)(?:\.{checksum})?"
+              rf"|{version_pattern}/actr-{version_pattern}"
+              rf"(?:\.(?:aar|pom|module)|-sources\.jar)(?:\.{checksum})?"
               rf")$"
           )
           files = sorted(path for path in staging.rglob("*") if path.is_file())
@@ -1868,10 +1868,11 @@ jobs:
           }
 
           reconcile_maven_checksums() {
-            local canonical_file=$1 relative_path=$2 algorithm checksum
+            local canonical_file=$1 relative_path=$2
+            local algorithms=${3:-"md5 sha1 sha256 sha512"} algorithm checksum
             local checksum_file checksum_path remote_checksum_file actual_checksum
             local checksum_verified attempt
-            for algorithm in md5 sha1 sha256 sha512; do
+            for algorithm in $algorithms; do
               case "$algorithm" in
                 md5) checksum=$(md5sum "$canonical_file" | awk '{print $1}') ;;
                 sha1) checksum=$(sha1sum "$canonical_file" | awk '{print $1}') ;;
@@ -1943,9 +1944,9 @@ jobs:
           }
 
           canonicalize_gradle_module() {
-            local input_module=$1 canonical_aar=$2 output_module=$3 mode=$4
+            local input_module=$1 canonical_aar=$2 canonical_sources=$3 output_module=$4 mode=$5
             PRE_VERSION="$PRE_VERSION" python3 - \
-              "$input_module" "$canonical_aar" "$output_module" "$mode" <<'PY'
+              "$input_module" "$canonical_aar" "$canonical_sources" "$output_module" "$mode" <<'PY'
           from __future__ import annotations
 
           import hashlib
@@ -1954,8 +1955,8 @@ jobs:
           import sys
           from pathlib import Path
 
-          input_path, aar_path, output_path = map(Path, sys.argv[1:4])
-          mode = sys.argv[4]
+          input_path, aar_path, sources_path, output_path = map(Path, sys.argv[1:5])
+          mode = sys.argv[5]
           version = os.environ["PRE_VERSION"]
           module = json.loads(input_path.read_text())
           if not isinstance(module, dict) or module.get("formatVersion") != "1.1":
@@ -1979,17 +1980,27 @@ jobs:
           if mismatches:
               raise SystemExit(f"Gradle module coordinate mismatch: {mismatches}")
 
-          payload = aar_path.read_bytes()
-          expected_file = {
-              "name": f"actr-{version}.aar",
-              "url": f"actr-{version}.aar",
-              "size": len(payload),
-              "sha512": hashlib.sha512(payload).hexdigest(),
-              "sha256": hashlib.sha256(payload).hexdigest(),
-              "sha1": hashlib.sha1(payload).hexdigest(),
-              "md5": hashlib.md5(payload).hexdigest(),
+          def expected_file(path: Path, name: str) -> dict[str, str | int]:
+              payload = path.read_bytes()
+              return {
+                  "name": name,
+                  "url": name,
+                  "size": len(payload),
+                  "sha512": hashlib.sha512(payload).hexdigest(),
+                  "sha256": hashlib.sha256(payload).hexdigest(),
+                  "sha1": hashlib.sha1(payload).hexdigest(),
+                  "md5": hashlib.md5(payload).hexdigest(),
+              }
+
+          expected_files = {
+              f"actr-{version}.aar": expected_file(
+                  aar_path, f"actr-{version}.aar"
+              ),
+              f"actr-{version}-sources.jar": expected_file(
+                  sources_path, f"actr-{version}-sources.jar"
+              ),
           }
-          file_count = 0
+          seen_files: set[str] = set()
           variants = module.get("variants")
           if not isinstance(variants, list) or not variants:
               raise SystemExit("Gradle module variants must be a non-empty array")
@@ -2002,23 +2013,28 @@ jobs:
               for artifact in files:
                   if not isinstance(artifact, dict):
                       raise SystemExit("Gradle module artifact must be an object")
-                  if artifact.get("name") != expected_file["name"] or artifact.get("url") != expected_file["url"]:
+                  artifact_name = artifact.get("name")
+                  expected = expected_files.get(artifact_name)
+                  if expected is None or artifact.get("url") != expected["url"]:
                       raise SystemExit(f"unexpected Gradle module artifact: {artifact}")
-                  file_count += 1
+                  seen_files.add(artifact_name)
                   if mode == "rewrite":
-                      artifact.update(expected_file)
+                      artifact.update(expected)
                   else:
                       file_mismatches = {
                           key: (artifact.get(key), value)
-                          for key, value in expected_file.items()
+                          for key, value in expected.items()
                           if artifact.get(key) != value
                       }
                       if file_mismatches:
                           raise SystemExit(
-                              f"Gradle module AAR metadata mismatch: {file_mismatches}"
+                              f"Gradle module artifact metadata mismatch: {file_mismatches}"
                           )
-          if file_count == 0:
-              raise SystemExit("Gradle module metadata contains no AAR artifacts")
+          missing_files = sorted(set(expected_files) - seen_files)
+          if missing_files:
+              raise SystemExit(
+                  f"Gradle module metadata is missing artifacts: {missing_files}"
+              )
           output_path.write_text(json.dumps(module, indent=2) + "\n")
           PY
           }
@@ -2042,25 +2058,30 @@ jobs:
             local staged_module="kotlin-maven/io/actrium/actr/${PRE_VERSION}/actr-${PRE_VERSION}.module"
             local relative_path=${staged_module#kotlin-maven/}
             local canonical_aar="$probe_dir/canonical-actr-${PRE_VERSION}.aar"
+            local canonical_sources="$probe_dir/canonical-actr-${PRE_VERSION}-sources.jar"
             local expected_module="$probe_dir/expected-actr-${PRE_VERSION}.module"
             local canonical_module="$probe_dir/canonical-actr-${PRE_VERSION}.module"
             local remote_module="$probe_dir/remote-actr-${PRE_VERSION}.module"
             test -f "$staged_module"
             test -f "$canonical_aar"
+            test -f "$canonical_sources"
             canonicalize_gradle_module \
-              "$staged_module" "$canonical_aar" "$expected_module" rewrite
+              "$staged_module" "$canonical_aar" "$canonical_sources" \
+              "$expected_module" rewrite
             fetch_maven_file "$relative_path" "$remote_module"
             case "$maven_http_status" in
               200)
                 canonicalize_gradle_module \
-                  "$remote_module" "$canonical_aar" "$canonical_module" validate
+                  "$remote_module" "$canonical_aar" "$canonical_sources" \
+                  "$canonical_module" validate
                 compare_gradle_modules "$expected_module" "$canonical_module"
                 ;;
               404)
                 upload_maven_file "$expected_module" "$relative_path"
                 wait_for_maven_file "$relative_path" "$remote_module"
                 canonicalize_gradle_module \
-                  "$remote_module" "$canonical_aar" "$canonical_module" validate
+                  "$remote_module" "$canonical_aar" "$canonical_sources" \
+                  "$canonical_module" validate
                 compare_gradle_modules "$expected_module" "$canonical_module"
                 ;;
               *)
@@ -2170,7 +2191,7 @@ jobs:
               echo "::error::Published Maven metadata does not contain ${PRE_VERSION}"
               exit 1
             }
-            reconcile_maven_checksums "$remote_metadata" "$relative_path"
+            reconcile_maven_checksums "$remote_metadata" "$relative_path" "md5 sha1"
           }
 
           probe_maven
@@ -2180,6 +2201,7 @@ jobs:
           }
           echo "Reconciling Maven package io.actrium:actr:${PRE_VERSION} from state ${maven_probe_state}"
           reconcile_maven_primary "kotlin-maven/io/actrium/actr/${PRE_VERSION}/actr-${PRE_VERSION}.aar"
+          reconcile_maven_primary "kotlin-maven/io/actrium/actr/${PRE_VERSION}/actr-${PRE_VERSION}-sources.jar"
           reconcile_gradle_module
           reconcile_maven_primary "kotlin-maven/io/actrium/actr/${PRE_VERSION}/actr-${PRE_VERSION}.pom"
           ensure_maven_metadata

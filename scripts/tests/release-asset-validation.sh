@@ -537,17 +537,24 @@ require(
     "Kotlin Maven retries must reconcile canonical files, module metadata, and checksums",
 )
 require(
-    "Gradle module AAR metadata mismatch" in kotlin_publish
-    and 'artifact.update(expected_file)' in kotlin_publish
+    "Gradle module artifact metadata mismatch" in kotlin_publish
+    and "artifact.update(expected)" in kotlin_publish
+    and 'f"actr-{version}-sources.jar"' in kotlin_publish
+    and 'actr-${PRE_VERSION}-sources.jar"' in kotlin_publish
     and 'module.get("formatVersion") != "1.1"' in kotlin_publish
     and "compare_gradle_modules" in kotlin_publish
     and "published Gradle module semantics differ" in kotlin_publish,
-    "Kotlin retries must validate canonical module format, graph, and AAR hashes",
+    "Kotlin retries must validate canonical module format, graph, and artifact hashes",
 )
 require(
     'upload_maven_file "$checksum_file" "$checksum_path"' in kotlin_publish
     and "did not become consistent" in kotlin_publish,
     "derived Maven checksums must be repairable and verified after upload",
+)
+require(
+    'reconcile_maven_checksums "$remote_metadata" "$relative_path" "md5 sha1"'
+    in kotlin_publish,
+    "repository metadata must use the checksums supported by GitHub Packages",
 )
 require(
     "ensure_maven_metadata" in kotlin_publish
