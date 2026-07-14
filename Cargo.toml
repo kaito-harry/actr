@@ -1,6 +1,6 @@
 [package]
 name = "actr"
-version = "0.4.15"
+version = "0.4.16"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -100,7 +100,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.4.15"
+version = "0.4.16"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -113,19 +113,19 @@ collapsible_else_if = "allow"
 
 [workspace.dependencies]
 # === Internal Dependencies ===
-actr-protocol = { path = "core/protocol", version = "0.4.15" }
+actr-protocol = { path = "core/protocol", version = "0.4.16" }
 proto-fingerprint = "0.1.0"
-actr-service-compat = { path = "core/service-compat", version = "0.4.15" }
-actr-config = { path = "core/config", version = "0.4.15" }
-actr-framework = { path = "core/framework", version = "0.4.15" }
-actr-framework-protoc-codegen = { path = "tools/protoc-gen/rust", version = "0.4.15" }
-actr-runtime = { path = "core/runtime", version = "0.4.15" }
-actr-runtime-mailbox = { path = "core/runtime-mailbox", version = "0.4.15" }
-actr-hyper = { path = "core/hyper", version = "0.4.15" }
-actr-platform-traits = { path = "core/platform-traits", version = "0.4.15" }
-actr-platform-native = { path = "core/platform-native", version = "0.4.15" }
-actr-pack = { path = "core/pack", version = "0.4.15" }
-actr-mock-actrix = { path = "testing/mock-actrix", version = "0.4.15" }
+actr-service-compat = { path = "core/service-compat", version = "0.4.16" }
+actr-config = { path = "core/config", version = "0.4.16" }
+actr-framework = { path = "core/framework", version = "0.4.16" }
+actr-framework-protoc-codegen = { path = "tools/protoc-gen/rust", version = "0.4.16" }
+actr-runtime = { path = "core/runtime", version = "0.4.16" }
+actr-runtime-mailbox = { path = "core/runtime-mailbox", version = "0.4.16" }
+actr-hyper = { path = "core/hyper", version = "0.4.16" }
+actr-platform-traits = { path = "core/platform-traits", version = "0.4.16" }
+actr-platform-native = { path = "core/platform-native", version = "0.4.16" }
+actr-pack = { path = "core/pack", version = "0.4.16" }
+actr-mock-actrix = { path = "testing/mock-actrix", version = "0.4.16" }
 
 # === Async Runtime ===
 tokio = { version = "1.48", features = ["full"] }
