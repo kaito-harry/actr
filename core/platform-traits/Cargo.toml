@@ -1,6 +1,6 @@
 [package]
 name = "actr-platform-traits"
-version = "0.4.11"
+version = "0.4.11-rc.8"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

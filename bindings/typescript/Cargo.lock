@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "actr-config"
-version = "0.4.11"
+version = "0.4.11-rc.8"
 dependencies = [
  "actr-protocol",
  "chrono",
@@ -17,7 +17,7 @@ dependencies = [
 
 [[package]]
 name = "actr-framework"
-version = "0.4.11"
+version = "0.4.11-rc.8"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -32,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "actr-hyper"
-version = "0.4.11"
+version = "0.4.11-rc.8"
 dependencies = [
  "actr-config",
  "actr-framework",
@@ -82,7 +82,7 @@ dependencies = [
 
 [[package]]
 name = "actr-pack"
-version = "0.4.11"
+version = "0.4.11-rc.8"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "actr-platform-traits"
-version = "0.4.11"
+version = "0.4.11-rc.8"
 dependencies = [
  "async-trait",
  "thiserror 2.0.18",
@@ -105,7 +105,7 @@ dependencies = [
 
 [[package]]
 name = "actr-protocol"
-version = "0.4.11"
+version = "0.4.11-rc.8"
 dependencies = [
  "anyhow",
  "base64",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime"
-version = "0.4.11"
+version = "0.4.11-rc.8"
 dependencies = [
  "actr-framework",
  "actr-protocol",
@@ -137,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime-mailbox"
-version = "0.4.11"
+version = "0.4.11-rc.8"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -154,7 +154,7 @@ dependencies = [
 
 [[package]]
 name = "actr-service-compat"
-version = "0.4.11"
+version = "0.4.11-rc.8"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -167,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "actr-ts"
-version = "0.4.11"
+version = "0.4.11-rc.8"
 dependencies = [
  "actr-config",
  "actr-framework",
@@ -1537,6 +1537,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
+ "webpki-roots 1.0.8",
 ]
 
 [[package]]
@@ -2687,6 +2688,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "webpki-roots 1.0.8",
 ]
 
 [[package]]
@@ -3433,6 +3435,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tungstenite",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -4038,6 +4041,24 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.8",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]
