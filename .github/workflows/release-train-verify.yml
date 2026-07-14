@@ -6,9 +6,15 @@ on:
       - "*"
     paths:
       - ".github/workflows/release-prepare.yml"
+      - ".github/workflows/release-asset-validation.yml"
       - ".github/workflows/release-train.yml"
       - ".github/workflows/release-train-verify.yml"
+      - ".github/workflows/_actr-cli-release.yml"
+      - ".github/workflows/_actrix-release.yml"
+      - ".github/workflows/_protoc-plugins-release.yml"
+      - "scripts/release-actr-cli.sh"
       - "scripts/release-train.sh"
+      - "scripts/tests/release-asset-validation.sh"
       - "scripts/tests/release-train-*.sh"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -22,14 +28,22 @@ on:
       - "bindings/typescript/Cargo.toml"
       - "bindings/typescript/Cargo.lock"
       - "bindings/typescript/package.json"
+      - "bindings/swift/scripts/package-binary.sh"
+      - "bindings/kotlin/actr-kotlin/build.gradle.kts"
   pull_request:
     branches:
       - main
     paths:
       - ".github/workflows/release-prepare.yml"
+      - ".github/workflows/release-asset-validation.yml"
       - ".github/workflows/release-train.yml"
       - ".github/workflows/release-train-verify.yml"
+      - ".github/workflows/_actr-cli-release.yml"
+      - ".github/workflows/_actrix-release.yml"
+      - ".github/workflows/_protoc-plugins-release.yml"
+      - "scripts/release-actr-cli.sh"
       - "scripts/release-train.sh"
+      - "scripts/tests/release-asset-validation.sh"
       - "scripts/tests/release-train-*.sh"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -43,6 +57,8 @@ on:
       - "bindings/typescript/Cargo.toml"
       - "bindings/typescript/Cargo.lock"
       - "bindings/typescript/package.json"
+      - "bindings/swift/scripts/package-binary.sh"
+      - "bindings/kotlin/actr-kotlin/build.gradle.kts"
 
 concurrency:
   group: release-train-basic-verify-${{ github.ref }}
@@ -88,6 +104,7 @@ jobs:
 
       - name: Run release train script unit checks
         run: |
+          bash scripts/tests/release-asset-validation.sh
           bash scripts/tests/release-train-package-sync.sh
           bash scripts/tests/release-train-modes.sh
 

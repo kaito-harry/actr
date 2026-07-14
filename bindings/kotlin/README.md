@@ -34,7 +34,7 @@ Consumers add the Maven dependency:
 ```kotlin
 repositories {
     maven {
-        url = uri("https://maven.pkg.github.com/Actrium/actr-kotlin-package-sync")
+        url = uri("https://maven.pkg.github.com/actrium/actr-kotlin-package-sync")
         credentials {
             username = "<github-username>"
             password = "<github-token>"

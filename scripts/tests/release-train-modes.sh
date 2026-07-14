@@ -195,6 +195,43 @@ test_parse_stage_rejects_unknown() {
   fi
 }
 
+test_validate_version_requires_strict_semver() {
+  reset_release_train_state
+  VERSION="01.2.3-rc.1"
+  PRE_RELEASE=true
+  SKIP_PYTHON=true
+  if validate_version 2>/dev/null; then
+    printf 'pre-release core identifiers must not contain leading zeroes\n' >&2
+    exit 1
+  fi
+
+  VERSION="1.2.3-rc.01"
+  if validate_version 2>/dev/null; then
+    printf 'numeric pre-release identifiers must not contain leading zeroes\n' >&2
+    exit 1
+  fi
+}
+
+test_validate_version_requires_pep440_when_python_is_enabled() {
+  reset_release_train_state
+  VERSION="1.2.3-rc.1"
+  PRE_RELEASE=true
+  validate_version
+
+  VERSION="1.2.3-pre.1"
+  validate_version
+
+  VERSION="1.2.3-feature-x"
+  if validate_version 2>/dev/null; then
+    printf 'Python-enabled pre-releases must reject non-PEP-440 identifiers\n' >&2
+    exit 1
+  fi
+
+  SKIP_PYTHON=true
+  VERSION="1.2.3-feature-x.7+build.01"
+  validate_version
+}
+
 test_append_skipped_components_allows_empty_list() {
   reset_release_train_state
 
@@ -1208,6 +1245,7 @@ test_cli_release_upload_asset_deletes_existing_asset_before_retry() {
   curl_log="$temp_dir/curl.log"
   upload_attempts="$temp_dir/upload-attempts"
   printf 'archive\n' >"$asset_path"
+  printf 'stale archive\n' >"$temp_dir/actr-v9.9.9-x86_64-unknown-linux-gnu.tar.gz"
   printf '0\n' >"$upload_attempts"
 
   curl() {
@@ -1287,6 +1325,31 @@ test_cli_release_upload_asset_deletes_existing_asset_before_retry() {
   assert_eq "2" "$upload_count" "upload retry count"
 
   rm -rf "$temp_dir"
+}
+
+test_cli_validation_tag_requires_strict_semver() {
+  reset_release_train_state
+  # shellcheck source=/dev/null
+  source scripts/release-actr-cli.sh
+
+  local version
+  version=$(version_from_release_tag validation-v1.2.3-rc.1)
+  assert_eq "1.2.3-rc.1" "$version" "validation tag version"
+  version=$(version_from_release_tag validation-v1.2.3-rc.1+build.x)
+  assert_eq "1.2.3-rc.1+build.x" "$version" "validation tag version with build metadata"
+
+  local invalid_tag
+  for invalid_tag in \
+    validation-v1.2.3 \
+    validation-v1.2.3+build-x \
+    validation-v01.2.3-rc.1 \
+    validation-v1.2.3-rc.01 \
+    validation-v1.2.3-feature..1; do
+    if (version_from_release_tag "$invalid_tag" >/dev/null 2>&1); then
+      printf 'validation tag must reject invalid SemVer: %s\n' "$invalid_tag" >&2
+      exit 1
+    fi
+  done
 }
 
 test_publish_web_workflow_has_timeout() {
@@ -1569,6 +1632,8 @@ test_parse_stage_argument
 test_parse_stage_publish_rust
 test_parse_stage_all_is_default
 test_parse_stage_rejects_unknown
+test_validate_version_requires_strict_semver
+test_validate_version_requires_pep440_when_python_is_enabled
 test_append_skipped_components_allows_empty_list
 test_publish_clean_check_rejects_untracked_files
 test_publish_clean_check_allows_current_report_artifacts
@@ -1595,6 +1660,7 @@ test_cli_zigbuild_uses_zigbuild_arguments_without_build_subcommand
 test_cli_release_state_rows_match_report_schema
 test_cli_sha256_uses_sha256sum_without_shasum
 test_cli_release_upload_asset_deletes_existing_asset_before_retry
+test_cli_validation_tag_requires_strict_semver
 test_protoc_plugin_release_workflow_is_reusable
 test_release_train_publishes_release_assets_in_parallel
 test_actrix_release_stages_binaries_with_bash
