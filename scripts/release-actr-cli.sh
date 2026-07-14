@@ -66,7 +66,65 @@ repository_name() {
 }
 
 release_url() {
-  printf 'https://github.com/%s/releases/tag/v%s' "$(repository_name)" "$VERSION"
+  printf 'https://github.com/%s/releases/tag/%s' "$(repository_name)" "$(release_tag)"
+}
+
+release_tag() {
+  if [[ -n "${TAG:-}" ]]; then
+    printf '%s' "$TAG"
+  elif [[ -n "${ACTR_RELEASE_TAG:-}" ]]; then
+    printf '%s' "$ACTR_RELEASE_TAG"
+  else
+    printf 'v%s' "$VERSION"
+  fi
+}
+
+version_from_release_tag() {
+  local tag=$1
+  local version version_without_build
+  case "$tag" in
+    validation-v*) version=${tag#validation-v} ;;
+    v*) version=${tag#v} ;;
+    *) fail "Unsupported release tag: $tag" ;;
+  esac
+
+  is_strict_semver "$version" || fail "Unsupported release tag: $tag"
+  version_without_build=${version%%+*}
+  if [[ "$tag" == validation-v* && "$version_without_build" != *-* ]]; then
+    fail "Unsupported release tag: $tag"
+  fi
+
+  printf '%s' "$version"
+}
+
+is_strict_semver() {
+  local version=$1 version_without_build core prerelease build identifier
+  local -a prerelease_identifiers
+  local numeric_identifier='(0|[1-9][0-9]*)'
+  local core_pattern="^${numeric_identifier}\\.${numeric_identifier}\\.${numeric_identifier}$"
+  local identifiers_pattern='^[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*$'
+
+  version_without_build=${version%%+*}
+  if [[ "$version" == *+* ]]; then
+    build=${version#*+}
+    [[ "$build" =~ $identifiers_pattern ]] || return 1
+  fi
+
+  core=${version_without_build%%-*}
+  [[ "$core" =~ $core_pattern ]] || return 1
+
+  if [[ "$version_without_build" == *-* ]]; then
+    prerelease=${version_without_build#*-}
+    [[ "$prerelease" =~ $identifiers_pattern ]] || return 1
+    IFS='.' read -r -a prerelease_identifiers <<<"$prerelease"
+    for identifier in "${prerelease_identifiers[@]}"; do
+      if [[ "$identifier" =~ ^[0-9]+$ && ! "$identifier" =~ ^$numeric_identifier$ ]]; then
+        return 1
+      fi
+    done
+  fi
+
+  return 0
 }
 
 use_zigbuild() {
@@ -217,7 +275,7 @@ command_publish() {
   done
   [[ -n "$TAG" && -n "$ASSETS_DIR" && -n "$STATE_FILE" ]] ||
     fail "publish requires --tag, --assets, and --state-file"
-  VERSION=${TAG#v}
+  VERSION=$(version_from_release_tag "$TAG")
   local url
   url=$(release_url)
   if [[ "$DRY_RUN" == true ]]; then
@@ -244,8 +302,8 @@ command_publish() {
       fail "GitHub release upload failed for $(basename "$asset") (HTTP $status)"
     asset_count=$((asset_count + 1))
   done < <(find "$ASSETS_DIR" -maxdepth 1 -type f \( \
-    -name 'actr-v*.tar.gz' -o -name 'actr-v*.tar.gz.sha256' \
-    -o -name 'actr-v*.zip' -o -name 'actr-v*.zip.sha256' \) | sort)
+    -name "actr-v${VERSION}-*.tar.gz" -o -name "actr-v${VERSION}-*.tar.gz.sha256" \
+    -o -name "actr-v${VERSION}-*.zip" -o -name "actr-v${VERSION}-*.zip.sha256" \) | sort)
 
   ((asset_count > 0)) || fail "No actr CLI assets found in $ASSETS_DIR"
   append_state actr-cli-release success "uploaded_${asset_count}_assets" "$url"

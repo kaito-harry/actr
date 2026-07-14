@@ -117,7 +117,11 @@ shared stable version.
 - Required secrets:
   - `CARGO_REGISTRY_TOKEN` — crates.io publishing
   - `PYPI_API_TOKEN` — PyPI publishing (optional; omit to skip Python)
-  - `PACKAGE_SYNC_GITHUB_TOKEN` — dispatch Swift/Kotlin/TS package-sync workflows
+  - `PACKAGE_SYNC_GITHUB_TOKEN` — classic PAT with `repo` scope (or
+    `public_repo` when every involved repository is public) for the
+    Swift/Kotlin package-sync repositories plus `read:packages` and
+    `write:packages`; used to publish synchronized tags, release assets, and
+    Kotlin Maven packages
 - npm publishing uses Trusted Publishing (OIDC) via `id-token: write`;
   no `NPM_TOKEN` secret is needed.
 - Reports are generated under `release/reports/` and uploaded as workflow

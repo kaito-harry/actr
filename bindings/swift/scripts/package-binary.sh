@@ -15,7 +15,7 @@ set -euo pipefail
 # Prerequisites:
 # - Run ./build-xcframework.sh first to generate ActrFFI.xcframework
 # - swift (for `swift package compute-checksum`)
-# - zip
+# - python3 (for deterministic ZIP creation)
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 resolve_root_path() {
@@ -39,7 +39,7 @@ require_cmd() {
   fi
 }
 
-require_cmd zip
+require_cmd python3
 require_cmd swift
 
 RELEASE_TAG="${1:-${ACTR_BINARY_TAG:-v0.1.0}}"
@@ -53,9 +53,51 @@ mkdir -p "${DIST_DIR}"
 rm -f "${ZIP_PATH}" "${DIST_DIR}/release.txt"
 
 echo "[1/3] Zipping XCFramework -> ${ZIP_PATH}"
-ZIP_SOURCE_PARENT="$(dirname "${FRAMEWORK_DIR}")"
-ZIP_SOURCE_NAME="$(basename "${FRAMEWORK_DIR}")"
-(cd "${ZIP_SOURCE_PARENT}" && zip -qry "${ZIP_PATH}" "${ZIP_SOURCE_NAME}")
+python3 - "${FRAMEWORK_DIR}" "${ZIP_PATH}" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+import zipfile
+from pathlib import Path
+
+
+source = Path(sys.argv[1]).resolve()
+destination = Path(sys.argv[2]).resolve()
+parent = source.parent
+entries = [source]
+
+for directory, directory_names, file_names in os.walk(source, followlinks=False):
+    directory_names.sort()
+    file_names.sort()
+    current = Path(directory)
+    entries.extend(current / name for name in directory_names)
+    entries.extend(current / name for name in file_names)
+
+entries = sorted(set(entries), key=lambda path: path.relative_to(parent).as_posix())
+with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_STORED) as archive:
+    for path in entries:
+        mode = path.lstat().st_mode
+        is_directory = stat.S_ISDIR(mode) and not path.is_symlink()
+        archive_name = path.relative_to(parent).as_posix()
+        if is_directory:
+            archive_name += "/"
+
+        info = zipfile.ZipInfo(archive_name)
+        info.date_time = (1980, 1, 1, 0, 0, 0)
+        info.create_system = 3
+        info.compress_type = zipfile.ZIP_STORED
+        info.external_attr = (mode & 0xFFFF) << 16
+        if is_directory:
+            info.external_attr |= 0x10
+            payload = b""
+        elif stat.S_ISLNK(mode):
+            payload = os.readlink(path).encode()
+        else:
+            payload = path.read_bytes()
+        archive.writestr(info, payload)
+PY
 
 echo "[2/3] Computing SwiftPM checksum"
 CHECKSUM="$(cd "${ROOT_DIR}" && swift package compute-checksum "${ZIP_PATH}")"
