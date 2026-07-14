@@ -210,7 +210,10 @@ wasmtime = { version = "=43.0.1", default-features = false, features = [
 wasmtime-wasi = "=43.0.1"
 
 # === Networking ===
-tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.28.0", features = [
+    "rustls-tls-native-roots",
+    "rustls-tls-webpki-roots",
+] }
 tokio-test = "0.4"
 dashmap = "5.5"
 crossbeam = "0.8"
