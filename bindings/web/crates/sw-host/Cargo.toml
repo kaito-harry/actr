@@ -25,7 +25,7 @@ actr-platform-web = { path = "../platform-web" }
 actr-mailbox-web = { path = "../mailbox-web" }
 
 # Package verification (replaces the old JS verifyActrPackage)
-actr-pack = { path = "../../../../core/pack", version = "0.5.0" }
+actr-pack = { path = "../../../../core/pack", version = "0.5.1" }
 ed25519-dalek = "2"
 base64 = "0.22"
 

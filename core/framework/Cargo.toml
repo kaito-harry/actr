@@ -1,6 +1,6 @@
 [package]
 name = "actr-framework"
-version = "0.5.0"
+version = "0.5.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -70,7 +70,7 @@ serde-wasm-bindgen = { version = "0.6", optional = true }
 # γ-unified §3.3/§3.4). Kept optional + path+version so native builds never
 # pull it (or its wasm-bindgen tail) and so the cross-workspace path is
 # explicit.
-actr-web-abi = { path = "../../bindings/web/crates/actr-web-abi", version = "0.5.0", optional = true }
+actr-web-abi = { path = "../../bindings/web/crates/actr-web-abi", version = "0.5.1", optional = true }
 
 [dev-dependencies]
 tokio.workspace = true

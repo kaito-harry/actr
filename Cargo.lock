@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "actr"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actr-config",
  "actr-framework",
@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "actr-cli"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actr",
  "actr-cli",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "actr-config"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actr-protocol",
  "chrono",
@@ -117,7 +117,7 @@ dependencies = [
 
 [[package]]
 name = "actr-framework"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actr-protocol",
  "actr-web-abi",
@@ -142,7 +142,7 @@ dependencies = [
 
 [[package]]
 name = "actr-framework-protoc-codegen"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actr-framework",
  "actr-protocol",
@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "actr-hyper"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actr-config",
  "actr-framework",
@@ -227,7 +227,7 @@ dependencies = [
 
 [[package]]
 name = "actr-mock-actrix"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -256,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "actr-pack"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -272,7 +272,7 @@ dependencies = [
 
 [[package]]
 name = "actr-platform-native"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actr-hyper",
  "actr-platform-traits",
@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "actr-platform-traits"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "thiserror 2.0.18",
@@ -297,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "actr-protocol"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -317,7 +317,7 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actr-framework",
  "actr-protocol",
@@ -329,7 +329,7 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime-mailbox"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "actr-service-compat"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -361,7 +361,7 @@ dependencies = [
 
 [[package]]
 name = "actr-web-abi"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "js-sys",
@@ -373,7 +373,7 @@ dependencies = [
 
 [[package]]
 name = "actr-web-protoc-codegen"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -405,7 +405,7 @@ dependencies = [
 
 [[package]]
 name = "actrix"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actr-protocol",
  "actr-runtime",
@@ -481,7 +481,7 @@ dependencies = [
 
 [[package]]
 name = "actrix-admin"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actrix-platform",
  "actrix-proto",
@@ -502,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "actrix-ais"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actr-protocol",
  "actrix-mfr",
@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "actrix-mfr"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actrix-platform",
  "axum",
@@ -564,7 +564,7 @@ dependencies = [
 
 [[package]]
 name = "actrix-platform"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actr-protocol",
  "actrix-proto",
@@ -612,7 +612,7 @@ dependencies = [
 
 [[package]]
 name = "actrix-proto"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "prost 0.14.4",
  "prost-types",
@@ -623,14 +623,14 @@ dependencies = [
 
 [[package]]
 name = "actrix-sdk"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actrix-admin",
 ]
 
 [[package]]
 name = "actrix-signaling"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actr-protocol",
  "actrix-platform",
@@ -661,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "actrix-signer"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actrix-proto",
  "aes-gcm",
@@ -698,7 +698,7 @@ dependencies = [
 
 [[package]]
 name = "actrix-stun"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actrix-platform",
  "anyhow",
@@ -711,7 +711,7 @@ dependencies = [
 
 [[package]]
 name = "actrix-turn"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actr-protocol",
  "actrix-platform",
