@@ -49,13 +49,14 @@ LOG_DIR="$RUN_DIR/logs"
 DIST_DIR="$RUN_DIR/dist"
 TMP_SERVICE_ROOT="$RUN_DIR/workspace"
 TMP_SERVICE_DIR="$TMP_SERVICE_ROOT/echo-actr-$RANDOM"
+TMP_APP_DIR="$TMP_SERVICE_ROOT/echo-app-$RANDOM"
 ACTRIX_CONFIG_PATH="$RUN_DIR/actrix.toml"
 SERVER_RUNTIME_PATH="$RUN_DIR/server-runtime.toml"
 SERVICE_KEYCHAIN="$TMP_SERVICE_DIR/packaging/keys/mfr.keychain.json"
 SERVICE_PUBLIC_KEY="$TMP_SERVICE_DIR/public-key.json"
 PROVISIONED_KEYCHAIN="$RUN_DIR/mfr.keychain.json"
 PROVISIONED_PUBLIC_KEY="$RUN_DIR/mfr-public-key.json"
-ECHOAPP_ACTRIX_CONFIG="$SCRIPT_DIR/actr.toml"
+ECHOAPP_ACTRIX_CONFIG="$TMP_APP_DIR/actr.toml"
 HOST_TARGET="$(rustc -vV | awk '/host:/ {print $2}')"
 ECHOAPP_PACKAGE_MANIFEST="$RUN_DIR/echoapp-package-manifest.toml"
 ECHOAPP_MARKER_BINARY="$RUN_DIR/echoapp-linked-identity.bin"
@@ -378,6 +379,10 @@ cleanup() {
     fi
     wait 2>/dev/null || true
 
+    # Remove generated project configs that contain the per-run realm secret.
+    rm -f "$ECHOAPP_ACTRIX_CONFIG" "$TMP_APP_DIR/.actr/config.toml"
+    rmdir "$TMP_APP_DIR/.actr" 2>/dev/null || true
+
     # Shut down booted iOS Simulators
     xcrun simctl shutdown all 2>/dev/null || true
 
@@ -481,13 +486,39 @@ actr-service-compat = { path = "$repo_path/core/service-compat" }
 EOF
 }
 
+pin_workspace_actr_dependencies() {
+    local cargo_toml="$1"
+
+    ACTR_FRAMEWORK_PATH="$REPO_ROOT/core/framework" \
+    ACTR_PROTOCOL_PATH="$REPO_ROOT/core/protocol" \
+        perl -i -pe '
+            if (/^actr-framework = /) {
+                $_ = qq{actr-framework = { path = "$ENV{ACTR_FRAMEWORK_PATH}" }\n};
+            } elsif (/^actr-protocol = /) {
+                $_ = qq{actr-protocol = { path = "$ENV{ACTR_PROTOCOL_PATH}" }\n};
+            }
+        ' "$cargo_toml"
+
+    grep -Fq "actr-framework = { path = \"$REPO_ROOT/core/framework\" }" "$cargo_toml" ||
+        fail "Failed to pin actr-framework to the workspace"
+    grep -Fq "actr-protocol = { path = \"$REPO_ROOT/core/protocol\" }" "$cargo_toml" ||
+        fail "Failed to pin actr-protocol to the workspace"
+}
+
 write_project_keychain_config() {
     local project_dir="$1"
     local keychain_path="$2"
     mkdir -p "$project_dir/.actr"
     cat >"$project_dir/.actr/config.toml" <<EOF
 [mfr]
+manufacturer = "$MANUFACTURER"
 keychain = "$keychain_path"
+
+[network]
+signaling_url = "ws://127.0.0.1:${HTTP_PORT}/signaling/ws"
+ais_endpoint = "http://127.0.0.1:${HTTP_PORT}/ais"
+realm_id = $REALM_ID
+realm_secret = "$REALM_SECRET"
 EOF
 }
 
@@ -549,6 +580,7 @@ scaffold_service_guest() {
         --manufacturer "$MANUFACTURER" \
         "$TMP_SERVICE_DIR"
 
+    pin_workspace_actr_dependencies "$TMP_SERVICE_DIR/Cargo.toml"
     append_workspace_patch "$TMP_SERVICE_DIR/Cargo.toml"
     mkdir -p "$(dirname "$SERVICE_KEYCHAIN")"
     cp "$PROVISIONED_KEYCHAIN" "$SERVICE_KEYCHAIN"
@@ -637,6 +669,34 @@ EOF
 
 # ──── EchoApp config ────
 
+prepare_echo_app_workspace() {
+    section "🧱 Preparing temporary EchoApp workspace"
+
+    rm -rf "$TMP_APP_DIR"
+    mkdir -p "$TMP_APP_DIR"
+    cp -R "$SCRIPT_DIR/EchoApp" "$TMP_APP_DIR/EchoApp"
+    cp -R "$SCRIPT_DIR/protos" "$TMP_APP_DIR/protos"
+    cp "$SCRIPT_DIR/manifest.toml" "$TMP_APP_DIR/manifest.toml"
+    cp "$SCRIPT_DIR/actr.lock.toml" "$TMP_APP_DIR/actr.lock.toml"
+    cp "$SCRIPT_DIR/project.yml" "$TMP_APP_DIR/project.yml"
+
+    # Always validate freshly generated sources and dependency snapshots while
+    # leaving the checked-out fixture and any developer-local CLI config intact.
+    rm -rf "$TMP_APP_DIR/EchoApp/Generated" "$TMP_APP_DIR/protos/remote"
+
+    ACTR_SWIFT_PATH="$REPO_ROOT/bindings/swift" \
+        perl -i -pe '
+            if (/^\s*path: \.\.\/\.\.\/bindings\/swift\s*$/) {
+                $_ = qq{    path: $ENV{ACTR_SWIFT_PATH}\n};
+            }
+        ' "$TMP_APP_DIR/project.yml"
+    grep -Fq "path: $REPO_ROOT/bindings/swift" "$TMP_APP_DIR/project.yml" ||
+        fail "Failed to point EchoApp at the workspace Swift binding"
+
+    write_project_keychain_config "$TMP_APP_DIR" "$PROVISIONED_KEYCHAIN"
+    success "Temporary EchoApp workspace ready: $TMP_APP_DIR"
+}
+
 render_echoapp_config() {
     section "📝 Rendering EchoApp runtime config"
     render_template \
@@ -716,11 +776,17 @@ build_echo_app() {
 
     require_cmd xcodegen
     local prev_dir="$PWD"
-    cd "$SCRIPT_DIR"
+    cd "$TMP_APP_DIR"
+
+    section "📦 Installing EchoApp deps and generating Swift code"
+    run_actr deps install
+    run_actr gen -l swift
+    rm -f EchoApp/LocalEchoServiceHandlerImpl.swift
+    rm -f EchoApp/LocalEchoServiceLifecycleAdapter.swift
 
     # Generate Xcode project from project.yml
     rm -rf EchoApp.xcodeproj
-    xcodegen generate --spec project.yml --project "$SCRIPT_DIR" >"$LOG_DIR/xcodegen.log" 2>&1
+    xcodegen generate --spec project.yml --project "$TMP_APP_DIR" >"$LOG_DIR/xcodegen.log" 2>&1
     success "XcodeGen project generated"
 
     section "🏗️  Building EchoApp for iOS Simulator"
@@ -979,14 +1045,19 @@ scaffold_service_guest
 build_service_package
 publish_echoapp_package_identity
 
-# Phase 3: Render EchoApp config, setup simulator, and build app
-# (No service running yet — avoids idling during the ~7 min Xcode build)
+# Phase 3: Prepare the isolated EchoApp workspace, render config, and setup simulator
+# (Service starts in Phase 4 before the app build, because `actr deps install`
+#  inside build_echo_app validates the remote EchoService dependency through
+#  discovery — the service must be registered first, mirroring the Swift
+#  DataStreamApp / SwiftTsWorkloadApp e2e ordering.)
+prepare_echo_app_workspace
 render_echoapp_config
 setup_ios_simulator
-build_echo_app
 
-# Phase 4: Start EchoService AFTER build completes
+# Phase 4: Start EchoService, then build the app (deps install needs the service)
 run_server_host
+check_service_ready
+build_echo_app
 check_service_ready
 
 # Phase 5: Install app, launch, and verify

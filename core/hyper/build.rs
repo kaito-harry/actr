@@ -104,13 +104,19 @@ fn main() {
 
     // Pin the Component Model linker via the target-specific env (highest
     // precedence) and strip any inherited RUSTFLAGS so they can't override it
-    // (see Cargo's build.rustflags precedence).
+    // (see Cargo's build.rustflags precedence). Also drop the coverage
+    // instrumentation wrappers (RUSTC_WRAPPER / RUSTC_WORKSPACE_WRAPPER, set by
+    // the Coverage CI job via cargo-llvm-cov): the wasm fixture is a test-time
+    // build artifact, not a host coverage instrumentation target, and the
+    // wrapper is invalid for the wasm32-wasip2 target.
     let status = Command::new(&cargo)
         .args(["build", "--release", "--target", "wasm32-wasip2"])
         .current_dir(&guest_dir)
         .env("CARGO_TARGET_WASM32_WASIP2_LINKER", &ld)
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("RUSTC_WRAPPER")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
         .env("CARGO_TARGET_DIR", &guest_target_dir)
         .status()
         .expect("failed to spawn `cargo build` for wasm_actor_fixture");

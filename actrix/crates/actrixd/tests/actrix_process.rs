@@ -105,6 +105,14 @@ fn choose_port() -> u16 {
         .port()
 }
 
+fn choose_udp_port() -> u16 {
+    std::net::UdpSocket::bind("127.0.0.1:0")
+        .expect("bind ephemeral UDP port")
+        .local_addr()
+        .expect("read bound UDP address")
+        .port()
+}
+
 fn write_minimal_config(dir: &Path, port: u16) -> PathBuf {
     let data_dir = dir.join("data");
     fs::create_dir_all(&data_dir).expect("create data dir");
@@ -1974,7 +1982,7 @@ async fn actrix_starts_with_user_and_group_set_on_non_root() {
 #[serial]
 async fn actrix_stun_only_serves_binding_success() {
     let tmp = tempfile::tempdir().expect("temp dir");
-    let ice_port = choose_port();
+    let ice_port = choose_udp_port();
     let http_port = choose_port();
     let config_path = write_ice_only_config(tmp.path(), 2, ice_port, http_port);
     let log_path = tmp.path().join("actrix-stun-only.log");
@@ -1989,7 +1997,7 @@ async fn actrix_stun_only_serves_binding_success() {
 #[serial]
 async fn actrix_turn_only_serves_binding_success() {
     let tmp = tempfile::tempdir().expect("temp dir");
-    let ice_port = choose_port();
+    let ice_port = choose_udp_port();
     let http_port = choose_port();
     let config_path = write_ice_only_config(tmp.path(), 4, ice_port, http_port);
     let log_path = tmp.path().join("actrix-turn-only.log");

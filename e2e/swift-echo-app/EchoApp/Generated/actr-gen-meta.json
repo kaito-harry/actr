@@ -1,0 +1,61 @@
+{
+  "language" : "swift",
+  "local_services" : [
+    {
+      "dispatcher_type" : "LocalEchoServiceDispatcher",
+      "handler_interface" : "LocalEchoServiceHandler",
+      "methods" : [
+        {
+          "input_ref" : {
+            "proto_file" : "local/local_echo.proto",
+            "proto_package" : "echoapp",
+            "proto_type" : "echoapp.LocalEchoRequest",
+            "type_name" : "LocalEchoRequest"
+          },
+          "name" : "Send",
+          "output_ref" : {
+            "proto_file" : "local/local_echo.proto",
+            "proto_package" : "echoapp",
+            "proto_type" : "echoapp.LocalEchoResponse",
+            "type_name" : "LocalEchoResponse"
+          },
+          "route_key" : "echoapp.LocalEchoService.Send",
+          "snake_name" : "send"
+        }
+      ],
+      "name" : "LocalEchoService",
+      "package" : "echoapp",
+      "proto_file" : "local/local_echo.proto",
+      "workload_type" : "LocalEchoServiceWorkload"
+    }
+  ],
+  "plugin_version" : "0.4.16",
+  "remote_services" : [
+    {
+      "actr_type" : "actrium:EchoService:1.0.0",
+      "client_type" : "EchoServiceClient",
+      "methods" : [
+        {
+          "input_ref" : {
+            "proto_file" : "remote/echo/echo.proto",
+            "proto_package" : "echo",
+            "proto_type" : "echo.EchoRequest",
+            "type_name" : "EchoRequest"
+          },
+          "name" : "Echo",
+          "output_ref" : {
+            "proto_file" : "remote/echo/echo.proto",
+            "proto_package" : "echo",
+            "proto_type" : "echo.EchoResponse",
+            "type_name" : "EchoResponse"
+          },
+          "route_key" : "echo.EchoService.Echo",
+          "snake_name" : "echo"
+        }
+      ],
+      "name" : "EchoService",
+      "package" : "echo",
+      "proto_file" : "remote/echo/echo.proto"
+    }
+  ]
+}

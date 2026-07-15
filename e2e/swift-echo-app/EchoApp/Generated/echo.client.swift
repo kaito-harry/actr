@@ -9,4 +9,5 @@ extension Echo_EchoRequest: RpcRequest {
     public typealias Response = Echo_EchoResponse
 
     public static var routeKey: String { "echo.EchoService.Echo" }
+    public static var payloadType: PayloadType { .rpcReliable }
 }

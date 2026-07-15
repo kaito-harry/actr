@@ -324,3 +324,26 @@ fn workload_import_errors_on_unresolved_qualified_type() {
         "unexpected error message: {err}"
     );
 }
+
+#[test]
+fn typescript_plugin_extract_command_uses_destination_flag() {
+    // Regression guard: `unzip` selects its destination directory with `-d`.
+    // `-C` controls case-insensitive member matching, not the destination; a
+    // `-C` here makes the extract path a member pattern and breaks extraction.
+    let archive = Path::new("/tmp/actr-plugin.zip");
+    let extract_dir = Path::new("/tmp/actr-extract");
+    let args = unzip_extract_args(archive, extract_dir);
+
+    let arg_strs: Vec<&str> = args.iter().filter_map(|a| a.to_str()).collect();
+
+    assert!(
+        arg_strs.contains(&"-d"),
+        "unzip must select the destination with -d, got: {arg_strs:?}"
+    );
+    assert!(
+        !arg_strs.contains(&"-C"),
+        "unzip -C controls case-insensitive matching, not the destination, got: {arg_strs:?}"
+    );
+    assert!(arg_strs.contains(&"/tmp/actr-plugin.zip"));
+    assert!(arg_strs.contains(&"/tmp/actr-extract"));
+}

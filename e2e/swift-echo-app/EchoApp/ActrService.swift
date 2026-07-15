@@ -122,21 +122,37 @@ private final class LocalEchoServiceHandlerImpl: LocalEchoServiceHandler, @unche
 
     func send(
         req localRequest: Echoapp_LocalEchoRequest,
-        ctx: Context
-    ) async throws -> Echoapp_LocalEchoResponse {
+        ctx: any ActrContext
+    ) async throws(ActrError) -> Echoapp_LocalEchoResponse {
         let forwardedMessage = "swift-local:\(localRequest.message)"
 
         var remoteRequest = Echo_EchoRequest()
         remoteRequest.message = forwardedMessage
-        let targetType = try ActrType.fromStringRepr(self.targetType)
+        let targetType: ActrType
+        do {
+            targetType = try ActrType.fromStringRepr(self.targetType)
+        } catch {
+            throw ActrError.Config(msg: "Invalid target type: \(error)")
+        }
         let targetId = try await ctx.discover(targetType: targetType)
+        let requestData: Data
+        do {
+            requestData = try remoteRequest.serializedData()
+        } catch {
+            throw ActrError.DecodeFailure(msg: "Failed to encode echo request: \(error)")
+        }
         let remotePayload = try await ctx.call(
             target: targetId,
             routeKey: remoteEchoRoute,
-            payload: remoteRequest.serializedData()
+            payload: requestData
         )
 
-        let remoteResponse = try Echo_EchoResponse(serializedBytes: remotePayload)
+        let remoteResponse: Echo_EchoResponse
+        do {
+            remoteResponse = try Echo_EchoResponse(serializedBytes: remotePayload)
+        } catch {
+            throw ActrError.DecodeFailure(msg: "Failed to decode echo response: \(error)")
+        }
         var localResponse = Echoapp_LocalEchoResponse()
         localResponse.reply = remoteResponse.reply
         localResponse.forwardedMessage = forwardedMessage

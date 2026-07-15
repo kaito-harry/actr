@@ -783,6 +783,14 @@ async fn inflight_long_offline_fails_bounded_then_retries(case: RoleCase) {
             "long offline should time out the in-flight request, got: {err}"
         );
         assert_pending_empty(&harness, direction.from_serial, &request_id).await;
+        // Unblock the parked fragment send before recovery begins. The
+        // original request has already timed out, so the send must be released
+        // before reconnect or the retry cannot make forward progress. Unlike
+        // the short-offline case (which notifies after reconnect, while the
+        // original request is still alive), this path must notify first:
+        // dropping `release_send` at end of scope does not wake the waiter, so
+        // `notify_waiters()` must precede `drop(hook_guard)`.
+        release_send.notify_waiters();
         drop(hook_guard);
 
         harness.simulate_reconnect();
@@ -809,7 +817,6 @@ async fn inflight_long_offline_fails_bounded_then_retries(case: RoleCase) {
             Duration::from_secs(25),
         )
         .await;
-        drop(release_send);
     }
 }
 

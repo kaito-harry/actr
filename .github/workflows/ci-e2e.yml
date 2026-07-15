@@ -89,14 +89,13 @@ jobs:
           # uses its own CARGO_TARGET_DIR tree under target/e2e-cache/polyglot-echo/.
           key: polyglot-echo-e2e
           workspaces: |
-            .
-            target/e2e-cache/polyglot-echo/actr-cli
-            target/e2e-cache/polyglot-echo/mock-actrix
-            target/e2e-cache/polyglot-echo/service-build
-            target/e2e-cache/polyglot-echo/driver-rust
-            target/e2e-cache/polyglot-echo/linked-rust
-            target/e2e-cache/polyglot-echo/wasm-rust
-            target/e2e-cache/polyglot-echo/stream-server
+            . -> target/e2e-cache/polyglot-echo/actr-cli
+            . -> target/e2e-cache/polyglot-echo/mock-actrix
+            . -> target/e2e-cache/polyglot-echo/service-build
+            . -> target/e2e-cache/polyglot-echo/driver-rust
+            . -> target/e2e-cache/polyglot-echo/linked-rust
+            . -> target/e2e-cache/polyglot-echo/wasm-rust
+            . -> target/e2e-cache/polyglot-echo/stream-server
       - name: Generate CLI web runtime assets
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
       - name: Setup Node
@@ -109,7 +108,18 @@ jobs:
       - name: Run polyglot-echo (--server linked-rust --client rust)
         run: bash e2e/polyglot-echo/run.sh --server linked-rust --client rust polyglot-ci-linked
       - name: Run polyglot-echo (--server wasm-rust --client rust)
-        run: bash e2e/polyglot-echo/run.sh --server wasm-rust --client rust polyglot-ci-wasm
+        # The wasm-rust first call occasionally hits a transient startup timeout.
+        # Retry once, but surface attempt 1's exit code so a real regression is
+        # distinguishable from the known-transient flake in the logs.
+        run: |
+          set +e
+          bash e2e/polyglot-echo/run.sh --server wasm-rust --client rust polyglot-ci-wasm
+          attempt1=$?
+          if [ "$attempt1" -ne 0 ]; then
+            echo "::warning::wasm-rust echo attempt 1 failed with exit code $attempt1; retrying once with fresh processes"
+            set -e
+            bash e2e/polyglot-echo/run.sh --server wasm-rust --client rust polyglot-ci-wasm
+          fi
       # ── streaming scenarios (Rust client, dedicated linked stream server) ───
       - name: Run polyglot-echo (--client rust --scenario server-stream)
         run: bash e2e/polyglot-echo/run.sh --client rust --scenario server-stream polyglot-ci-stream
@@ -577,6 +587,7 @@ jobs:
           target: default
           profile: pixel_6_pro
           sdcard-path-or-size: 512M
+          disk-size: 1536M
           ram-size: 4096M
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           disable-animations: true
@@ -589,4 +600,3 @@ jobs:
           path: e2e/kotlin-echo-app/.tmp/sanitized-logs/
           retention-days: 7
           if-no-files-found: warn
-

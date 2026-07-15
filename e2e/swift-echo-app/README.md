@@ -53,17 +53,18 @@ sequenceDiagram
     CI->>CLI: actr build → .actr package
     CI->>CLI: actr registry publish → actrix
 
+    CI->>CI: prepare temporary EchoApp workspace
     CI->>CI: render actr.toml from template
     CI->>SIM: boot iOS Simulator
-    CI->>SIM: xcodegen generate
-    CI->>SIM: xcodebuild (build EchoApp for Simulator)
-
-    Note over CI,ES: Service starts AFTER build to avoid idling during ~7 min compile
 
     CI->>CLI: actr run (EchoService host)
     ES->>AX: WebSocket signaling connect
     ES->>AX: AIS register
     CI->>CI: check_service_ready (process alive, signaling health, cache populated)
+    CI->>CLI: actr deps install && actr gen -l swift
+    CI->>SIM: xcodegen generate
+    CI->>SIM: xcodebuild (build EchoApp for Simulator)
+    CI->>CI: check_service_ready after build
 
     CI->>SIM: simctl install EchoApp.app
     CI->>SIM: simctl launch (AUTO_SEND=1)
@@ -83,18 +84,18 @@ sequenceDiagram
 e2e/swift-echo-app/
 ├── run.sh                # CI orchestration script
 ├── actr.toml.tpl         # Runtime config template (rendered → actr.toml)
-├── manifest.toml          # Package identity + EchoService dependency
-├── project.yml            # XcodeGen project spec + scheme env vars
+├── actr.lock.toml         # Runtime lock placeholder bundled with EchoApp
+├── manifest.toml         # Package identity + EchoService dependency
+├── project.yml           # XcodeGen project spec + scheme env vars
 ├── protos/
 │   ├── local/local_echo.proto
-│   └── remote/echo-service/echo.proto
-├── EchoApp/
-│   ├── ActrService.swift  # Linked runtime + echo call logic
-│   ├── ContentView.swift  # UI + ACTR_E2E_RESULT print marker
-│   ├── EchoApp.swift
-│   ├── Info.plist
-│   └── Generated/         # protoc + actr gen outputs
-└── .gitignore             # Ignores actr.toml, .tmp/, build/
+│   └── remote/echo/echo.proto
+└── EchoApp/
+    ├── ActrService.swift  # Linked runtime + echo call logic
+    ├── ContentView.swift  # UI + ACTR_E2E_RESULT print marker
+    ├── EchoApp.swift
+    ├── Info.plist
+    └── Generated/         # protoc + actr gen outputs
 ```
 
 ## Verification Mechanism

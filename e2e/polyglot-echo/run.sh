@@ -202,7 +202,11 @@ run_rust_driver() {
     if kill -0 "$DRIVER_PID" 2>/dev/null; then
         kill "$DRIVER_PID" 2>/dev/null || true
         echo "" >&2
+        echo "Rust driver log:" >&2
         cat "$driver_log" >&2
+        echo "" >&2
+        echo "Server log (last 80):" >&2
+        tail -80 "$LOG_DIR/server.log" >&2 || true
         fail "Rust driver timed out after ${timeout}s"
     fi
 

@@ -10,8 +10,8 @@ public protocol LocalEchoServiceHandler: Sendable {
 /// RPC method: Send
 func send(
     req: Echoapp_LocalEchoRequest,
-    ctx: Context
-) async throws -> Echoapp_LocalEchoResponse
+    ctx: any ActrContext
+) async throws(ActrError) -> Echoapp_LocalEchoResponse
 
 }
 
@@ -19,25 +19,37 @@ extension Echoapp_LocalEchoRequest: RpcRequest {
     public typealias Response = Echoapp_LocalEchoResponse
 
     public static var routeKey: String { "echoapp.LocalEchoService.Send" }
+    public static var payloadType: PayloadType { .rpcReliable }
 }
 /// LocalEchoService workload wrapper - wraps the user's handler implementation
 public actor LocalEchoServiceWorkload<T: LocalEchoServiceHandler> {
     public let handler: T
+    private let remoteTargets: [String: ActrType]
 
-    public init(handler: T) {
+    public init(handler: T, remoteTargets: [String: ActrType] = [:]) {
         self.handler = handler
+        self.remoteTargets = remoteTargets
     }
 }
 
 extension LocalEchoServiceWorkload {
-    public func __dispatch(ctx: Context, envelope: RpcEnvelope) async throws -> Data {
+    public func __dispatch(ctx: any ActrContext, envelope: RpcEnvelope) async throws(ActrError) -> Data {
         switch envelope.routeKey {
 case "echoapp.LocalEchoService.Send":
-    let req = try Echoapp_LocalEchoRequest(serializedBytes: envelope.payload)
+    let req: Echoapp_LocalEchoRequest
+    do {
+        req = try Echoapp_LocalEchoRequest(serializedBytes: envelope.payload)
+    } catch {
+        throw ActrError.DecodeFailure(msg: "Failed to decode Echoapp_LocalEchoRequest for route \(envelope.routeKey): \(error)")
+    }
     let resp = try await handler.send(req: req, ctx: ctx)
-    return try resp.serializedData()
+    do {
+        return try resp.serializedData()
+    } catch {
+        throw ActrError.DecodeFailure(msg: "Failed to encode Echoapp_LocalEchoResponse for route \(envelope.routeKey): \(error)")
+    }
 case "echo.EchoService.Echo":
-    let targetType = try ActrType.fromStringRepr("actrium+EchoService")
+    let targetType = try remoteTargetType(for: envelope.routeKey)
     let targetId = try await ctx.discover(targetType: targetType)
     return try await ctx.call(
         target: targetId,
@@ -48,4 +60,11 @@ case "echo.EchoService.Echo":
             throw ActrError.UnknownRoute(msg: "Unknown route: \(envelope.routeKey)")
         }
     }
+
+private func remoteTargetType(for routeKey: String) throws(ActrError) -> ActrType {
+    guard let targetType = remoteTargets[routeKey] else {
+        throw ActrError.UnknownRoute(msg: "No remote target configured for route: \(routeKey)")
+    }
+    return targetType
+}
 }
