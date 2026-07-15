@@ -99,6 +99,10 @@ TAG_ALREADY_EXISTS=false
 STAGE="all"
 PACKAGE_SYNC_OWNER="${PACKAGE_SYNC_OWNER:-}"
 RELEASE_BRANCH="${RELEASE_BRANCH:-main}"
+MAINTENANCE_RELEASE=false
+RELEASE_LINE=""
+NPM_DIST_TAG="latest"
+PREVIOUS_TAG=""
 
 usage() {
   cat <<'EOF'
@@ -112,7 +116,8 @@ Options:
   --skip-python      Skip Python package validation, version update, and publishing.
   --pre-release      Mark this release as a pre-release (e.g. 0.2.2-pre.1).
                      Uses npm tag "pre" and allows pre-release semver versions.
-  --branch <branch>  Target release branch (default: main).
+  --branch <branch>  Target release branch (default: main). Maintenance branches
+                     must use release-X.Y and can only publish X.Y patch releases.
   --stage <name>     Run a single stage instead of the full pipeline.
                      Stages: create-tag, publish-rust, publish-python,
                      publish-swift, publish-kotlin, publish-web,
@@ -323,6 +328,14 @@ latest_release_tag() {
     --abbrev=0 2>/dev/null || echo ""
 }
 
+previous_release_tag() {
+  git -C "$ORIGINAL_REPO_ROOT" describe \
+    --tags \
+    --match "${FINAL_TAG_PREFIX}[0-9]*" \
+    --match "${LEGACY_FINAL_TAG_PREFIX}[0-9]*" \
+    --abbrev=0 HEAD^ 2>/dev/null || echo ""
+}
+
 calculate_next_version() {
   local current=$1
   local bump=$2
@@ -426,6 +439,77 @@ validate_version() {
   fi
 }
 
+configure_release_channel() {
+  local version_core=${VERSION%%-*}
+
+  if [[ "$RELEASE_BRANCH" == "main" ]]; then
+    RELEASE_LINE="${version_core%.*}"
+    if [[ "$PRE_RELEASE" == true ]]; then
+      NPM_DIST_TAG="pre"
+    else
+      NPM_DIST_TAG="latest"
+    fi
+    return
+  fi
+
+  if [[ "$RELEASE_BRANCH" =~ ^release-([0-9]+)\.([0-9]+)$ ]]; then
+    MAINTENANCE_RELEASE=true
+    RELEASE_LINE="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+    NPM_DIST_TAG="legacy-${RELEASE_LINE}"
+    if [[ "$PRE_RELEASE" != false ]]; then
+      fail "Maintenance branch ${RELEASE_BRANCH} only supports stable patch releases"
+      return 1
+    fi
+    if [[ ! "$version_core" =~ ^${RELEASE_LINE}\.[0-9]+$ ]]; then
+      fail "Maintenance branch ${RELEASE_BRANCH} can only publish ${RELEASE_LINE}.x, got ${VERSION}"
+      return 1
+    fi
+    return
+  fi
+
+  fail "Unsupported release branch ${RELEASE_BRANCH}; expected main or release-X.Y"
+}
+
+validate_maintenance_release_policy() {
+  [[ "$MAINTENANCE_RELEASE" == true ]] || return 0
+
+  local current current_patch target_patch last_tag last_version tagged_patch history
+  current=$(current_workspace_version)
+  if [[ ! "$current" =~ ^${RELEASE_LINE}\.([0-9]+)$ ]]; then
+    fail "Workspace version ${current} does not belong to maintenance line ${RELEASE_LINE}.x"
+    return 1
+  fi
+  current_patch=${BASH_REMATCH[1]}
+  target_patch=${VERSION##*.}
+
+  if [[ "$VERSION" != "$current" ]] && (( target_patch != current_patch + 1 )); then
+    fail "Maintenance releases must increment exactly one patch: ${current} -> ${RELEASE_LINE}.$((current_patch + 1))"
+    return 1
+  fi
+
+  last_tag=${PREVIOUS_TAG:-$(previous_release_tag)}
+  if [[ -n "$last_tag" ]]; then
+    last_version=${last_tag#${LEGACY_FINAL_TAG_PREFIX}}
+    last_version=${last_version#${FINAL_TAG_PREFIX}}
+    if [[ "$last_version" =~ ^${RELEASE_LINE}\.([0-9]+)$ ]]; then
+      tagged_patch=${BASH_REMATCH[1]}
+      if (( target_patch != tagged_patch && target_patch != tagged_patch + 1 )); then
+        fail "Maintenance releases must publish the current or next patch after ${last_tag}, got ${VERSION}"
+        return 1
+      fi
+    fi
+    history=$(git -C "$ORIGINAL_REPO_ROOT" log "${last_tag}..HEAD" --format='%s%n%b')
+    if grep -qE '^[a-z]+(\([^)]+\))?!:|^BREAKING CHANGE:' <<<"$history"; then
+      fail "Maintenance branch ${RELEASE_BRANCH} contains a breaking change since ${last_tag}"
+      return 1
+    fi
+    if grep -qE '^feat(\([^)]+\))?:' <<<"$history"; then
+      fail "Maintenance branch ${RELEASE_BRANCH} contains a feature commit since ${last_tag}; only fixes are allowed"
+      return 1
+    fi
+  fi
+}
+
 is_strict_semver() {
   local version=$1 version_without_build core prerelease build identifier
   local -a prerelease_identifiers
@@ -488,10 +572,25 @@ context_file() {
 
 write_context() {
   mkdir -p "$REPORT_DIR"
-  python3 - "$VERSION" "$RELEASE_SHA" "$DRY_RUN" "$PRE_RELEASE" "$SKIP_PYTHON" "$FINAL_TAG" "$(context_file)" <<'PY'
+  python3 - "$VERSION" "$RELEASE_SHA" "$DRY_RUN" "$PRE_RELEASE" "$SKIP_PYTHON" \
+    "$FINAL_TAG" "$RELEASE_BRANCH" "$RELEASE_LINE" "$MAINTENANCE_RELEASE" \
+    "$NPM_DIST_TAG" "$PREVIOUS_TAG" "$(context_file)" <<'PY'
 from __future__ import annotations
 import json, sys
-version, sha, dry_run, pre_release, skip_python, tag, path = sys.argv[1:8]
+(
+    version,
+    sha,
+    dry_run,
+    pre_release,
+    skip_python,
+    tag,
+    release_branch,
+    release_line,
+    maintenance_release,
+    npm_dist_tag,
+    previous_tag,
+    path,
+) = sys.argv[1:13]
 json.dump({
     "version": version,
     "release_sha": sha,
@@ -499,6 +598,11 @@ json.dump({
     "pre_release": pre_release == "true",
     "skip_python": skip_python == "true",
     "final_tag": tag,
+    "release_branch": release_branch,
+    "release_line": release_line,
+    "maintenance_release": maintenance_release == "true",
+    "npm_dist_tag": npm_dist_tag,
+    "previous_tag": previous_tag,
 }, open(path, "w"), indent=2)
 print(path)
 PY
@@ -1011,11 +1115,28 @@ append_skipped_components() {
 dispatch_package_sync_workflow() {
   local repo=$1
   local workflow=$2
-  local dispatched_at
+  local dispatched_at payload
 
   dispatched_at=$(python3 - <<'PY'
 from datetime import datetime, timezone
 print(datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+)
+  payload=$(python3 - "$VERSION" "$RELEASE_SHA" "$FINAL_TAG" "$MAINTENANCE_RELEASE" "$RELEASE_BRANCH" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+
+version, source_sha, source_tag, maintenance_release, release_branch = sys.argv[1:6]
+inputs = {
+    "version": version,
+    "source_sha": source_sha,
+    "source_tag": source_tag,
+}
+if maintenance_release == "true":
+    inputs["target_branch"] = release_branch
+print(json.dumps({"ref": "main", "inputs": inputs}))
 PY
 )
   curl -fsSL \
@@ -1025,16 +1146,7 @@ PY
     -H "User-Agent: actr-release-train" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     "${PACKAGE_SYNC_GITHUB_API}/repos/${PACKAGE_SYNC_OWNER}/${repo}/actions/workflows/${workflow}/dispatches" \
-    -d @- >/dev/null <<EOF
-{
-  "ref": "main",
-  "inputs": {
-    "version": "${VERSION}",
-    "source_sha": "${RELEASE_SHA}",
-    "source_tag": "${FINAL_TAG}"
-  }
-}
-EOF
+    -d "$payload" >/dev/null
 
   printf '%s\n' "${dispatched_at}"
 }
@@ -1189,8 +1301,8 @@ EOF
   unset NPM_CONFIG_USERCONFIG NODE_AUTH_TOKEN
   npm config set registry https://registry.npmjs.org/
 
-  if [[ "$PRE_RELEASE" == true ]]; then
-    publish_args+=(--tag pre)
+  if [[ "$NPM_DIST_TAG" != "latest" ]]; then
+    publish_args+=(--tag "$NPM_DIST_TAG")
   fi
 
   # Read the actual version from the first web package (updated by update_versions).
@@ -1254,10 +1366,7 @@ publish_typescript_workload_package() {
   unset NPM_CONFIG_USERCONFIG NODE_AUTH_TOKEN
   npm config set registry https://registry.npmjs.org/
 
-  local npm_tag="latest"
-  if [[ "$PRE_RELEASE" == true ]]; then
-    npm_tag="pre"
-  fi
+  local npm_tag="$NPM_DIST_TAG"
 
   # Check if already published.
   if npm view "@actrium/actr-workload@${ts_version}" version >/dev/null 2>&1; then
@@ -1402,10 +1511,7 @@ NODE
   unset NPM_CONFIG_USERCONFIG NODE_AUTH_TOKEN
   npm config set registry https://registry.npmjs.org/
 
-  npm_tag="latest"
-  if [[ "$PRE_RELEASE" == true ]]; then
-    npm_tag="pre"
-  fi
+  npm_tag="$NPM_DIST_TAG"
 
   # Publish native platform packages first, then the main package.
   log_info "Publishing native platform packages"
@@ -1543,7 +1649,7 @@ ensure_versions_prepared() {
 
   if [[ -n "$diff_files" ]]; then
     printf '%s\n' "$diff_files" >&2
-    fail "Release version files do not match ${VERSION}; run scripts/release-train.sh --version ${VERSION} --prepare-only on a PR branch and merge it before publishing"
+    fail "Release version files do not match ${VERSION}; run scripts/release-train.sh --branch ${RELEASE_BRANCH} --version ${VERSION} --prepare-only on a PR branch and merge it before publishing"
   fi
 }
 
@@ -1775,7 +1881,9 @@ create_final_tag() {
 
 
 stage_create_tag() {
-  # Generate and read release context.
+  # Staged CI must enforce the same version preparation invariant as the
+  # sequential release train before it creates an externally visible tag.
+  ensure_versions_prepared
   set_release_sha
   write_context
   read_context
@@ -2187,9 +2295,12 @@ main() {
   fi
 
   validate_version
+  configure_release_channel
   ensure_clean_worktree
   prepare_paths
   prepare_worktree
+  PREVIOUS_TAG=$(previous_release_tag)
+  validate_maintenance_release_policy
   if stage_requires_tag_availability_check; then
     ensure_release_tag_available
   else

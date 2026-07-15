@@ -133,6 +133,23 @@ def test_release_train_forwards_release_context() -> None:
     assert 'Release context SHA ${RELEASE_SHA} does not match current HEAD ${current_sha}' in release_script
 
 
+def test_release_train_supports_generic_maintenance_branches() -> None:
+    workflow = RELEASE_TRAIN_WORKFLOW.read_text(encoding="utf-8")
+    release_script = RELEASE_TRAIN_SCRIPT.read_text(encoding="utf-8")
+
+    assert '- "release-*"' in workflow
+    assert "target_branch: ${{ steps.check.outputs.target_branch }}" in workflow
+    assert "ref: main" not in workflow
+    assert "--branch main" not in workflow
+    assert "--latest=false" in workflow
+    assert "--notes-start-tag" in workflow
+    assert "needs.context.result == 'success'" in workflow
+
+    assert "^release-([0-9]+)\\.([0-9]+)$" in release_script
+    assert 'NPM_DIST_TAG="legacy-${RELEASE_LINE}"' in release_script
+    assert 'ensure_versions_prepared\n  set_release_sha' in release_script
+
+
 def test_swift_echoapp_e2e_job_present() -> None:
     workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
     swift_job = _job(workflow, "swift-echo-app-e2e", "python-web-e2e")
@@ -588,6 +605,7 @@ if __name__ == "__main__":
     test_release_train_has_valid_publish_steps()
     test_release_train_verifies_ci_gate_triggered()
     test_release_train_forwards_release_context()
+    test_release_train_supports_generic_maintenance_branches()
     test_swift_echoapp_e2e_job_present()
     test_e2e_actrix_uses_in_tree_install_instead_of_artifact_download()
     test_e2e_no_private_actrix_checkout()

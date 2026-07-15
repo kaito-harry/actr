@@ -106,6 +106,10 @@ reset_release_train_state() {
   FAILURE_REASON=""
   FINAL_TAG=""
   TAG_ALREADY_EXISTS=false
+  MAINTENANCE_RELEASE=false
+  RELEASE_LINE=""
+  NPM_DIST_TAG="latest"
+  PREVIOUS_TAG=""
   ORIGINAL_REPO_ROOT="$repo_root"
   restore_all_functions
 }
@@ -230,6 +234,85 @@ test_validate_version_requires_pep440_when_python_is_enabled() {
   SKIP_PYTHON=true
   VERSION="1.2.3-feature-x.7+build.01"
   validate_version
+}
+
+test_release_channel_supports_generic_maintenance_lines() {
+  reset_release_train_state
+  VERSION="0.4.18"
+  RELEASE_BRANCH="release-0.4"
+  configure_release_channel
+  assert_eq "true" "$MAINTENANCE_RELEASE" "0.4 maintenance mode"
+  assert_eq "0.4" "$RELEASE_LINE" "0.4 release line"
+  assert_eq "legacy-0.4" "$NPM_DIST_TAG" "0.4 npm tag"
+
+  reset_release_train_state
+  VERSION="0.5.7"
+  RELEASE_BRANCH="release-0.5"
+  configure_release_channel
+  assert_eq "true" "$MAINTENANCE_RELEASE" "0.5 maintenance mode"
+  assert_eq "0.5" "$RELEASE_LINE" "0.5 release line"
+  assert_eq "legacy-0.5" "$NPM_DIST_TAG" "0.5 npm tag"
+}
+
+test_release_channel_rejects_mismatched_maintenance_version() {
+  reset_release_train_state
+  VERSION="0.5.0"
+  RELEASE_BRANCH="release-0.4"
+  if configure_release_channel 2>/dev/null; then
+    printf 'release-0.4 must reject a 0.5 version\n' >&2
+    exit 1
+  fi
+
+  reset_release_train_state
+  VERSION="0.4.18-rc.1"
+  PRE_RELEASE=true
+  RELEASE_BRANCH="release-0.4"
+  if configure_release_channel 2>/dev/null; then
+    printf 'maintenance branches must reject pre-releases\n' >&2
+    exit 1
+  fi
+}
+
+test_maintenance_policy_allows_only_next_patch_and_fix_history() {
+  reset_release_train_state
+
+  local temp_repo previous_root
+  temp_repo=$(mktemp -d)
+  previous_root=$ORIGINAL_REPO_ROOT
+  git -C "$temp_repo" init -q
+  printf '[workspace.package]\nversion = "0.4.17"\n' >"$temp_repo/Cargo.toml"
+  git -C "$temp_repo" add Cargo.toml
+  git -C "$temp_repo" -c user.name="Release Test" -c user.email="release-test@example.com" commit -q -m "chore(release): basic train v0.4.17"
+  git -C "$temp_repo" tag v0.4.17
+  printf 'fix\n' >"$temp_repo/fix.txt"
+  git -C "$temp_repo" add fix.txt
+  git -C "$temp_repo" -c user.name="Release Test" -c user.email="release-test@example.com" commit -q -m "fix(runtime): repair legacy behavior"
+
+  ORIGINAL_REPO_ROOT=$temp_repo
+  RELEASE_BRANCH="release-0.4"
+  VERSION="0.4.18"
+  configure_release_channel
+  validate_maintenance_release_policy
+
+  printf '[workspace.package]\nversion = "0.4.19"\n' >"$temp_repo/Cargo.toml"
+  VERSION="0.4.19"
+  if validate_maintenance_release_policy 2>/dev/null; then
+    printf 'maintenance policy must reject skipped patch versions\n' >&2
+    exit 1
+  fi
+  printf '[workspace.package]\nversion = "0.4.17"\n' >"$temp_repo/Cargo.toml"
+
+  printf 'feature\n' >"$temp_repo/feature.txt"
+  git -C "$temp_repo" add feature.txt
+  git -C "$temp_repo" -c user.name="Release Test" -c user.email="release-test@example.com" commit -q -m "feat(runtime): add a new capability"
+  VERSION="0.4.18"
+  if validate_maintenance_release_policy 2>/dev/null; then
+    printf 'maintenance policy must reject feature commits\n' >&2
+    exit 1
+  fi
+
+  ORIGINAL_REPO_ROOT=$previous_root
+  rm -rf "$temp_repo"
 }
 
 test_append_skipped_components_allows_empty_list() {
@@ -453,6 +536,7 @@ test_create_tag_dry_run_does_not_push() {
   reset_release_train_state
 
   local calls=()
+  ensure_versions_prepared() { calls+=("ensure_versions_prepared"); }
   read_context() {
     VERSION="1.2.3"
     RELEASE_SHA="abc123"
@@ -471,10 +555,12 @@ test_create_tag_dry_run_does_not_push() {
 
   # In dry-run mode, create_final_tag is called but returns early.
   # Verify it was called (the function checks DRY_RUN internally).
-  if [[ "${#calls[@]}" -ne 1 ]]; then
+  if [[ "${#calls[@]}" -ne 2 ]]; then
     printf 'create-tag stage in dry-run must still call create_final_tag\n' >&2
     exit 1
   fi
+  assert_eq "ensure_versions_prepared" "${calls[0]}" "create-tag version preflight"
+  assert_eq "create_final_tag" "${calls[1]}" "create-tag publish order"
 }
 
 test_main_publish_stage_skips_tag_availability_check() {
@@ -825,7 +911,7 @@ EOF
 test_release_train_workflow_publish_typescript_uses_script_stage() {
   reset_release_train_state
 
-  if ! grep -q 'args=(--stage publish-typescript --branch main --version' .github/workflows/release-train.yml; then
+  if ! grep -q 'args=(--stage publish-typescript --branch "${{ needs.context.outputs.target_branch }}" --version' .github/workflows/release-train.yml; then
     printf 'publish-typescript workflow job must call scripts/release-train.sh --stage publish-typescript\n' >&2
     exit 1
   fi
@@ -850,6 +936,10 @@ test_release_prepare_workflow_skips_release_commits() {
 
   if ! grep -q "contains(github.event.head_commit.message, 'chore(release):')" .github/workflows/release-prepare.yml; then
     printf 'release prepare workflow must skip chore(release) commits\n' >&2
+    exit 1
+  fi
+  if sed -n '1,12p' .github/workflows/release-prepare.yml | grep -q 'release-\*'; then
+    printf 'maintenance release PRs must remain manually managed\n' >&2
     exit 1
   fi
 }
@@ -1634,6 +1724,9 @@ test_parse_stage_all_is_default
 test_parse_stage_rejects_unknown
 test_validate_version_requires_strict_semver
 test_validate_version_requires_pep440_when_python_is_enabled
+test_release_channel_supports_generic_maintenance_lines
+test_release_channel_rejects_mismatched_maintenance_version
+test_maintenance_policy_allows_only_next_patch_and_fix_history
 test_append_skipped_components_allows_empty_list
 test_publish_clean_check_rejects_untracked_files
 test_publish_clean_check_allows_current_report_artifacts

@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - "release-*"
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
@@ -19,6 +20,10 @@ on:
       - "bindings/typescript/package.json"
   workflow_dispatch:
     inputs:
+      target_branch:
+        description: Target main or release-X.Y branch. Defaults to the selected workflow ref.
+        required: false
+        type: string
       version:
         description: Stable semver (optional; auto-detected from workspace Cargo.toml if omitted).
         required: false
@@ -59,14 +64,28 @@ jobs:
     timeout-minutes: 5
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
+      target_branch: ${{ steps.check.outputs.target_branch }}
       release_sha: ${{ steps.release.outputs.sha }}
     steps:
       - name: Check if head commit is a release merge
         id: check
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TARGET_BRANCH: ${{ inputs.target_branch }}
           HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          target_branch="$REF_NAME"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && -n "$INPUT_TARGET_BRANCH" ]]; then
+            target_branch="$INPUT_TARGET_BRANCH"
+          fi
+          if [[ "$target_branch" != "main" && ! "$target_branch" =~ ^release-[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::target_branch must be main or release-X.Y, got ${target_branch}"
+            exit 1
+          fi
+          echo "target_branch=${target_branch}" >> "$GITHUB_OUTPUT"
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
           elif printf '%s\n' "$HEAD_COMMIT_MESSAGE" | grep -qE '^chore\(release\): basic train v[0-9]+\.[0-9]+\.[0-9]+'; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
@@ -78,7 +97,7 @@ jobs:
         if: steps.check.outputs.should_run == 'true'
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event_name == 'push' && github.sha || 'main' }}
+          ref: ${{ github.event_name == 'push' && github.sha || steps.check.outputs.target_branch }}
 
       - name: Resolve release SHA
         if: steps.check.outputs.should_run == 'true'
@@ -136,12 +155,16 @@ jobs:
       dry_run: ${{ steps.resolve.outputs.dry_run }}
       pre_release: ${{ steps.resolve.outputs.pre_release }}
       skip_python: ${{ steps.resolve.outputs.skip_python }}
+      target_branch: ${{ needs.gate.outputs.target_branch }}
+      maintenance_release: ${{ steps.resolve.outputs.maintenance_release }}
+      previous_tag: ${{ steps.resolve.outputs.previous_tag }}
       release_sha: ${{ needs.gate.outputs.release_sha }}
     steps:
-      - name: Checkout main
+      - name: Checkout target branch
         uses: actions/checkout@v5
         with:
-          ref: main
+          ref: ${{ needs.gate.outputs.target_branch }}
+          fetch-depth: 0
 
       - name: Resolve version and flags
         id: resolve
@@ -155,6 +178,13 @@ jobs:
           echo "dry_run=${{ inputs.dry_run || 'false' }}" >> "$GITHUB_OUTPUT"
           echo "pre_release=${{ inputs.pre_release || 'false' }}" >> "$GITHUB_OUTPUT"
           echo "skip_python=${{ inputs.skip_python || 'false' }}" >> "$GITHUB_OUTPUT"
+          if [[ "${{ needs.gate.outputs.target_branch }}" == "main" ]]; then
+            echo "maintenance_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "maintenance_release=true" >> "$GITHUB_OUTPUT"
+          fi
+          previous_tag=$(git describe --tags --match 'v[0-9]*' --match 'release-train-v[0-9]*' --abbrev=0 HEAD^ 2>/dev/null || true)
+          echo "previous_tag=${previous_tag}" >> "$GITHUB_OUTPUT"
 
   # ── Create Tag ────────────────────────────────────────────────────────
   create-tag:
@@ -163,11 +193,11 @@ jobs:
       - context
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main
+      - name: Checkout target branch
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: main
+          ref: ${{ needs.context.outputs.target_branch }}
 
       - name: Verify release commit
         env:
@@ -175,7 +205,7 @@ jobs:
         run: |
           actual_sha=$(git rev-parse HEAD)
           if [[ "$actual_sha" != "$EXPECTED_RELEASE_SHA" ]]; then
-            echo "main moved after CI Gate: expected ${EXPECTED_RELEASE_SHA}, got ${actual_sha}" >&2
+            echo "${{ needs.context.outputs.target_branch }} moved after CI Gate: expected ${EXPECTED_RELEASE_SHA}, got ${actual_sha}" >&2
             exit 1
           fi
 
@@ -183,7 +213,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          args=(--stage create-tag --branch main --version "${{ needs.context.outputs.version }}")
+          args=(--stage create-tag --branch "${{ needs.context.outputs.target_branch }}" --version "${{ needs.context.outputs.version }}")
           if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
             args+=(--dry-run)
           fi
@@ -215,30 +245,34 @@ jobs:
     env:
       TAG: v${{ needs.context.outputs.version }}
     steps:
-      - name: Checkout main
+      - name: Checkout target branch
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: main
+          ref: ${{ needs.context.outputs.target_branch }}
 
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ needs.context.outputs.dry_run }}
           PRE_RELEASE: ${{ needs.context.outputs.pre_release }}
+          MAINTENANCE_RELEASE: ${{ needs.context.outputs.maintenance_release }}
+          PREVIOUS_TAG: ${{ needs.context.outputs.previous_tag }}
         run: |
           set -euo pipefail
           if [[ "$DRY_RUN" == "true" ]]; then
             echo "[dry-run] Would create GitHub Release $TAG"
             exit 0
           fi
-          prerelease_flag=""
-          [[ "$PRE_RELEASE" == "true" ]] && prerelease_flag="--prerelease"
-          gh release create "$TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "$TAG" \
-            --generate-notes \
-            $prerelease_flag
+          args=(
+            --repo "$GITHUB_REPOSITORY"
+            --title "$TAG"
+            --generate-notes
+          )
+          [[ "$PRE_RELEASE" == "true" ]] && args+=(--prerelease)
+          [[ "$MAINTENANCE_RELEASE" == "true" ]] && args+=(--latest=false)
+          [[ -n "$PREVIOUS_TAG" ]] && args+=(--notes-start-tag "$PREVIOUS_TAG")
+          gh release create "$TAG" "${args[@]}"
 
   # ── Publish Rust ──────────────────────────────────────────────────────
   publish-rust:
@@ -252,11 +286,11 @@ jobs:
       RUST_BACKTRACE: 1
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     steps:
-      - name: Checkout main
+      - name: Checkout target branch
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: main
+          ref: ${{ needs.context.outputs.target_branch }}
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -287,7 +321,7 @@ jobs:
 
       - name: Run publish-rust stage
         run: |
-          args=(--stage publish-rust --branch main --version "${{ needs.context.outputs.version }}")
+          args=(--stage publish-rust --branch "${{ needs.context.outputs.target_branch }}" --version "${{ needs.context.outputs.version }}")
           if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
             args+=(--dry-run)
           fi
@@ -318,11 +352,11 @@ jobs:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
       TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
     steps:
-      - name: Checkout main
+      - name: Checkout target branch
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: main
+          ref: ${{ needs.context.outputs.target_branch }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -337,7 +371,7 @@ jobs:
 
       - name: Run publish-python stage
         run: |
-          args=(--stage publish-python --branch main --version "${{ needs.context.outputs.version }}")
+          args=(--stage publish-python --branch "${{ needs.context.outputs.target_branch }}" --version "${{ needs.context.outputs.version }}")
           if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
             args+=(--dry-run)
           fi
@@ -367,11 +401,11 @@ jobs:
     env:
       PACKAGE_SYNC_GITHUB_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
     steps:
-      - name: Checkout main
+      - name: Checkout target branch
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: main
+          ref: ${{ needs.context.outputs.target_branch }}
 
       - name: Download create-tag artifacts
         uses: actions/download-artifact@v4
@@ -381,7 +415,7 @@ jobs:
 
       - name: Run publish-swift stage
         run: |
-          args=(--stage publish-swift --branch main --version "${{ needs.context.outputs.version }}")
+          args=(--stage publish-swift --branch "${{ needs.context.outputs.target_branch }}" --version "${{ needs.context.outputs.version }}")
           if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
             args+=(--dry-run)
           fi
@@ -411,11 +445,11 @@ jobs:
     env:
       PACKAGE_SYNC_GITHUB_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
     steps:
-      - name: Checkout main
+      - name: Checkout target branch
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: main
+          ref: ${{ needs.context.outputs.target_branch }}
 
       - name: Download create-tag artifacts
         uses: actions/download-artifact@v4
@@ -425,7 +459,7 @@ jobs:
 
       - name: Run publish-kotlin stage
         run: |
-          args=(--stage publish-kotlin --branch main --version "${{ needs.context.outputs.version }}")
+          args=(--stage publish-kotlin --branch "${{ needs.context.outputs.target_branch }}" --version "${{ needs.context.outputs.version }}")
           if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
             args+=(--dry-run)
           fi
@@ -454,11 +488,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Checkout main
+      - name: Checkout target branch
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: main
+          ref: ${{ needs.context.outputs.target_branch }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -480,7 +514,7 @@ jobs:
 
       - name: Run publish-web stage
         run: |
-          args=(--stage publish-web --branch main --version "${{ needs.context.outputs.version }}")
+          args=(--stage publish-web --branch "${{ needs.context.outputs.target_branch }}" --version "${{ needs.context.outputs.version }}")
           if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
             args+=(--dry-run)
           fi
@@ -552,6 +586,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.context.outputs.target_branch }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -604,10 +640,10 @@ jobs:
       - create-tag
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main
+      - name: Checkout target branch
         uses: actions/checkout@v5
         with:
-          ref: main
+          ref: ${{ needs.context.outputs.target_branch }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -624,7 +660,7 @@ jobs:
 
       - name: Run publish-typescript-workload stage
         run: |
-          args=(--stage publish-typescript-workload --branch main --version "${{ needs.context.outputs.version }}")
+          args=(--stage publish-typescript-workload --branch "${{ needs.context.outputs.target_branch }}" --version "${{ needs.context.outputs.version }}")
           if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
             args+=(--dry-run)
           fi
@@ -655,10 +691,10 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
     steps:
-      - name: Checkout main
+      - name: Checkout target branch
         uses: actions/checkout@v5
         with:
-          ref: main
+          ref: ${{ needs.context.outputs.target_branch }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -690,7 +726,7 @@ jobs:
 
       - name: Run publish-typescript stage
         run: |
-          args=(--stage publish-typescript --branch main --version "${{ needs.context.outputs.version }}")
+          args=(--stage publish-typescript --branch "${{ needs.context.outputs.target_branch }}" --version "${{ needs.context.outputs.version }}")
           if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
             args+=(--dry-run)
           fi
@@ -755,7 +791,7 @@ jobs:
   # ── Collect Report ────────────────────────────────────────────────────
   collect-report:
     name: Collect release report
-    if: always()
+    if: always() && needs.context.result == 'success'
     needs:
       - context
       - create-tag
@@ -773,10 +809,10 @@ jobs:
       - publish-protoc-plugins
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main
+      - name: Checkout target branch
         uses: actions/checkout@v5
         with:
-          ref: main
+          ref: ${{ needs.context.outputs.target_branch }}
 
       - name: Download all stage artifacts
         uses: actions/download-artifact@v4
@@ -792,7 +828,7 @@ jobs:
 
       - name: Run report stage
         run: |
-          args=(--stage report --version "${{ needs.context.outputs.version }}")
+          args=(--stage report --branch "${{ needs.context.outputs.target_branch }}" --version "${{ needs.context.outputs.version }}")
           if [[ "${{ needs.context.outputs.skip_python }}" == "true" ]]; then
             args+=(--skip-python)
           fi
@@ -819,14 +855,14 @@ jobs:
       - context
       - collect-report
     runs-on: ubuntu-latest
-    if: always()
+    if: always() && needs.context.result == 'success' && needs.collect-report.result == 'success'
     env:
       RELEASE_WEBHOOK_URL: ${{ secrets.RELEASE_WEBHOOK_URL }}
     steps:
-      - name: Checkout main
+      - name: Checkout target branch
         uses: actions/checkout@v5
         with:
-          ref: main
+          ref: ${{ needs.context.outputs.target_branch }}
 
       - name: Download consolidated report
         uses: actions/download-artifact@v4
@@ -836,7 +872,7 @@ jobs:
 
       - name: Run notify-wechat stage
         run: |
-          args=(--stage notify-wechat --version "${{ needs.context.outputs.version }}")
+          args=(--stage notify-wechat --branch "${{ needs.context.outputs.target_branch }}" --version "${{ needs.context.outputs.version }}")
           if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
             args+=(--dry-run)
           fi

@@ -2,9 +2,9 @@ name: CI Gate
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, "release-*"]
   pull_request:
-    branches: [main]
+    branches: [main, "release-*"]
   workflow_dispatch:
     inputs:
       full_run:

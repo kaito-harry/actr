@@ -33,6 +33,7 @@ on:
   pull_request:
     branches:
       - main
+      - "release-*"
     paths:
       - ".github/workflows/release-prepare.yml"
       - ".github/workflows/release-asset-validation.yml"
@@ -170,7 +171,18 @@ jobs:
           echo "value=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Run dry-run validation
-        run: scripts/release-train.sh --version "${{ steps.version.outputs.value }}" --dry-run
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          target_branch="${BASE_REF:-$REF_NAME}"
+          if [[ "$target_branch" != "main" && ! "$target_branch" =~ ^release-[0-9]+\.[0-9]+$ ]]; then
+            target_branch=main
+          fi
+          scripts/release-train.sh \
+            --branch "$target_branch" \
+            --version "${{ steps.version.outputs.value }}" \
+            --dry-run
 
       - name: Upload dry-run reports
         if: always()
