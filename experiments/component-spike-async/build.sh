@@ -13,7 +13,7 @@ cd "$HERE"
 NEW_LD="${HOME}/.cargo/bin/wasm-component-ld"
 if [[ ! -x "$NEW_LD" ]]; then
     echo "ERROR: wasm-component-ld not found at $NEW_LD" >&2
-    echo "install with: cargo install wasm-component-ld --version 0.5.22" >&2
+    echo "install with: cargo install wasm-component-ld --version 0.5.26" >&2
     exit 1
 fi
 LD_VER=$("$NEW_LD" --version | awk '{print $2}')

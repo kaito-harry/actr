@@ -31,8 +31,8 @@ Versions pinned repo-wide (see `AGENTS.md`):
 |-------------------|-----------------|-----------------------------------------------------|
 | `wit-bindgen`     | 0.57.1          | provides the `c` backend                            |
 | `wasi-sdk`        | 24              | supplies `clang`, `wasi-libc` headers, builtins     |
-| `wasm-component-ld` | 0.5.22        | must be on `$PATH`; `clang --target=wasm32-wasip2` invokes it automatically |
-| `wasm-tools`      | 1.247.0         | used for the `component wit` verification step     |
+| `wasm-component-ld` | 0.5.26        | must be on `$PATH`; `clang --target=wasm32-wasip2` invokes it automatically |
+| `wasm-tools`      | 1.253.0         | used for the `component wit` verification step     |
 
 On Linux, the conventional install locations are:
 
@@ -42,8 +42,8 @@ On Linux, the conventional install locations are:
 
 # Rust-installable tooling (cargo >= 1.75):
 cargo install wit-bindgen-cli --version 0.57.1
-cargo install wasm-component-ld --version 0.5.22
-cargo install wasm-tools --version 1.247.0
+cargo install wasm-component-ld --version 0.5.26
+cargo install wasm-tools --version 1.253.0
 ```
 
 ## Build

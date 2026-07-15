@@ -38,10 +38,10 @@ jobs:
           repo-token: ${{ github.token }}
 
       - name: Install wasm-tools
-        run: cargo install wasm-tools --version 1.249.0 --locked
+        run: cargo install wasm-tools --version 1.253.0 --locked
 
       - name: Install wasm-pack
-        run: cargo install wasm-pack --version 0.13.1 --locked
+        run: cargo install wasm-pack --version 0.15.0 --locked
 
       - name: Verify TypeScript workload WIT drift
         run: |

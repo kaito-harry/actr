@@ -30,7 +30,7 @@ bytes = "1.0"
 # to depend on `wasm-bindgen` directly. Keep the version pinned to the
 # same major the rest of the web stack uses so the runtime shim and the
 # generated glue share one ABI.
-wasm-bindgen = "0.2.108"
+wasm-bindgen = "0.2.126"
 
 [features]
 # Users invoking `actr_framework::entry!` on `wasm32-unknown-unknown`

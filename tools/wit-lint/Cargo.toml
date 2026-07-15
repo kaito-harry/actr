@@ -32,11 +32,11 @@ name = "wit_lint"
 path = "src/lib.rs"
 
 [dependencies]
-# Pinned to the wit-parser version that wit-bindgen 0.58.0 / wasmtime 46
-# share (verified single-version via `cargo tree -i wit-parser`), to avoid
-# duplicate wit-parser entries in Cargo.lock and ABI skew between the lint
-# view and the bindgen view of the same WIT file.
-wit-parser = "=0.251.0"
+# Pinned to wit-parser 0.253.0 to match wit-bindgen 0.59.0's view of the WIT
+# (wasmtime 46.0.1 still resolves wit-parser 0.251.0 for its own runtime
+# parsing, so the two versions coexist). Keeps the lint view aligned with the
+# bindgen view to avoid ABI skew between the lint and the generated bindings.
+wit-parser = "=0.253.0"
 syn = { version = "2", features = ["full", "extra-traits"] }
 proc-macro2 = { workspace = true }
 anyhow = { workspace = true }

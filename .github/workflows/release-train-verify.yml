@@ -152,7 +152,7 @@ jobs:
           EOF
 
       - name: Install wasm-pack
-        run: cargo install wasm-pack --version 0.13.1 --locked
+        run: cargo install wasm-pack --version 0.15.0 --locked
 
       - name: Resolve release train version
         id: version

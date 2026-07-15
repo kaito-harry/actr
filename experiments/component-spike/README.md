@@ -21,7 +21,7 @@ experiments/component-spike/
 
 - Rust 1.95+
 - `rustup target add wasm32-wasip2`
-- `cargo install wasm-tools --version 1.247.0`
+- `cargo install wasm-tools --version 1.253.0`
 - Optional for Q14/Q15 probes:
   - Node 20+ for jco (`npm i @bytecodealliance/jco`)
   - `cargo install wit-bindgen-cli --version 0.57.1`

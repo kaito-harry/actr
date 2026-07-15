@@ -86,20 +86,22 @@ jobs:
         with:
           repo-token: ${{ github.token }}
       # Component Model toolchain:
-      # - wasm-component-ld 0.5.22 is still required: the legacy async-lift
+      # - wasm-component-ld >= 0.5.22 is required: the legacy async-lift
       #   fixture (tests/legacy_asynclift_guest, kept as a rejection sample)
-      #   links the older async-ABI custom sections, and >= 0.5.22 is the
-      #   first release that accepts them. The current sync-lift guests link
-      #   fine with it too.
-      # - wasm-tools 1.249 matches wasmtime 46's embedded validator, so
-      #   `wasm-tools validate` agrees with the runtime on the async-lift
-      #   rejection (diagnostic consistency) and for local inspection.
+      #   links the older async-ABI custom sections, and 0.5.22 is the first
+      #   release that accepts them. CI installs 0.5.26; the runtime check in
+      #   `cli/src/commands/build.rs` enforces >= 0.5.22.
+      # - wasm-tools 1.253 is the latest release (wasmparser 0.253); wasmtime
+      #   46.0.1 embeds 0.251/0.252. The async-lift rejection still agrees
+      #   across both (verified: both reject with "async canonical option
+      #   requires an async function type"). Runtime rejection is
+      #   authoritative; wasm-tools is for local inspection / `component wit`.
       - name: Install wasm Component Model toolchain
         run: |
-          cargo install wasm-component-ld --version 0.5.22 --locked
-          cargo install wasm-tools --version 1.249.0 --locked
+          cargo install wasm-component-ld --version 0.5.26 --locked
+          cargo install wasm-tools --version 1.253.0 --locked
       - name: Install wasm-pack
-        run: cargo install wasm-pack --version 0.13.1 --locked
+        run: cargo install wasm-pack --version 0.15.0 --locked
       - uses: Swatinem/rust-cache@v2
       - name: Generate CLI web runtime assets
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
@@ -127,10 +129,10 @@ jobs:
       # Phase 1 Component Model toolchain — see `build` job for rationale.
       - name: Install wasm Component Model toolchain
         run: |
-          cargo install wasm-component-ld --version 0.5.22 --locked
-          cargo install wasm-tools --version 1.249.0 --locked
+          cargo install wasm-component-ld --version 0.5.26 --locked
+          cargo install wasm-tools --version 1.253.0 --locked
       - name: Install wasm-pack
-        run: cargo install wasm-pack --version 0.13.1 --locked
+        run: cargo install wasm-pack --version 0.15.0 --locked
       - uses: Swatinem/rust-cache@v2
       - name: Generate CLI web runtime assets
         run: bash bindings/web/scripts/sync-cli-assets.sh --build

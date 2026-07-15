@@ -130,12 +130,12 @@ jobs:
           key: cargo-tools-v1-${{ runner.os }}-wp0.13.1-wcld0.5.22-wt1.249.0
       - name: Install wasm-pack
         if: steps.cargo-tools.outputs.cache-hit != 'true'
-        run: cargo install wasm-pack --version 0.13.1 --locked
+        run: cargo install wasm-pack --version 0.15.0 --locked
       - name: Install wasm Component Model toolchain
         if: steps.cargo-tools.outputs.cache-hit != 'true'
         run: |
-          cargo install wasm-component-ld --version 0.5.22 --locked
-          cargo install wasm-tools --version 1.249.0 --locked
+          cargo install wasm-component-ld --version 0.5.26 --locked
+          cargo install wasm-tools --version 1.253.0 --locked
       - uses: Swatinem/rust-cache@v2
       - name: Generate CLI web runtime assets
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
@@ -192,12 +192,12 @@ jobs:
           key: cargo-tools-v1-${{ runner.os }}-wp0.13.1-wcld0.5.22-wt1.249.0
       - name: Install wasm-pack
         if: steps.cargo-tools.outputs.cache-hit != 'true'
-        run: cargo install wasm-pack --version 0.13.1 --locked
+        run: cargo install wasm-pack --version 0.15.0 --locked
       - name: Install wasm Component Model toolchain
         if: steps.cargo-tools.outputs.cache-hit != 'true'
         run: |
-          cargo install wasm-component-ld --version 0.5.22 --locked
-          cargo install wasm-tools --version 1.249.0 --locked
+          cargo install wasm-component-ld --version 0.5.26 --locked
+          cargo install wasm-tools --version 1.253.0 --locked
       - uses: Swatinem/rust-cache@v2
       - name: Generate CLI web runtime assets
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
@@ -239,12 +239,12 @@ jobs:
           key: cargo-tools-v1-${{ runner.os }}-wp0.13.1-wcld0.5.22-wt1.249.0
       - name: Install wasm-pack
         if: steps.cargo-tools.outputs.cache-hit != 'true'
-        run: cargo install wasm-pack --version 0.13.1 --locked
+        run: cargo install wasm-pack --version 0.15.0 --locked
       - name: Install wasm Component Model toolchain
         if: steps.cargo-tools.outputs.cache-hit != 'true'
         run: |
-          cargo install wasm-component-ld --version 0.5.22 --locked
-          cargo install wasm-tools --version 1.249.0 --locked
+          cargo install wasm-component-ld --version 0.5.26 --locked
+          cargo install wasm-tools --version 1.253.0 --locked
       - uses: Swatinem/rust-cache@v2
       - name: Generate CLI web runtime assets
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
@@ -448,10 +448,10 @@ jobs:
           key: cargo-tools-v1-${{ runner.os }}-wt1.249.0-wp0.13.1
       - name: Install wasm-tools
         if: steps.cargo-tools.outputs.cache-hit != 'true'
-        run: cargo install wasm-tools --version 1.249.0 --locked
+        run: cargo install wasm-tools --version 1.253.0 --locked
       - name: Install wasm-pack
         if: steps.cargo-tools.outputs.cache-hit != 'true'
-        run: cargo install wasm-pack --version 0.13.1 --locked
+        run: cargo install wasm-pack --version 0.15.0 --locked
       - name: Verify TypeScript workload WIT drift
         run: |
           cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
@@ -592,7 +592,7 @@ jobs:
           key: cargo-tools-v1-${{ runner.os }}-wp0.13.1
       - name: Install wasm-pack
         if: steps.cargo-tools.outputs.cache-hit != 'true'
-        run: cargo install wasm-pack --version 0.13.1 --locked
+        run: cargo install wasm-pack --version 0.15.0 --locked
       - name: Check formatting
         working-directory: bindings/web
         run: cargo fmt --all -- --check

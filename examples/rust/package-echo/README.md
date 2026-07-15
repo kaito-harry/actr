@@ -71,7 +71,7 @@ Windows users must use **WSL 2** (Windows Subsystem for Linux 2):
    ```bash
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    rustup target add wasm32-wasip2
-   cargo install wasm-component-ld --version 0.5.22 --locked
+   cargo install wasm-component-ld --version 0.5.26 --locked
    ```
 
 2. **jq** (JSON processor)
@@ -160,7 +160,7 @@ sudo apt-get install -y \
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
 rustup target add wasm32-wasip2
-cargo install wasm-component-ld --version 0.5.22 --locked
+cargo install wasm-component-ld --version 0.5.26 --locked
 ```
 
 **Step 3: Clone Project to WSL Filesystem**

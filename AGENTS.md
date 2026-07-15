@@ -21,7 +21,7 @@ tools:
 
 ```
 rustup target add wasm32-wasip2
-cargo install wasm-component-ld --version 0.5.22 --locked
+cargo install wasm-component-ld --version 0.5.26 --locked
 cargo install wasm-tools        --version 1.247.0 --locked
 ```
 

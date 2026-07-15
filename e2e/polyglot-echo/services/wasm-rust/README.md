@@ -28,5 +28,5 @@ EchoService 实现编译为 **Rust wasm32-wasip2 Component Model** 二进制（`
 ## 工具链要求
 
 - `wasm32-wasip2` rustup target
-- `wasm-component-ld >= 0.5.22`（`cargo install wasm-component-ld --version 0.5.22 --locked`）
+- `wasm-component-ld >= 0.5.22`（`cargo install wasm-component-ld --version 0.5.26 --locked`）
 - `wasm-tools >= 1.247`（diagnostic 用，可选）
