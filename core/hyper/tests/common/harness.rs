@@ -28,7 +28,7 @@
 use super::signaling::TestSignalingServer;
 use super::utils::{
     create_peer_with_vnet, create_peer_with_websocket, make_actor_id, spawn_echo_responder,
-    spawn_response_receiver,
+    spawn_response_receiver, spawn_rpc_dispatcher,
 };
 use super::vnet::VNetPair;
 use crate::lifecycle::DefaultNetworkEventProcessor;
@@ -130,6 +130,14 @@ impl TestPeer {
     /// Call this on the **source** peer before sending requests.
     pub fn start_response_receiver(&self, name: &str) -> tokio::task::JoinHandle<()> {
         spawn_response_receiver(self.coordinator.clone(), self.gate.clone(), name)
+    }
+
+    /// Start a direction-aware RPC dispatcher on this peer.
+    ///
+    /// This is the sole coordinator receive-loop consumer for tests where a
+    /// peer must handle both incoming requests and incoming responses.
+    pub fn start_rpc_dispatcher(&self, name: &str) -> tokio::task::JoinHandle<()> {
+        spawn_rpc_dispatcher(self.coordinator.clone(), self.gate.clone(), name)
     }
 }
 

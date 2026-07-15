@@ -7,7 +7,9 @@ use crate::lifecycle::CredentialState;
 use crate::wire::webrtc::{
     SignalingClient, WebRtcConfig, WebRtcCoordinator, WebSocketSignalingClient,
 };
-use actr_protocol::{AIdCredential, ActrError, ActrId, ActrType, Realm};
+use crate::wire::{DirectionError, direction_for_routing};
+use actr_protocol::prost::Message;
+use actr_protocol::{AIdCredential, ActrError, ActrId, ActrType, Direction, Realm, RpcEnvelope};
 use std::sync::Arc;
 
 pub fn install_test_crypto_provider() {
@@ -142,12 +144,96 @@ pub async fn create_peer_with_vnet(
     Ok((coordinator, signaling_client_arc))
 }
 
-/// Spawn a task to receive and handle RPC responses
+async fn handle_rpc_response(
+    gate: &crate::outbound::PeerGate,
+    peer_name: &str,
+    envelope: RpcEnvelope,
+) {
+    let request_id = envelope.request_id;
+    tracing::debug!("📨 {} received response: {}", peer_name, request_id);
+
+    let result = match (envelope.payload, envelope.error) {
+        (_, Some(error)) => Err(ActrError::Unavailable(format!(
+            "RPC error {}: {}",
+            error.code, error.message
+        ))),
+        (Some(payload), None) => Ok(payload),
+        (None, None) => Err(ActrError::DecodeFailure(
+            "Invalid response: no payload or error".to_string(),
+        )),
+    };
+
+    match gate.handle_response(&request_id, result).await {
+        Ok(true) => {
+            tracing::debug!("✅ {} handled response for {}", peer_name, request_id);
+        }
+        Ok(false) => {
+            tracing::warn!(
+                "⚠️ {} no pending request found for {}",
+                peer_name,
+                request_id
+            );
+        }
+        Err(e) => {
+            tracing::error!("{}: Failed to handle response: {}", peer_name, e);
+        }
+    }
+}
+
+async fn handle_echo_request(
+    gate: &crate::outbound::PeerGate,
+    peer_name: &str,
+    sender_id_bytes: &[u8],
+    request: RpcEnvelope,
+    should_respond: bool,
+) {
+    let sender_id = match ActrId::decode(sender_id_bytes) {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!("{}: Failed to decode sender ID: {}", peer_name, e);
+            return;
+        }
+    };
+
+    let request_id = request.request_id;
+    tracing::debug!("📨 {} received request: {}", peer_name, request_id);
+
+    if !should_respond {
+        tracing::debug!("✅ {} handled tell for {}", peer_name, request_id);
+        return;
+    }
+
+    let response = RpcEnvelope {
+        request_id: request_id.clone(),
+        route_key: "response".to_string(),
+        payload: Some(bytes::Bytes::from("pong")),
+        timeout_ms: 0,
+        direction: Some(Direction::Response as i32),
+        ..Default::default()
+    };
+
+    if let Err(e) = gate.send_response(&sender_id, response).await {
+        tracing::error!(
+            "{}: Failed to send response for {}: {}",
+            peer_name,
+            request_id,
+            e
+        );
+    } else {
+        tracing::debug!("✅ {} sent response for {}", peer_name, request_id);
+    }
+}
+
+/// Spawn a task to receive and handle RPC responses.
 ///
 /// This function starts a background task that:
 /// 1. Receives messages from the coordinator
 /// 2. Parses them as RpcEnvelope
 /// 3. Routes responses to PeerGate.handle_response
+///
+/// Do not run this concurrently with another receive-loop helper on the same
+/// coordinator. Use [`spawn_rpc_dispatcher`] when a peer handles both requests
+/// and responses.
 ///
 /// # Returns
 /// A JoinHandle that can be used to abort the task
@@ -158,58 +244,13 @@ pub fn spawn_response_receiver(
 ) -> tokio::task::JoinHandle<()> {
     let peer_name = peer_name.to_string();
     tokio::spawn(async move {
-        use actr_protocol::prost::Message;
         tracing::info!("🎯 {} response receiver task started", peer_name);
         loop {
             match coordinator.receive_message().await {
                 Ok(Some((_sender_id_bytes, message_data, _payload_type))) => {
-                    // Parse response envelope
-                    match actr_protocol::RpcEnvelope::decode(message_data.as_ref()) {
+                    match RpcEnvelope::decode(message_data.as_ref()) {
                         Ok(envelope) => {
-                            tracing::debug!(
-                                "📨 {} received response: {}",
-                                peer_name,
-                                envelope.request_id
-                            );
-
-                            // Convert envelope to result
-                            let result = if let Some(error) = envelope.error {
-                                Err(ActrError::Unavailable(format!(
-                                    "RPC error {}: {}",
-                                    error.code, error.message
-                                )))
-                            } else if let Some(payload) = envelope.payload {
-                                Ok(payload)
-                            } else {
-                                Err(ActrError::DecodeFailure(
-                                    "Invalid response: no payload or error".to_string(),
-                                ))
-                            };
-
-                            // Route to handle_response
-                            match gate.handle_response(&envelope.request_id, result).await {
-                                Ok(true) => {
-                                    tracing::debug!(
-                                        "✅ {} handled response for {}",
-                                        peer_name,
-                                        envelope.request_id
-                                    );
-                                }
-                                Ok(false) => {
-                                    tracing::warn!(
-                                        "⚠️ {} no pending request found for {}",
-                                        peer_name,
-                                        envelope.request_id
-                                    );
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        "{}: Failed to handle response: {}",
-                                        peer_name,
-                                        e
-                                    );
-                                }
-                            }
+                            handle_rpc_response(gate.as_ref(), &peer_name, envelope).await;
                         }
                         Err(e) => {
                             tracing::error!("{}: Failed to decode RpcEnvelope: {}", peer_name, e);
@@ -229,11 +270,15 @@ pub fn spawn_response_receiver(
     })
 }
 
-/// Spawn an Echo server task
+/// Spawn an Echo server task.
 ///
 /// This function starts a background task that:
 /// 1. Receives RPC requests from the coordinator
 /// 2. Sends back a simple "pong" response
+///
+/// Do not run this concurrently with another receive-loop helper on the same
+/// coordinator. Use [`spawn_rpc_dispatcher`] when a peer handles both requests
+/// and responses.
 ///
 /// # Returns
 /// A JoinHandle that can be used to abort the task
@@ -244,57 +289,104 @@ pub fn spawn_echo_responder(
 ) -> tokio::task::JoinHandle<()> {
     let peer_name = peer_name.to_string();
     tokio::spawn(async move {
-        use actr_protocol::prost::Message;
         tracing::info!("🎯 {} echo responder task started", peer_name);
         loop {
             match coordinator.receive_message().await {
                 Ok(Some((sender_id_bytes, message_data, _payload_type))) => {
-                    // Parse sender ID
-                    let sender_id = match ActrId::decode(&sender_id_bytes[..]) {
-                        Ok(id) => id,
+                    match RpcEnvelope::decode(message_data.as_ref()) {
+                        Ok(request) => {
+                            handle_echo_request(
+                                gate.as_ref(),
+                                &peer_name,
+                                &sender_id_bytes,
+                                request,
+                                true,
+                            )
+                            .await;
+                        }
                         Err(e) => {
-                            tracing::error!("{}: Failed to decode sender ID: {}", peer_name, e);
+                            tracing::error!("{}: Failed to decode RpcEnvelope: {}", peer_name, e);
+                        }
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("📪 {} message channel closed", peer_name);
+                    break;
+                }
+                Err(e) => {
+                    tracing::error!("{}: Error receiving message: {}", peer_name, e);
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+    })
+}
+
+/// Spawn a single direction-aware RPC receive loop for a bidirectional peer.
+///
+/// Each envelope is dequeued and decoded once, then routed by its explicit
+/// [`Direction`]. This prevents request and response helpers from racing to
+/// consume one coordinator receive queue.
+pub fn spawn_rpc_dispatcher(
+    coordinator: Arc<WebRtcCoordinator>,
+    gate: Arc<crate::outbound::PeerGate>,
+    peer_name: &str,
+) -> tokio::task::JoinHandle<()> {
+    let peer_name = peer_name.to_string();
+    tokio::spawn(async move {
+        tracing::info!("🎯 {} RPC dispatcher task started", peer_name);
+        loop {
+            match coordinator.receive_message().await {
+                Ok(Some((sender_id_bytes, message_data, _payload_type))) => {
+                    let envelope = match RpcEnvelope::decode(message_data.as_ref()) {
+                        Ok(envelope) => envelope,
+                        Err(e) => {
+                            tracing::error!("{}: Failed to decode RpcEnvelope: {}", peer_name, e);
                             continue;
                         }
                     };
 
-                    // Parse request
-                    match actr_protocol::RpcEnvelope::decode(message_data.as_ref()) {
-                        Ok(request) => {
-                            tracing::debug!(
-                                "📨 {} received request: {}",
-                                peer_name,
-                                request.request_id
-                            );
-
-                            // Create simple echo response
-                            let response = actr_protocol::RpcEnvelope {
-                                request_id: request.request_id.clone(),
-                                route_key: "response".to_string(),
-                                payload: Some(bytes::Bytes::from("pong")),
-                                timeout_ms: 0,
-                                direction: Some(actr_protocol::Direction::Response as i32),
-                                ..Default::default()
+                    let direction = match direction_for_routing(envelope.direction) {
+                        Ok(direction) => direction,
+                        Err(error) => {
+                            let reason = match error {
+                                DirectionError::Missing => "missing",
+                                DirectionError::Unspecified => "unspecified",
+                                DirectionError::Unknown => "unknown",
                             };
-
-                            // Send response
-                            if let Err(e) = gate.send_message(&sender_id, response).await {
-                                tracing::error!(
-                                    "{}: Failed to send response for {}: {}",
-                                    peer_name,
-                                    request.request_id,
-                                    e
-                                );
-                            } else {
-                                tracing::debug!(
-                                    "✅ {} sent response for {}",
-                                    peer_name,
-                                    request.request_id
-                                );
-                            }
+                            tracing::warn!(
+                                peer = %peer_name,
+                                request_id = %envelope.request_id,
+                                route_key = %envelope.route_key,
+                                direction = ?envelope.direction,
+                                reason,
+                                "invalid RpcEnvelope.direction; dropping"
+                            );
+                            continue;
                         }
-                        Err(e) => {
-                            tracing::error!("{}: Failed to decode RpcEnvelope: {}", peer_name, e);
+                    };
+
+                    match direction {
+                        Direction::Request | Direction::Tell => {
+                            let should_respond = direction == Direction::Request;
+                            let gate = gate.clone();
+                            let peer_name = peer_name.clone();
+                            tokio::spawn(async move {
+                                handle_echo_request(
+                                    gate.as_ref(),
+                                    &peer_name,
+                                    &sender_id_bytes,
+                                    envelope,
+                                    should_respond,
+                                )
+                                .await;
+                            });
+                        }
+                        Direction::Response => {
+                            handle_rpc_response(gate.as_ref(), &peer_name, envelope).await;
+                        }
+                        Direction::Unspecified => {
+                            unreachable!("direction_for_routing rejects unspecified directions");
                         }
                     }
                 }

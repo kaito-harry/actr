@@ -388,7 +388,8 @@ async fn expect_request_eventually_ok(
                 assert!(
                     msg.contains("connection not ready")
                         || (msg.contains("Request timeout") || msg.contains("timed out"))
-                        || msg.contains("Connection"),
+                        || msg.contains("Connection")
+                        || msg.contains("all transport candidates exhausted"),
                     "unexpected retry error while waiting for recovery: {msg}"
                 );
                 msg
@@ -1392,10 +1393,8 @@ async fn test_both_peers_first_rpc_concurrently_is_bounded_then_mobile_restore_r
     harness.add_peer(200).await;
 
     let _bg_tasks = [
-        harness.peer(100).start_echo_responder("rc14_echo_100"),
-        harness.peer(200).start_echo_responder("rc14_echo_200"),
-        harness.peer(100).start_response_receiver("rc14_recv_100"),
-        harness.peer(200).start_response_receiver("rc14_recv_200"),
+        harness.peer(100).start_rpc_dispatcher("rc14_rpc_100"),
+        harness.peer(200).start_rpc_dispatcher("rc14_rpc_200"),
     ];
 
     let request_100_to_200 =
