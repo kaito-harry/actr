@@ -4,7 +4,7 @@
 
 ### 环境要求
 
-- Rust 1.88+ (Edition 2024)
+- Rust 1.95+ (Edition 2024)
 - Cargo
 - SQLite 3.x
 - OpenSSL (用于 TLS 证书)

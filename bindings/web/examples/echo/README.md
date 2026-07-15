@@ -105,7 +105,7 @@ The script will:
 
 #### Prerequisites
 
-- **Rust** 1.88+ (`curl --proto '=https' --tlsf1.2 -sSf https://sh.rustup.rs | sh`)
+- **Rust** 1.95+ (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
 - **Node.js** 18+ (`https://nodejs.org/`)
 - **protoc** (`apt install protobuf-compiler` or `brew install protobuf`)
 - **wasm-pack** (`cargo install wasm-pack`)
@@ -318,7 +318,7 @@ Real measurements on local machine:
 
 ```bash
 # Check Rust version
-rustc --version  # Should be 1.88+
+rustc --version  # Should be 1.95+
 
 # Clean and rebuild
 cd server

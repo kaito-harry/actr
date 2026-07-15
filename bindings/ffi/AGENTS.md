@@ -8,7 +8,7 @@
   - `types.rs`: FFI-safe core types (IDs, configs, enums)
   - `workload.rs`: callback interfaces and dynamic workload adapter
   - `error.rs`: `ActrError`/`ActrResult` and error conversions
-- `Cargo.toml`: crate metadata (Rust 2024, `rust-version = 1.88`)
+- `Cargo.toml`: crate metadata (Rust 2024, `rust-version = 1.95`)
 - `target/`: build artifacts (ignored; do not commit)
 
 ## Build, Test, and Development Commands

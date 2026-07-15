@@ -26,8 +26,7 @@ cargo install wasm-tools        --version 1.247.0 --locked
 ```
 
 `wasm-component-ld 0.5.22` is the first release that recognises the
-async-ABI custom sections wit-bindgen 0.57 emits; earlier linkers
-bundled with Rust 1.91 (0.5.17) reject the guest fixture. `wasm-tools`
+async-ABI custom sections wit-bindgen 0.57 emits. `wasm-tools`
 is pinned separately for component validation and diagnostics. CI
 installs both via `cargo install --version` so local and CI behaviour
 match exactly.

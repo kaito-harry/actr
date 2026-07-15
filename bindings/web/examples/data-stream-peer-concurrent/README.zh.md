@@ -28,7 +28,7 @@ data-stream-peer-concurrent/
 
 ## 前置要求
 
-1. 安装：Node.js 18+、pnpm、Rust 1.88+、wasm-pack
+1. 安装：Node.js 18+、pnpm、Rust 1.95+、wasm-pack
 2. `start.sh` 会自动构建并启动本仓库的 `mock-actrix`，不需要外部 `actrix` checkout、STUN/TURN 服务或手工写 SQLite
 
 ## 运行方式

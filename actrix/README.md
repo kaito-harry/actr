@@ -3,7 +3,7 @@
 A production-ready collection of WebRTC auxiliary servers providing STUN, TURN, Signer, and service coordination for the Actrix ecosystem.
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.95%2B-orange.svg)](https://www.rust-lang.org/)
 
 ## Features
 
@@ -210,7 +210,7 @@ cargo bench
 
 ### Prerequisites
 
-- Rust 1.88+ (Edition 2024)
+- Rust 1.95+ (Edition 2024)
 - SQLite 3.x
 - OpenSSL (for certificates)
 

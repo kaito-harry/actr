@@ -28,13 +28,12 @@ experiments/component-spike-async/
 
 ## Prerequisites
 
-- Rust 1.91+ (tested on 1.91.1)
+- Rust 1.95+
 - `rustup target add wasm32-wasip2`
 - `cargo install wasm-tools --version 1.247.0` (for `wasm-tools validate/strip`)
-- **`cargo install wasm-component-ld --version 0.5.22`** — the 0.5.17 bundled
-  with Rust 1.91's wasm32-wasip2 toolchain cannot parse the async component
-  custom sections that wit-bindgen 0.57 emits. `build.sh` points
-  `RUSTFLAGS=-Clinker=...` at the newer binary.
+- **`cargo install wasm-component-ld --version 0.5.22`** — 0.5.22 is the first
+  release that parses the async component custom sections wit-bindgen 0.57
+  emits. `build.sh` points `RUSTFLAGS=-Clinker=...` at the newer binary.
 
 ## Run
 

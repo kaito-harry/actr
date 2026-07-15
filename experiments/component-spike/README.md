@@ -19,7 +19,7 @@ experiments/component-spike/
 
 ## Prerequisites
 
-- Rust 1.91+ (tested on 1.91.1)
+- Rust 1.95+
 - `rustup target add wasm32-wasip2`
 - `cargo install wasm-tools --version 1.247.0`
 - Optional for Q14/Q15 probes:

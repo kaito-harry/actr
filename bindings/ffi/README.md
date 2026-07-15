@@ -31,7 +31,7 @@ from native Rust.
 
 ### Prerequisites
 
-- Rust 1.88+ with `rustup`
+- Rust 1.95+ with `rustup`
 - The actr workspace dependencies (protocol, framework, runtime, config)
 
 ### Installing UniFFI CLI
@@ -96,4 +96,4 @@ This crate depends on the actr workspace crates:
 
 - Ensure all workspace dependencies are available
 - Check that `protoc` is installed for protobuf compilation
-- Verify Rust version meets minimum requirements (1.88+)
+- Verify Rust version meets minimum requirements (1.95+)

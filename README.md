@@ -1,6 +1,6 @@
 # Actor-RTC Framework Demo
 
-![Rust](https://img.shields.io/badge/rust-1.88+-orange.svg)
+![Rust](https://img.shields.io/badge/rust-1.95+-orange.svg)
 ![Node.js](https://img.shields.io/badge/node.js-16+-green.svg)
 ![WebRTC](https://img.shields.io/badge/webrtc-enabled-blue.svg)
 [![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Factrium.github.io%2Factr%2Fcoverage%2Fcoverage-badge.json)](https://actrium.github.io/actr/coverage/)
@@ -63,7 +63,7 @@ The repository includes a complete set of design and development documents. A pr
 
 ### Prerequisites
 
-- **Rust**: 1.88+ ([install guide](https://rustup.rs/))
+- **Rust**: 1.95+ ([install guide](https://rustup.rs/))
 - **Node.js**: 16+ ([download](https://nodejs.org/))
 - **protoc**: Protocol Buffer compiler
   ```bash

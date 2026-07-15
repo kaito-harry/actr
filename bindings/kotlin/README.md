@@ -95,7 +95,7 @@ actr-kotlin/
 
 - **Android Studio**: Arctic Fox or later
 - **Android SDK**: API level 26+ (Android 8.0)
-- **Rust**: 1.88+ with Android targets
+- **Rust**: 1.95+ with Android targets
 - **protoc**: Protocol buffer compiler
 
 ### Build

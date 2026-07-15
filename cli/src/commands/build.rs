@@ -295,8 +295,9 @@ fn run_cargo_build(build: &BuildConfig, effective_target: &str) -> Result<()> {
 
     // Component Model guests (`wasm32-wasip2`) must be linked by
     // `wasm-component-ld` so the emitted artifact is a Component rather
-    // than a core module. Rust 1.91 ships `wasm-component-ld 0.5.17`,
-    // which rejects the async custom sections wit-bindgen 0.57 emits.
+    // than a core module. `wasm-component-ld 0.5.22` is the first
+    // release that recognises the async custom sections wit-bindgen
+    // 0.57 emits.
     // Use Cargo's target-specific linker variable so host build scripts
     // still link with the native linker.
     if effective_target == "wasm32-wasip2" {

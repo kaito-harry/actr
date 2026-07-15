@@ -8,7 +8,7 @@ publish = false
 [workspace]
 
 [dependencies]
-# Pinned to 43.0.1 because 44.0.0 requires rustc >= 1.92; this toolchain has 1.91.1.
+# wasmtime pinned to 43.0.1 (the version the spike was validated against).
 wasmtime = { version = "=43.0.1", features = ["component-model", "runtime", "cranelift"] }
 wasmtime-wasi = "=43.0.1"
 anyhow = "1"

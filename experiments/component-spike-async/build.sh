@@ -7,8 +7,8 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 GUEST_TARGET_DIR="$REPO_ROOT/target/experiments-component-spike-async-guest"
 cd "$HERE"
 
-# Use the newer wasm-component-ld (>=0.5.22) from ~/.cargo/bin for async
-# component custom sections. The one bundled with Rust 1.91 (0.5.17) rejects
+# Use wasm-component-ld (>=0.5.22) from ~/.cargo/bin for async component
+# custom sections; 0.5.22 is the first release that parses the
 # wit-bindgen 0.57 async component-type sections.
 NEW_LD="${HOME}/.cargo/bin/wasm-component-ld"
 if [[ ! -x "$NEW_LD" ]]; then

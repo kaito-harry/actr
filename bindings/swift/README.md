@@ -91,7 +91,7 @@ artifact paired during local validation.
 ## Build (maintainers)
 
 Prerequisites:
-- Rust 1.88+
+- Rust 1.95+
 - Xcode Command Line Tools
 - UniFFI CLI: `cargo install uniffi --features "cli"`
 
