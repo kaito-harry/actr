@@ -27,12 +27,337 @@ use actr_protocol::{
 };
 use actr_runtime::check_acl_permission;
 use actr_runtime_mailbox::{DeadLetterQueue, Mailbox};
-use std::sync::Arc;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "opentelemetry")]
 use tracing::Instrument as _;
+
+/// The remainder of an inbound RPC after synchronous admission has run.
+///
+/// See [`Inner::admit_incoming`]. `'static + Send` so an entry loop may push it
+/// into a `FuturesUnordered` and keep dequeuing.
+pub(crate) type IncomingContinuation = Pin<Box<dyn Future<Output = ActorResult<Bytes>> + Send>>;
+
+/// Type-erased startup future kept behind the crate-private node boundary.
+///
+/// `Inner::start_inner` intentionally contains several large background-loop
+/// state machines. Erasing that concrete layout here keeps it from propagating
+/// into every downstream caller of the public typestate API.
+pub(crate) type NodeStartFuture =
+    Pin<Box<dyn Future<Output = ActorResult<ActrRef>> + Send + 'static>>;
+
+/// Wrap an already-known result as an immediately-ready continuation.
+fn ready_continuation(result: ActorResult<Bytes>) -> IncomingContinuation {
+    Box::pin(async move { result })
+}
+
+/// Send the reply for one in-proc (Shell → Guest) request back over the
+/// Guest → Shell channel.
+///
+/// This is the "reply tail" of the in-proc receive loop, extracted so both the
+/// gate-off inline path and the gate-on continuation (pushed into the loop's
+/// `FuturesUnordered`) run bit-for-bit identical logic. A `tell`
+/// (`expects_response == false`) runs for side effects only and sends nothing.
+#[allow(clippy::too_many_arguments)]
+async fn inproc_send_reply(
+    response_tx: Arc<HostTransport>,
+    route_key: String,
+    request_id: String,
+    traceparent: Option<String>,
+    tracestate: Option<String>,
+    expects_response: bool,
+    result: ActorResult<Bytes>,
+    span: tracing::Span,
+) {
+    let _ = &span; // consumed only under the opentelemetry feature
+    match result {
+        Ok(response_bytes) => {
+            if expects_response {
+                #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+                let mut response_envelope = Inner::build_response_envelope(
+                    request_id.clone(),
+                    route_key,
+                    Some(response_bytes),
+                    None,
+                    None,
+                    None,
+                );
+                #[cfg(feature = "opentelemetry")]
+                inject_span_context_to_rpc(&span, &mut response_envelope);
+
+                let send_response_fut =
+                    response_tx.send_message(PayloadType::RpcReliable, None, response_envelope);
+                #[cfg(feature = "opentelemetry")]
+                let send_response_fut = send_response_fut.instrument(span);
+                if let Err(e) = send_response_fut.await {
+                    tracing::error!(
+                        severity = 7,
+                        error_category = "transport_error",
+                        request_id = %request_id,
+                        "❌ Failed to send RESPONSE to Shell: {:?}",
+                        e
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(
+                severity = 6,
+                error_category = "handler_error",
+                request_id = %request_id,
+                "❌ Guest message handling failed: {:?}",
+                e
+            );
+            // Keep the local error log above for every failure, but skip sending
+            // an error envelope for a `tell`: the caller registered no pending
+            // entry to receive it (#262).
+            if expects_response {
+                let error_response = actr_protocol::ErrorResponse {
+                    code: protocol_error_to_code(&e),
+                    message: e.to_string(),
+                };
+                #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+                let mut error_envelope = Inner::build_response_envelope(
+                    request_id.clone(),
+                    route_key,
+                    None,
+                    Some(error_response),
+                    traceparent,
+                    tracestate,
+                );
+                #[cfg(feature = "opentelemetry")]
+                inject_span_context_to_rpc(&span, &mut error_envelope);
+
+                let send_error_response_fut =
+                    response_tx.send_message(PayloadType::RpcReliable, None, error_envelope);
+                #[cfg(feature = "opentelemetry")]
+                let send_error_response_fut = send_error_response_fut.instrument(span);
+                if let Err(send_err) = send_error_response_fut.await {
+                    tracing::error!(
+                        severity = 7,
+                        error_category = "transport_error",
+                        request_id = %request_id,
+                        "❌ Failed to send ERROR response to Shell: {:?}",
+                        send_err
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Send `response_envelope` back to `caller` via the best available transport.
+///
+/// Priority: inbound WebSocket connection (if the caller dialled us directly) →
+/// WebRTC gate. Module-level so both the inline mailbox path and the gate-on
+/// continuation share one implementation.
+async fn send_envelope_to_caller(
+    ws_gate: &Option<Arc<crate::wire::websocket::WebSocketGate>>,
+    webrtc_gate: &Option<Arc<crate::wire::webrtc::gate::WebRtcGate>>,
+    caller: &ActrId,
+    response_envelope: RpcEnvelope,
+    request_id: &str,
+) {
+    // 1. Try inbound WebSocket connection first.
+    if let Some(wsg) = ws_gate {
+        match wsg.send_response(caller, response_envelope.clone()).await {
+            Ok(true) => return, // sent successfully
+            Ok(false) => {
+                tracing::debug!(
+                    request_id = request_id,
+                    caller = %caller,
+                    "No inbound WS connection for caller; falling back to WebRTC gate"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    severity = 5,
+                    error_category = "transport_error",
+                    request_id = request_id,
+                    "WebSocketGate send_response failed, falling back: {:?}",
+                    e
+                );
+            }
+        }
+    }
+
+    // 2. Fall back to WebRTC gate.
+    if let Some(gate) = webrtc_gate {
+        if let Err(e) = gate.send_response(caller, response_envelope).await {
+            tracing::error!(
+                severity = 7,
+                error_category = "transport_error",
+                request_id = request_id,
+                "❌ WebRtcGate send_response failed: {:?}",
+                e
+            );
+        }
+    } else {
+        tracing::error!(
+            severity = 7,
+            error_category = "transport_error",
+            request_id = request_id,
+            "❌ No gate available to send response"
+        );
+    }
+}
+
+/// Send the reply for one mailbox (State Path) request back to its caller and
+/// ACK the durable message.
+///
+/// This is the "reply + ack tail" of the mailbox loop, extracted so the
+/// gate-off inline path and the gate-on continuation (pushed into the loop's
+/// `FuturesUnordered`) run bit-for-bit identical logic. The per-message
+/// `reply → ack` order is preserved exactly; only *across* messages may an ack
+/// overlap a later message's dispatch (gate-on only, a documented behaviour
+/// change bounded by the dedup TTL).
+#[allow(clippy::too_many_arguments)]
+async fn mailbox_reply_and_ack(
+    ws_gate: Option<Arc<crate::wire::websocket::WebSocketGate>>,
+    webrtc_gate: Option<Arc<crate::wire::webrtc::gate::WebRtcGate>>,
+    mailbox: Arc<dyn Mailbox>,
+    caller: Result<ActrId, String>,
+    request_id: String,
+    route_key: String,
+    traceparent: Option<String>,
+    tracestate: Option<String>,
+    expects_response: bool,
+    msg_id: uuid::Uuid,
+    result: ActorResult<Bytes>,
+    span: tracing::Span,
+) {
+    let _ = &span; // consumed only under the opentelemetry feature
+    match result {
+        Ok(response_bytes) => {
+            match caller {
+                Ok(caller) if expects_response => {
+                    // Construct response RpcEnvelope (reuse request_id!)
+                    #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+                    let mut response_envelope = Inner::build_response_envelope(
+                        request_id.clone(),
+                        route_key,
+                        Some(response_bytes),
+                        None,
+                        traceparent,
+                        tracestate,
+                    );
+                    #[cfg(feature = "opentelemetry")]
+                    inject_span_context_to_rpc(&span, &mut response_envelope);
+
+                    #[cfg(feature = "opentelemetry")]
+                    let send_fut = send_envelope_to_caller(
+                        &ws_gate,
+                        &webrtc_gate,
+                        &caller,
+                        response_envelope,
+                        &request_id,
+                    )
+                    .instrument(span);
+                    #[cfg(not(feature = "opentelemetry"))]
+                    let send_fut = send_envelope_to_caller(
+                        &ws_gate,
+                        &webrtc_gate,
+                        &caller,
+                        response_envelope,
+                        &request_id,
+                    );
+                    send_fut.await;
+                }
+                // `tell` handled successfully: side effects ran, no reply is sent.
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::error!(
+                        severity = 8,
+                        error_category = "protobuf_decode",
+                        request_id = %request_id,
+                        "❌ Failed to decode caller_id: {}",
+                        e
+                    );
+                }
+            }
+
+            // ACK message
+            if let Err(e) = mailbox.ack(msg_id).await {
+                tracing::error!(
+                    severity = 9,
+                    error_category = "mailbox_error",
+                    request_id = %request_id,
+                    message_id = %msg_id,
+                    "❌ Mailbox ACK failed: {:?}",
+                    e
+                );
+            }
+        }
+        Err(e) => {
+            tracing::error!(
+                severity = 6,
+                error_category = "handler_error",
+                request_id = %request_id,
+                route_key = %route_key,
+                "❌ handle_incoming failed: {:?}", e
+            );
+
+            // Send error envelope back to caller so it receives a structured
+            // error rather than waiting until its deadline fires. A `tell`
+            // (timeout_ms == 0) registered no pending entry, so skip the reply —
+            // the local error log above still records the failure (#262).
+            if let (true, Ok(caller)) = (expects_response, caller) {
+                let error_response = actr_protocol::ErrorResponse {
+                    code: protocol_error_to_code(&e),
+                    message: e.to_string(),
+                };
+                #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+                let mut error_envelope = Inner::build_response_envelope(
+                    request_id.clone(),
+                    route_key,
+                    None,
+                    Some(error_response),
+                    traceparent,
+                    tracestate,
+                );
+                #[cfg(feature = "opentelemetry")]
+                inject_span_context_to_rpc(&span, &mut error_envelope);
+
+                send_envelope_to_caller(
+                    &ws_gate,
+                    &webrtc_gate,
+                    &caller,
+                    error_envelope,
+                    &request_id,
+                )
+                .await;
+            }
+
+            // ACK to avoid infinite retries
+            let _ = mailbox.ack(msg_id).await;
+        }
+    }
+}
+
+/// Force-closes stream callbacks when the node's owning state is released.
+struct DataChunkRegistryCleanupGuard {
+    registry: Weak<DataChunkRegistry>,
+}
+
+impl DataChunkRegistryCleanupGuard {
+    fn new(registry: &Arc<DataChunkRegistry>) -> Self {
+        Self {
+            registry: Arc::downgrade(registry),
+        }
+    }
+}
+
+impl Drop for DataChunkRegistryCleanupGuard {
+    fn drop(&mut self) {
+        if let Some(registry) = self.registry.upgrade() {
+            registry.clear();
+        }
+    }
+}
 
 /// Internal running-state of an attached node.
 ///
@@ -62,6 +387,12 @@ pub(crate) struct Inner {
     /// outbound call issued before that point returns `Internal("PeerGate
     /// not initialized yet")` — see `RuntimeContext::select_gate`.
     pub(crate) outproc_gate: Option<Gate>,
+
+    /// Breaks `registry -> callback -> RuntimeContext -> registry` ownership
+    /// cycles on every `Inner` exit path, including startup failures. It is
+    /// declared before the registry so callbacks are force-closed first on
+    /// drop.
+    _data_chunk_registry_cleanup: DataChunkRegistryCleanupGuard,
 
     /// DataChunk callback registry shared between the inbound WebRTC / WS
     /// gates (which dispatch into it) and `RuntimeContext`
@@ -109,6 +440,14 @@ pub(crate) struct Inner {
     /// Shutdown token for graceful shutdown
     pub(crate) shutdown_token: CancellationToken,
 
+    /// Admission barrier spanning one complete durable-mailbox dequeue batch.
+    ///
+    /// `dequeue()` marks the whole batch Inflight before the node processes its
+    /// records. Holding this gate's read side until every record has either
+    /// been admitted or handled inline prevents shutdown from closing the
+    /// scheduler / runner between records and ACKing the unexecuted tail.
+    mailbox_batch_admission: MailboxBatchAdmission,
+
     /// Packaged manifest.lock.toml content loaded at startup for fingerprint lookups.
     ///
     /// Wrapped in `Arc` so per-request `RuntimeContext` clones only bump a refcount
@@ -146,19 +485,30 @@ pub(crate) struct Inner {
     pub(crate) discovered_ws_addresses:
         Arc<tokio::sync::RwLock<std::collections::HashMap<ActrId, String>>>,
 
-    /// Runtime workload (WASM, dynclib, etc.)
+    /// Handle to the per-actor serial command runner.
     ///
-    /// `handle_incoming` dispatches through this workload.
-    ///
-    /// The `Mutex` serializes dispatch into a single guest actor instance:
-    /// `WasmWorkload::handle` and `DynClibWorkload::handle` both take
-    /// `&mut self` because the underlying Wasmtime `Store` / native guest
-    /// ABI is single-threaded, so concurrent dispatch through the same
-    /// instance would be unsound. Lifecycle hooks also take this lock because
-    /// package-backed WASM / dynclib workloads expose them on the same guest
-    /// instance; transport and other observation hooks reach linked workloads
-    /// through `hook_observer` without holding this lock.
-    pub(crate) workload_dispatch: Arc<Mutex<crate::workload::Workload>>,
+    /// `handle_incoming` dispatches through this handle. The runner owns the
+    /// `Workload` (WASM `Store` / native guest ABI) and processes commands one
+    /// at a time, run-to-completion, so the single-threaded guest instance is
+    /// never entered concurrently — the same invariant the old node-global
+    /// `Arc<Mutex<Workload>>` provided, now enforced by a single-consumer
+    /// command channel instead of a shared lock. Dispatch, data-stream, hook,
+    /// and lifecycle commands all travel the same channel (= the old single
+    /// lock); transport and other observation hooks reach linked workloads
+    /// through `hook_observer` without touching this handle.
+    pub(crate) workload_dispatch: Arc<crate::executor::ActorHandle>,
+
+    /// In-memory conflict-key dispatch scheduler (B2). `None` = the scheduler is
+    /// not engaged (gate off, **or** — under strategy A default-on — a keyless
+    /// actor), so dispatch goes straight to `workload_dispatch` exactly as B1
+    /// did. `Some(scheduler)` routes RPC dispatch through per-key serial +
+    /// budgeted concurrent scheduling before it reaches the runner.
+    pub(crate) dispatch_scheduler: Option<Arc<crate::dispatch::scheduler::SchedulerHandle>>,
+
+    /// Conflict-key projection table. Empty (default) = every method projects to
+    /// the global serial key, so even with the gate on an app that declared
+    /// nothing stays fully serial.
+    pub(crate) conflict_keys: Arc<crate::dispatch::ConflictKeySpec>,
 
     /// Optional shell-side observer that receives linked-workload transport /
     /// credential / mailbox hook invocations.
@@ -250,7 +600,7 @@ impl CredentialState {
 /// Called by the workload dispatch path in `handle_incoming`.
 async fn host_operation_handler(
     ctx: crate::context::RuntimeContext,
-    workload_dispatch: Arc<Mutex<crate::workload::Workload>>,
+    workload_dispatch: std::sync::Weak<crate::executor::ActorHandle>,
     pending: crate::workload::HostOperation,
 ) -> crate::workload::HostOperationResult {
     use crate::workload::{HostOperation, HostOperationResult, decode_dest};
@@ -356,6 +706,11 @@ async fn host_operation_handler(
                     let ctx_for_executor = callback_ctx.clone();
                     let workload_dispatch = callback_workload_dispatch.clone();
                     Box::pin(async move {
+                        let Some(workload_dispatch) = workload_dispatch.upgrade() else {
+                            return Err(ActrError::Unavailable(
+                                "actor runner terminated".to_string(),
+                            ));
+                        };
                         let invocation = crate::workload::InvocationContext {
                             self_id: actr_framework::Context::self_id(&ctx_for_executor).clone(),
                             caller_id: Some(sender.clone()),
@@ -371,8 +726,11 @@ async fn host_operation_handler(
                                     stream_callback_host_operation_handler(ctx, pending).await
                                 })
                             });
-                        let mut guard = workload_dispatch.lock().await;
-                        guard
+                        // Self-lock elimination: this callback fires later (on
+                        // chunk arrival), never during the dispatch that
+                        // registered it, so appending a DataChunk command to
+                        // the runner's channel and awaiting it cannot deadlock.
+                        workload_dispatch
                             .dispatch_data_chunk(chunk, sender, invocation, &call_executor)
                             .await
                     })
@@ -443,8 +801,9 @@ fn lifecycle_invocation(
 
 pub(crate) fn lifecycle_host_abi(
     ctx: crate::context::RuntimeContext,
-    workload_dispatch: Arc<Mutex<crate::workload::Workload>>,
+    workload_dispatch: Arc<crate::executor::ActorHandle>,
 ) -> crate::workload::HostAbiFn {
+    let workload_dispatch = Arc::downgrade(&workload_dispatch);
     std::sync::Arc::new(move |pending| {
         let ctx = ctx.clone();
         let workload_dispatch = workload_dispatch.clone();
@@ -628,6 +987,154 @@ fn parse_connection_not_ready_retry_hint(message: &str) -> Option<u64> {
     rest[..end].parse().ok()
 }
 
+/// Strategy A gate: decide whether the resident concurrency machinery (the
+/// interleaved runner + conflict-key scheduler) should be engaged for an actor.
+///
+/// It is engaged **only** when the dispatch gate is on *and* the actor declares
+/// at least one conflict key. A keyless actor — even with the default-on gate —
+/// returns `false`, so the node keeps it on the serial `run_loop` with no
+/// scheduler: default-on is bit-for-bit the M4 path for anything unkeyed, at
+/// zero scheduling cost. This is a pure function so the routing promise is unit
+/// testable without standing up a node.
+fn scheduler_engaged(gate_on: bool, has_conflict_keys: bool) -> bool {
+    gate_on && has_conflict_keys
+}
+
+/// Writer-preferring admission gate for durable mailbox batches.
+///
+/// The mailbox loop enters before `dequeue()` and retains the returned guard
+/// through the entire batch. Shutdown closes the gate before scheduler / runner
+/// intake, so Tokio's fair `RwLock` first blocks any later batch and then waits
+/// for the already-dequeued batch to finish admission.
+#[derive(Clone, Debug)]
+struct MailboxBatchAdmission {
+    open: Arc<RwLock<bool>>,
+}
+
+impl MailboxBatchAdmission {
+    fn new() -> Self {
+        Self {
+            open: Arc::new(RwLock::new(true)),
+        }
+    }
+
+    async fn enter(&self) -> Option<tokio::sync::OwnedRwLockReadGuard<bool>> {
+        let guard = self.open.clone().read_owned().await;
+        if *guard { Some(guard) } else { None }
+    }
+
+    async fn close(&self) {
+        let mut open = self.open.write().await;
+        *open = false;
+    }
+}
+
+/// Abort fallback armed for the complete shutdown sequence. `ActrRef` bounds
+/// background-task shutdown; if that outer task is aborted while a guest is
+/// stuck, dropping this guard aborts the detached owning runner as well.
+struct AbortActorRunnerOnDrop {
+    runner: Arc<crate::executor::ActorHandle>,
+    armed: bool,
+}
+
+impl AbortActorRunnerOnDrop {
+    fn new(runner: Arc<crate::executor::ActorHandle>) -> Self {
+        Self {
+            runner,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for AbortActorRunnerOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.runner.abort();
+        }
+    }
+}
+
+type ShutdownStep = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+/// Ordered actor teardown:
+///
+/// 1. run the cancellation-sensitive prelude (quiesce durable mailbox batches,
+///    then stop stream workers);
+/// 2. stop scheduler intake and drain all admitted queued + in-flight work;
+/// 3. close direct dispatch admission and wait for earlier sends to enqueue;
+/// 4. invoke `on_stop` as a runner barrier;
+/// 5. stop and join the owning runner task.
+///
+/// The abort guard makes cancellation of this coordinator deterministic too.
+async fn shutdown_actor_runner(
+    scheduler: Option<Arc<crate::dispatch::scheduler::SchedulerHandle>>,
+    runner: Arc<crate::executor::ActorHandle>,
+    pre_shutdown: ShutdownStep,
+    on_stop: ShutdownStep,
+) {
+    let mut abort_guard = AbortActorRunnerOnDrop::new(runner.clone());
+    pre_shutdown.await;
+    if let Some(scheduler) = scheduler {
+        scheduler.shutdown().await;
+    }
+    runner.stop_intake().await;
+    on_stop.await;
+    runner.shutdown().await;
+    abort_guard.disarm();
+}
+
+/// Spawn the workload stop coordinator behind a boxed future boundary.
+///
+/// Keeping this concrete async state machine out of [`Inner::start_inner`]
+/// also keeps the boxed startup future smaller and easier for older compilers
+/// to lay out.
+fn spawn_workload_stop_task(
+    node: Arc<Inner>,
+    actor_id: ActrId,
+    credential_state: CredentialState,
+    shutdown: CancellationToken,
+) -> tokio::task::JoinHandle<()> {
+    let task: ShutdownStep = Box::pin(async move {
+        shutdown.cancelled().await;
+        let data_chunk_registry = node.data_chunk_registry.clone();
+        let mailbox_batch_admission = node.mailbox_batch_admission.clone();
+        let scheduler = node.dispatch_scheduler.clone();
+        let runner = node.workload_dispatch.clone();
+        let runner_for_stop = runner.clone();
+        let quiesce_ingress = async move {
+            // `dequeue()` marks a complete batch Inflight. Wait until every
+            // record in an active batch has reached scheduler / runner
+            // admission before either intake is closed; otherwise the tail
+            // would resolve as terminated and be permanently ACKed unhandled.
+            mailbox_batch_admission.close().await;
+            // Once this returns, no stream callback can still enqueue actor
+            // work or retain its RuntimeContext ownership chain.
+            data_chunk_registry.shutdown().await;
+        };
+        let stop = async move {
+            let stop_ctx = node
+                .bootstrap_ctx_builder()
+                .build_bootstrap(&actor_id, &credential_state.credential().await);
+            let invocation = lifecycle_invocation(&actor_id, "lifecycle:on_stop");
+            let call_executor = lifecycle_host_abi(stop_ctx.clone(), runner_for_stop.clone());
+            if let Err(e) = crate::lifecycle::hooks::call_lifecycle_hook(
+                "on_stop",
+                runner_for_stop.on_stop(stop_ctx, invocation, &call_executor),
+            )
+            .await
+            {
+                tracing::warn!(error = %e, "workload on_stop returned Err");
+            }
+        };
+        shutdown_actor_runner(scheduler, runner, Box::pin(quiesce_ingress), Box::pin(stop)).await;
+    });
+    tokio::spawn(task)
+}
+
 impl Inner {
     #[allow(dead_code)]
     pub(crate) fn package_manifest(&self) -> Option<&actr_pack::PackageManifest> {
@@ -771,6 +1278,34 @@ impl Inner {
         envelope: RpcEnvelope,
         caller_id: Option<&ActrId>,
     ) -> ActorResult<Bytes> {
+        // Thin wrapper preserving the original signature: run synchronous
+        // admission, then await the continuation to completion inline. This is
+        // bit-for-bit the pre-B2 path (ACL → dedup → ctx → dispatch → dedup
+        // complete), used directly by the mailbox lane and by the in-proc lane
+        // when the dispatch gate is off.
+        self.admit_incoming(envelope, caller_id).await.await
+    }
+
+    /// Synchronous admission of an inbound RPC, returning the continuation that
+    /// finishes it.
+    ///
+    /// Everything that must happen *in arrival order* runs before this returns:
+    /// ACL, dedup `check_or_mark`, context construction, conflict-key
+    /// extraction, and — when the gate is on — the scheduler submission (whose
+    /// queue semaphore is the back-pressure point). The returned
+    /// [`IncomingContinuation`] is `'static + Send`, so an entry loop can push
+    /// it into a `FuturesUnordered` and keep dequeuing while distinct-key
+    /// dispatches run concurrently. Awaiting it yields the dispatch result and
+    /// writes the dedup completion at the same point the old inline model did.
+    ///
+    /// The three pre-dispatch fast paths (ACL deny, dedup in-flight wait, dedup
+    /// cache hit) return an already-resolved continuation — they never mark a
+    /// dedup completion, exactly as before.
+    pub(crate) async fn admit_incoming(
+        &self,
+        envelope: RpcEnvelope,
+        caller_id: Option<&ActrId>,
+    ) -> IncomingContinuation {
         // Log received message
         if let Some(caller) = caller_id {
             tracing::debug!(
@@ -788,15 +1323,26 @@ impl Inner {
         }
 
         // 0. Get actor_id early for ACL check
-        let actor_id = self.actor_id.as_ref().ok_or_else(|| {
-            ActrError::Internal(
-                "Actor ID not set - node must be started before handling messages".to_string(),
-            )
-        })?;
+        let actor_id = match self.actor_id.as_ref() {
+            Some(id) => id,
+            None => {
+                return ready_continuation(Err(ActrError::Internal(
+                    "Actor ID not set - node must be started before handling messages".to_string(),
+                )));
+            }
+        };
 
         // 0.1. ACL Permission Check (before processing message)
-        let acl_allowed = check_acl_permission(caller_id, actor_id, self.config.acl.as_ref())
-            .map_err(|err_msg| ActrError::Internal(format!("ACL check failed: {}", err_msg)))?;
+        let acl_allowed = match check_acl_permission(caller_id, actor_id, self.config.acl.as_ref())
+        {
+            Ok(allowed) => allowed,
+            Err(err_msg) => {
+                return ready_continuation(Err(ActrError::Internal(format!(
+                    "ACL check failed: {}",
+                    err_msg
+                ))));
+            }
+        };
 
         if !acl_allowed {
             tracing::warn!(
@@ -810,13 +1356,14 @@ impl Inner {
                 "🚫 ACL: Permission denied"
             );
 
-            return Err(ActrError::PermissionDenied(format!(
+            let denied = ActrError::PermissionDenied(format!(
                 "ACL denied: {} is not allowed to call {}",
                 caller_id
                     .map(|c| c.to_string())
                     .unwrap_or_else(|| "<unknown>".to_string()),
                 actor_id
-            )));
+            ));
+            return ready_continuation(Err(denied));
         }
 
         // 0.2. Deduplication: return cached response for retried request_ids.
@@ -843,18 +1390,17 @@ impl Inner {
                         route_key = %envelope.route_key,
                         "duplicate tell in-flight; dropping duplicate immediately (fire-and-forget)"
                     );
-                    return Ok(Bytes::new());
+                    return ready_continuation(Ok(Bytes::new()));
                 }
                 tracing::debug!(
                     request_id = %envelope.request_id,
                     route_key = %envelope.route_key,
                     "duplicate request in-flight; waiting for original result"
                 );
-                return Self::wait_for_inflight_duplicate(
-                    waiter,
-                    Self::duplicate_wait_timeout(envelope.timeout_ms),
-                )
-                .await;
+                let timeout = Self::duplicate_wait_timeout(envelope.timeout_ms);
+                return Box::pin(async move {
+                    Self::wait_for_inflight_duplicate(waiter, timeout).await
+                });
             }
             DedupOutcome::Duplicate(cached) => {
                 tracing::debug!(
@@ -862,16 +1408,20 @@ impl Inner {
                     route_key = %envelope.route_key,
                     "♻️ returning cached response for duplicate request_id"
                 );
-                return cached;
+                return ready_continuation(cached);
             }
         }
 
         // 1. Create Context with caller_id from transport layer
-        let credential_state = self.credential_state.clone().ok_or_else(|| {
-            ActrError::Internal(
-                "Credential not set - node must be started before handling messages".to_string(),
-            )
-        })?;
+        let credential_state = match self.credential_state.clone() {
+            Some(cs) => cs,
+            None => {
+                return ready_continuation(Err(ActrError::Internal(
+                    "Credential not set - node must be started before handling messages"
+                        .to_string(),
+                )));
+            }
+        };
         let ctx = self.make_runtime_context(
             actor_id,
             caller_id, // caller_id from transport layer (MessageRecord.from)
@@ -886,56 +1436,90 @@ impl Inner {
             request_id: envelope.request_id.clone(),
         };
         let ctx_for_executor = ctx.clone();
-        let workload_for_executor = self.workload_dispatch.clone();
-        let call_executor: crate::workload::HostAbiFn = std::sync::Arc::new(move |pending| {
-            let ctx = ctx_for_executor.clone();
-            let workload_dispatch = workload_for_executor.clone();
-            Box::pin(async move { host_operation_handler(ctx, workload_dispatch, pending).await })
-        });
+        let call_executor = lifecycle_host_abi(ctx_for_executor, self.workload_dispatch.clone());
 
-        let mut guard = self.workload_dispatch.lock().await;
-        let result = guard
-            .dispatch_envelope(envelope.clone(), ctx.clone(), dispatch_ctx, &call_executor)
-            .await;
-
-        match &result {
-            Ok(_) => tracing::debug!(
-                request_id = %envelope.request_id,
-                route_key = %envelope.route_key,
-                "✅ Message handled successfully"
-            ),
-            Err(e) => tracing::error!(
-                severity = 6,
-                error_category = "handler_error",
-                request_id = %envelope.request_id,
-                route_key = %envelope.route_key,
-                "❌ Message handling failed: {:?}", e
-            ),
-        }
-
-        // 3. Store completed result in dedup cache before returning.
-        //
-        // Completion happens on handler Err too, so a retried request (or
-        // tell) observes the recorded failure instead of re-running the
-        // handler. For a successful TELL the response bytes are never sent,
-        // so cache empty bytes instead of retaining the unsent payload for
-        // the full DEDUP_TTL.
-        let cached = match (&result, is_tell) {
-            (Ok(_), true) => Ok(Bytes::new()),
-            _ => result.clone(),
+        // The continuation logs its result and writes the dedup completion at the
+        // dispatch completion point — same write-back timing as the old inline
+        // lock model, for both the gate-on and gate-off branches below.
+        let dedup_state = self.dedup_state.clone();
+        let request_id = envelope.request_id.clone();
+        let route_key = envelope.route_key.clone();
+        let finish = move |result: ActorResult<Bytes>| async move {
+            match &result {
+                Ok(_) => tracing::debug!(
+                    request_id = %request_id,
+                    route_key = %route_key,
+                    "✅ Message handled successfully"
+                ),
+                Err(e) => tracing::error!(
+                    severity = 6,
+                    error_category = "handler_error",
+                    request_id = %request_id,
+                    route_key = %route_key,
+                    "❌ Message handling failed: {:?}", e
+                ),
+            }
+            // Completion happens on handler Err too, so a retried request (or
+            // tell) observes the recorded failure instead of re-running the
+            // handler. For a successful TELL the response bytes are never
+            // sent, so cache empty bytes instead of retaining the unsent
+            // payload for the full DEDUP_TTL.
+            let cached = match (&result, is_tell) {
+                (Ok(_), true) => Ok(Bytes::new()),
+                _ => result.clone(),
+            };
+            dedup_state.lock().await.complete(&request_id, cached);
+            result
         };
-        self.dedup_state
-            .lock()
-            .await
-            .complete(&envelope.request_id, cached);
 
-        result
+        // Route through the conflict-key scheduler when the gate is on; otherwise
+        // the continuation dispatches straight to the runner — bit-for-bit the
+        // B1 path once awaited.
+        if let Some(scheduler) = &self.dispatch_scheduler {
+            let key = self.conflict_keys.extract(
+                &envelope.route_key,
+                caller_id,
+                envelope.payload.as_deref().unwrap_or_default(),
+            );
+            let workload = self.workload_dispatch.clone();
+            let env = envelope.clone();
+            let ctx_run = ctx.clone();
+            let invocation = dispatch_ctx;
+            let executor = call_executor;
+            let run: crate::dispatch::scheduler::DispatchFn = Box::new(move || {
+                Box::pin(async move {
+                    workload
+                        .dispatch_envelope(env, ctx_run, invocation, &executor)
+                        .await
+                })
+            });
+            // Submission (queue-slot acquisition + arrival-order enqueue) happens
+            // now, before returning — this `.await` is the back-pressure point.
+            let rx = scheduler.submit(key, run).await;
+            Box::pin(async move {
+                let result = rx.await.unwrap_or_else(|_| {
+                    Err(ActrError::Unavailable(
+                        "dispatch scheduler terminated".to_string(),
+                    ))
+                });
+                finish(result).await
+            })
+        } else {
+            let workload = self.workload_dispatch.clone();
+            Box::pin(async move {
+                let result = workload
+                    .dispatch_envelope(envelope, ctx, dispatch_ctx, &call_executor)
+                    .await;
+                finish(result).await
+            })
+        }
     }
 
     /// Build a new `Inner` from config and runtime workload.
     ///
     /// This is the internal constructor behind the public node builders and
     /// Hyper package attach helpers.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn build(
         config: actr_config::RuntimeConfig,
         workload: crate::workload::Workload,
@@ -943,6 +1527,8 @@ impl Inner {
         packaged_lock: Option<actr_config::lock::LockFile>,
         mailbox_backpressure_threshold: usize,
         credential_expiry_warning: Duration,
+        dispatch_concurrency: crate::config::DispatchConcurrency,
+        conflict_keys: Option<crate::dispatch::ConflictKeySpec>,
     ) -> ActorResult<Self> {
         use crate::outbound::{Gate, HostGate};
         use crate::wire::webrtc::{ReconnectConfig, SignalingConfig, WebSocketSignalingClient};
@@ -1030,6 +1616,61 @@ impl Inner {
             None
         };
 
+        // ── Dispatch scheduling layer (B2 native / M5 wasm) ─────────────────
+        // Strategy A (default-on, keyless zero-overhead): the gate now defaults
+        // *on*, but the resident concurrency machinery (interleaved runner +
+        // scheduler) is engaged **only when the gate is on AND at least one
+        // conflict key is declared** ([`scheduler_engaged`]). A keyless actor —
+        // even with the gate on — stays on the serial `run_loop` with no
+        // scheduler spawned, bit-for-bit the M4 path: default-on costs it
+        // nothing. When engaged, the runner mode is `Interleaved` regardless of
+        // world; the executor then routes by the workload's actual concurrency
+        // capability:
+        //   * `Linked`     → native `&self` concurrency (B2)
+        //   * `Wasm(V2)`   → resident `run_concurrent` region (M5 open concurrency)
+        //   * `Wasm(V1)` / `DynClib` → serial `run_loop` (single-Store fallback)
+        // The node stays world-agnostic: it never inspects the wasm kernel
+        // version — that adjudication lives entirely in the executor match, so
+        // the "no-op key on a serial-only package" case degrades silently. The
+        // second safety net is orthogonal to the gate default: whenever a
+        // scheduler *is* running, an undeclared method still projects to the
+        // global `ConflictKey::Serial` barrier and can never interleave.
+        let conflict_keys = Arc::new(conflict_keys.unwrap_or_default());
+        let gate_on = dispatch_concurrency.enabled;
+        let scheduler_on = scheduler_engaged(gate_on, !conflict_keys.is_empty());
+        let is_linked = matches!(workload, crate::workload::Workload::Linked(_));
+
+        let runner_mode = if scheduler_on {
+            crate::executor::RunnerMode::Interleaved
+        } else {
+            crate::executor::RunnerMode::Serial
+        };
+        let workload_dispatch = crate::executor::spawn_runner_with_mode(
+            workload,
+            runner_mode,
+            dispatch_concurrency.dispatch_timeout,
+        );
+
+        let dispatch_scheduler = if scheduler_on {
+            tracing::info!(
+                budget = dispatch_concurrency.budget,
+                queue_cap = dispatch_concurrency.queue_cap,
+                dispatch_timeout_ms = dispatch_concurrency
+                    .dispatch_timeout
+                    .map(|d| d.as_millis() as u64),
+                is_linked,
+                "dispatch concurrency enabled"
+            );
+            Some(Arc::new(
+                crate::dispatch::scheduler::SchedulerHandle::spawn(
+                    dispatch_concurrency.budget,
+                    dispatch_concurrency.queue_cap,
+                ),
+            ))
+        } else {
+            None
+        };
+
         tracing::info!("✅ ActrNode initialized");
 
         Ok(Self {
@@ -1038,6 +1679,7 @@ impl Inner {
             dlq,
             inproc_gate,
             outproc_gate: None, // Populated in start() once WebRTC / PeerGate is ready.
+            _data_chunk_registry_cleanup: DataChunkRegistryCleanupGuard::new(&data_chunk_registry),
             data_chunk_registry,
             media_frame_registry,
             signaling_client,
@@ -1051,6 +1693,7 @@ impl Inner {
             shell_to_workload: Some(shell_to_workload),
             workload_to_shell: Some(workload_to_shell),
             shutdown_token,
+            mailbox_batch_admission: MailboxBatchAdmission::new(),
             actr_lock,
             network_event_rx: None,
             network_event_debounce_config: None,
@@ -1061,7 +1704,9 @@ impl Inner {
             discovered_ws_addresses: Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
-            workload_dispatch: Arc::new(Mutex::new(workload)),
+            workload_dispatch: Arc::new(workload_dispatch),
+            dispatch_scheduler,
+            conflict_keys,
             hook_observer: None,
             mailbox_backpressure_threshold,
             credential_expiry_warning,
@@ -1173,8 +1818,12 @@ impl Inner {
         self.preregistered_registration_context = Some(ctx);
     }
 
-    /// Start the system
-    pub async fn start(mut self) -> ActorResult<ActrRef> {
+    /// Start the system behind a type-erased future boundary.
+    pub fn start(self) -> NodeStartFuture {
+        Box::pin(self.start_inner())
+    }
+
+    async fn start_inner(mut self) -> ActorResult<ActrRef> {
         tracing::info!("🚀 Starting ActrNode");
         tracing::info!("Actr Rust version: {}", env!("CARGO_PKG_VERSION"));
 
@@ -1602,10 +2251,10 @@ impl Inner {
                 let invocation = lifecycle_invocation(&actor_id, "lifecycle:on_start");
                 let call_executor =
                     lifecycle_host_abi(startup_ctx.clone(), self.workload_dispatch.clone());
-                let mut workload = self.workload_dispatch.lock().await;
                 crate::lifecycle::hooks::call_lifecycle_hook(
                     "on_start",
-                    workload.on_start(startup_ctx, invocation, &call_executor),
+                    self.workload_dispatch
+                        .on_start(startup_ctx, invocation, &call_executor),
                 )
                 .await?;
             }
@@ -1901,36 +2550,12 @@ impl Inner {
         // 3.2. Register workload-level stop hook.
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         {
-            let node = node_ref.clone();
-            let actor_id = actor_id.clone();
-            let credential_state = credential_state.clone();
-            let shutdown = shutdown_token.clone();
-            let on_stop_handle = tokio::spawn(async move {
-                shutdown.cancelled().await;
-
-                // Stop inbound data stream workers before on_stop tries to
-                // enter the workload. Stream callbacks also hold
-                // workload_dispatch, so draining/aborting them first prevents
-                // on_stop from skipping registry cleanup while waiting on the
-                // same lock.
-                node.data_chunk_registry.shutdown().await;
-
-                let stop_ctx = node
-                    .bootstrap_ctx_builder()
-                    .build_bootstrap(&actor_id, &credential_state.credential().await);
-                let invocation = lifecycle_invocation(&actor_id, "lifecycle:on_stop");
-                let call_executor =
-                    lifecycle_host_abi(stop_ctx.clone(), node.workload_dispatch.clone());
-                let mut workload = node.workload_dispatch.lock().await;
-                if let Err(e) = crate::lifecycle::hooks::call_lifecycle_hook(
-                    "on_stop",
-                    workload.on_stop(stop_ctx, invocation, &call_executor),
-                )
-                .await
-                {
-                    tracing::warn!(error = %e, "workload on_stop returned Err");
-                }
-            });
+            let on_stop_handle = spawn_workload_stop_task(
+                node_ref.clone(),
+                actor_id.clone(),
+                credential_state.clone(),
+                shutdown_token.clone(),
+            );
             task_handles.push(on_stop_handle);
         }
 
@@ -1987,13 +2612,36 @@ impl Inner {
                 let shutdown = shutdown_token.clone();
 
                 let inproc_handle = tokio::spawn(async move {
+                    use futures_util::StreamExt as _;
+                    use futures_util::stream::FuturesUnordered;
+
+                    // Concurrency gate: only when the dispatch scheduler is on do
+                    // we overlap messages. No scheduler (a keyless actor, or the
+                    // gate forced off) = one message at a time, bit-for-bit the
+                    // pre-B2 loop.
+                    let scheduler_on = node.dispatch_scheduler.is_some();
+                    // Bound on continuations the loop keeps in flight; a full set
+                    // stops us dequeuing, which back-pressures the lane. The
+                    // scheduler's own queue (`M`) is the finer bound underneath.
+                    const INPROC_INFLIGHT_CAP: usize = 256;
+                    let mut inflight: FuturesUnordered<Pin<Box<dyn Future<Output = ()> + Send>>> =
+                        FuturesUnordered::new();
+
                     loop {
                         tokio::select! {
+                            biased;
                             _ = shutdown.cancelled() => {
                                 tracing::info!("📭 Guest receive loop (Shell → Guest) received shutdown signal");
                                 break;
                             }
-                            envelope_result = request_rx_lane.recv_envelope() => {
+                            // Drain finished reply continuations (gate-on only;
+                            // inert when `inflight` is empty).
+                            Some(()) = inflight.next(), if !inflight.is_empty() => {}
+                            // Accept a new request only while under the in-flight
+                            // cap (back-pressure). With the gate off `inflight` is
+                            // always empty so the guard is always true.
+                            envelope_result = request_rx_lane.recv_envelope(),
+                                if inflight.len() < INPROC_INFLIGHT_CAP => {
                                 match envelope_result {
                                     Ok(envelope) => {
                                         let request_id = envelope.request_id.clone();
@@ -2028,91 +2676,39 @@ impl Inner {
                                             set_parent_from_rpc_envelope(&span, &envelope);
                                             span
                                         };
+                                        #[cfg(not(feature = "opentelemetry"))]
+                                        let span = tracing::Span::none();
 
-                                        // Shell calls have no caller_id (local process communication)
-                                        let handle_incoming_fut = node.handle_incoming(envelope.clone(), None);
-                                        #[cfg(feature = "opentelemetry")]
-                                        let handle_incoming_fut = handle_incoming_fut.instrument(span.clone());
+                                        let route_key = envelope.route_key.clone();
+                                        let traceparent = envelope.traceparent.clone();
+                                        let tracestate = envelope.tracestate.clone();
 
-                                        match handle_incoming_fut.await {
-                                            Ok(response_bytes) => {
-                                                if expects_response {
-                                                    // Send RESPONSE back via workload_to_shell
-                                                    // Keep same route_key (no prefix needed - separate channels!)
-                                                    #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                    let mut response_envelope = Inner::build_response_envelope(
-                                                        request_id.clone(),
-                                                        envelope.route_key.clone(),
-                                                        Some(response_bytes),
-                                                        None,
-                                                        None,
-                                                        None,
-                                                    );
-                                                    // Inject tracing context
-                                                    #[cfg(feature = "opentelemetry")]
-                                                    inject_span_context_to_rpc(&span, &mut response_envelope);
-
-                                                    // Send via Guest → Shell channel
-                                                    let send_response_fut = response_tx.send_message(PayloadType::RpcReliable, None, response_envelope);
-                                                    #[cfg(feature = "opentelemetry")]
-                                                    let send_response_fut = send_response_fut.instrument(span.clone());
-                                                    if let Err(e) = send_response_fut.await {
-                                                        tracing::error!(
-                                                            severity = 7,
-                                                            error_category = "transport_error",
-                                                            request_id = %request_id,
-                                                            "❌ Failed to send RESPONSE to Shell: {:?}",
-                                                            e
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                tracing::error!(
-                                                    severity = 6,
-                                                    error_category = "handler_error",
-                                                    request_id = %request_id,
-                                                    route_key = %envelope.route_key,
-                                                    "❌ Guest message handling failed: {:?}",
-                                                    e
-                                                );
-
-                                                // Keep the local error log above for every failure,
-                                                // but skip sending an error envelope for a `tell`:
-                                                // the caller registered no pending entry to receive it.
-                                                if expects_response {
-                                                    // Send error response (system-level error on envelope)
-                                                    let error_response = actr_protocol::ErrorResponse {
-                                                        code: protocol_error_to_code(&e),
-                                                        message: e.to_string(),
-                                                    };
-                                                    #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                    let mut error_envelope = Inner::build_response_envelope(
-                                                        request_id.clone(),
-                                                        envelope.route_key.clone(),
-                                                        None,
-                                                        Some(error_response),
-                                                        envelope.traceparent.clone(),
-                                                        envelope.tracestate.clone(),
-                                                    );
-                                                    // Inject tracing context
-                                                    #[cfg(feature = "opentelemetry")]
-                                                    inject_span_context_to_rpc(&span, &mut error_envelope);
-
-                                                    let send_error_response_fut = response_tx.send_message(PayloadType::RpcReliable, None, error_envelope);
-                                                    #[cfg(feature = "opentelemetry")]
-                                                    let send_error_response_fut = send_error_response_fut.instrument(span);
-                                                    if let Err(send_err) = send_error_response_fut.await {
-                                                        tracing::error!(
-                                                            severity = 7,
-                                                            error_category = "transport_error",
-                                                            request_id = %request_id,
-                                                            "❌ Failed to send ERROR response to Shell: {:?}",
-                                                            send_err
-                                                        );
-                                                    }
-                                                }
-                                            }
+                                        if scheduler_on {
+                                            // Synchronous admission preserves arrival
+                                            // order + back-pressure; the continuation
+                                            // (dispatch result → reply) overlaps with
+                                            // later messages. Shell calls have no caller_id.
+                                            let cont = node.admit_incoming(envelope, None).await;
+                                            let response_tx = response_tx.clone();
+                                            inflight.push(Box::pin(async move {
+                                                let result = cont.await;
+                                                inproc_send_reply(
+                                                    response_tx, route_key, request_id,
+                                                    traceparent, tracestate, expects_response,
+                                                    result, span,
+                                                ).await;
+                                            }));
+                                        } else {
+                                            // Gate off: run to completion inline.
+                                            let handle_incoming_fut = node.handle_incoming(envelope, None);
+                                            #[cfg(feature = "opentelemetry")]
+                                            let handle_incoming_fut = handle_incoming_fut.instrument(span.clone());
+                                            let result = handle_incoming_fut.await;
+                                            inproc_send_reply(
+                                                response_tx.clone(), route_key, request_id,
+                                                traceparent, tracestate, expects_response,
+                                                result, span,
+                                            ).await;
                                         }
                                     }
                                     Err(e) => {
@@ -2128,6 +2724,9 @@ impl Inner {
                             }
                         }
                     }
+                    // Drain any remaining reply continuations before exiting so no
+                    // in-flight reply is orphaned.
+                    while inflight.next().await.is_some() {}
                     tracing::info!("✅ Guest receive loop (Shell → Guest) terminated gracefully");
                 });
                 task_handles.push(inproc_handle);
@@ -2358,18 +2957,46 @@ impl Inner {
             let shutdown = shutdown_token.clone();
 
             let mailbox_handle = tokio::spawn(async move {
+                use futures_util::StreamExt as _;
+                use futures_util::stream::FuturesUnordered;
+
+                // Concurrency gate: only overlap messages when the dispatch
+                // scheduler is on. No scheduler (a keyless actor, or the gate
+                // forced off) = one message at a time, bit-for-bit the pre-B2
+                // loop.
+                let scheduler_on = node.dispatch_scheduler.is_some();
+                const MAILBOX_INFLIGHT_CAP: usize = 256;
+                let mut inflight: FuturesUnordered<Pin<Box<dyn Future<Output = ()> + Send>>> =
+                    FuturesUnordered::new();
+
                 loop {
                     tokio::select! {
+                        biased;
                         // Listen for shutdown signal
                         _ = shutdown.cancelled() => {
                             tracing::info!("📭 Mailbox loop received shutdown signal");
                             break;
                         }
-                        // Dequeue messages (by priority)
-                        result = mailbox.dequeue() => {
+                        // Drain finished reply+ack continuations (gate-on only;
+                        // inert when `inflight` is empty).
+                        Some(()) = inflight.next(), if !inflight.is_empty() => {}
+                        // Enter admission before dequeue marks a complete batch
+                        // Inflight, then retain the guard until every record in
+                        // that batch has reached scheduler / runner admission.
+                        // Pause while the continuation set is full so
+                        // back-pressure reaches the durable mailbox.
+                        batch = async {
+                            let admission = node.mailbox_batch_admission.enter().await?;
+                            Some((admission, mailbox.dequeue().await))
+                        }, if inflight.len() < MAILBOX_INFLIGHT_CAP => {
+                            let Some((batch_admission, result)) = batch else {
+                                tracing::info!("📭 Mailbox batch admission closed");
+                                break;
+                            };
                             match result {
                                 Ok(messages) => {
                                     if messages.is_empty() {
+                                        drop(batch_admission);
                                         // Queue empty, sleep briefly
                                         tokio::time::sleep(Duration::from_millis(10)).await;
                                         continue;
@@ -2438,174 +3065,54 @@ impl Inner {
                                                     );
                                                 }
 
-                                                // Call handle_incoming with caller_id from transport layer
-                                                let handle_incoming_fut = node.handle_incoming(envelope.clone(), caller_id_ref);
-                                                #[cfg(feature = "opentelemetry")]
-                                                let handle_incoming_fut = handle_incoming_fut.instrument(span.clone());
+                                                let route_key = envelope.route_key.clone();
+                                                let traceparent = envelope.traceparent.clone();
+                                                let tracestate = envelope.tracestate.clone();
+                                                let msg_id = msg_record.id;
+                                                let ws_gate = ws_gate.clone();
+                                                let webrtc_gate = webrtc_gate.clone();
+                                                let mailbox_c = mailbox.clone();
+                                                #[cfg(not(feature = "opentelemetry"))]
+                                                let span = tracing::Span::none();
 
-                                                /// Send `response_envelope` back to `caller` via the
-                                                /// best available transport.
-                                                ///
-                                                /// Priority: inbound WebSocket connection (if caller
-                                                /// dialled us directly) → WebRTC gate.  Returns the
-                                                /// first transport error encountered, if any.
-                                                async fn send_envelope_to_caller(
-                                                    ws_gate: &Option<Arc<crate::wire::websocket::WebSocketGate>>,
-                                                    webrtc_gate: &Option<Arc<crate::wire::webrtc::gate::WebRtcGate>>,
-                                                    caller: &ActrId,
-                                                    response_envelope: RpcEnvelope,
-                                                    request_id: &str,
-                                                ) {
-                                                    // 1. Try inbound WebSocket connection first.
-                                                    if let Some(wsg) = ws_gate {
-                                                        match wsg.send_response(caller, response_envelope.clone()).await {
-                                                            Ok(true) => return, // sent successfully
-                                                            Ok(false) => {
-                                                                tracing::debug!(
-                                                                    request_id = request_id,
-                                                                    caller = %caller,
-                                                                    "No inbound WS connection for caller; falling back to WebRTC gate"
-                                                                );
-                                                            }
-                                                            Err(e) => {
-                                                                tracing::warn!(
-                                                                    severity = 5,
-                                                                    error_category = "transport_error",
-                                                                    request_id = request_id,
-                                                                    "WebSocketGate send_response failed, falling back: {:?}", e
-                                                                );
-                                                            }
-                                                        }
-                                                    }
-
-                                                    // 2. Fall back to WebRTC gate.
-                                                    if let Some(gate) = webrtc_gate {
-                                                        if let Err(e) = gate.send_response(caller, response_envelope).await {
-                                                            tracing::error!(
-                                                                severity = 7,
-                                                                error_category = "transport_error",
-                                                                request_id = request_id,
-                                                                "❌ WebRtcGate send_response failed: {:?}", e
-                                                            );
-                                                        }
-                                                    } else {
-                                                        tracing::error!(
-                                                            severity = 7,
-                                                            error_category = "transport_error",
-                                                            request_id = request_id,
-                                                            "❌ No gate available to send response"
-                                                        );
-                                                    }
-                                                }
-
-                                                match handle_incoming_fut.await {
-                                                    Ok(response_bytes) => {
-                                                        match caller_id_result {
-                                                            Ok(caller) if expects_response => {
-                                                                // Construct response RpcEnvelope (reuse request_id!)
-                                                                #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                                let mut response_envelope = Inner::build_response_envelope(
-                                                                    request_id.clone(),
-                                                                    envelope.route_key.clone(),
-                                                                    Some(response_bytes),
-                                                                    None,
-                                                                    envelope.traceparent.clone(),
-                                                                    envelope.tracestate.clone(),
-                                                                );
-                                                                // Inject tracing context
-                                                                #[cfg(feature = "opentelemetry")]
-                                                                inject_span_context_to_rpc(&span, &mut response_envelope);
-
-                                                                #[cfg(feature = "opentelemetry")]
-                                                                let send_fut = send_envelope_to_caller(
-                                                                    &ws_gate,
-                                                                    &webrtc_gate,
-                                                                    &caller,
-                                                                    response_envelope,
-                                                                    &request_id,
-                                                                ).instrument(span);
-                                                                #[cfg(not(feature = "opentelemetry"))]
-                                                                let send_fut = send_envelope_to_caller(
-                                                                    &ws_gate,
-                                                                    &webrtc_gate,
-                                                                    &caller,
-                                                                    response_envelope,
-                                                                    &request_id,
-                                                                );
-                                                                send_fut.await;
-                                                            }
-                                                            // `tell` handled successfully: side
-                                                            // effects ran, no reply is sent.
-                                                            Ok(_) => {}
-                                                            Err(e) => {
-                                                                tracing::error!(
-                                                                    severity = 8,
-                                                                    error_category = "protobuf_decode",
-                                                                    request_id = %envelope.request_id,
-                                                                    "❌ Failed to decode caller_id: {:?}",
-                                                                    e
-                                                                );
-                                                            }
-                                                        }
-
-                                                        // ACK message
-                                                        if let Err(e) = mailbox.ack(msg_record.id).await {
-                                                            tracing::error!(
-                                                                severity = 9,
-                                                                error_category = "mailbox_error",
-                                                                request_id = %envelope.request_id,
-                                                                message_id = %msg_record.id,
-                                                                "❌ Mailbox ACK failed: {:?}",
-                                                                e
-                                                            );
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        tracing::error!(
-                                                            severity = 6,
-                                                            error_category = "handler_error",
-                                                            request_id = %envelope.request_id,
-                                                            route_key = %envelope.route_key,
-                                                            "❌ handle_incoming failed: {:?}", e
-                                                        );
-
-                                                        // Send error envelope back to caller so it
-                                                        // receives a structured error rather than
-                                                        // waiting until its deadline fires. A `tell`
-                                                        // (Direction::Tell) registered no pending
-                                                        // entry, so skip the reply — the local error
-                                                        // log above still records the failure (#262).
-                                                        if let (true, Ok(caller)) =
-                                                            (expects_response, caller_id_result)
-                                                        {
-                                                            let error_response = actr_protocol::ErrorResponse {
-                                                                code: protocol_error_to_code(&e),
-                                                                message: e.to_string(),
-                                                            };
-                                                            #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                            let mut error_envelope = Inner::build_response_envelope(
-                                                                request_id.clone(),
-                                                                envelope.route_key.clone(),
-                                                                None,
-                                                                Some(error_response),
-                                                                envelope.traceparent.clone(),
-                                                                envelope.tracestate.clone(),
-                                                            );
-                                                            #[cfg(feature = "opentelemetry")]
-                                                            inject_span_context_to_rpc(&span, &mut error_envelope);
-
-                                                            send_envelope_to_caller(
-                                                                &ws_gate,
-                                                                &webrtc_gate,
-                                                                &caller,
-                                                                error_envelope,
-                                                                &request_id,
-                                                            ).await;
-                                                        }
-
-                                                        // ACK to avoid infinite retries
-                                                        let _ = mailbox.ack(msg_record.id).await;
-                                                    }
+                                                if scheduler_on {
+                                                    // Synchronous admission preserves arrival order
+                                                    // + back-pressure; the reply+ack continuation
+                                                    // overlaps with later messages. Per-message
+                                                    // reply→ack order is unchanged inside the tail.
+                                                    let cont = node
+                                                        .admit_incoming(envelope.clone(), caller_id_ref)
+                                                        .await;
+                                                    let caller_owned =
+                                                        caller_id_result.map_err(|e| e.to_string());
+                                                    inflight.push(Box::pin(async move {
+                                                        let result = cont.await;
+                                                        mailbox_reply_and_ack(
+                                                            ws_gate, webrtc_gate, mailbox_c,
+                                                            caller_owned, request_id, route_key,
+                                                            traceparent, tracestate, expects_response,
+                                                            msg_id, result, span,
+                                                        )
+                                                        .await;
+                                                    }));
+                                                } else {
+                                                    // Gate off: run to completion inline —
+                                                    // bit-for-bit the pre-B2 mailbox path.
+                                                    let handle_incoming_fut =
+                                                        node.handle_incoming(envelope.clone(), caller_id_ref);
+                                                    #[cfg(feature = "opentelemetry")]
+                                                    let handle_incoming_fut =
+                                                        handle_incoming_fut.instrument(span.clone());
+                                                    let result = handle_incoming_fut.await;
+                                                    let caller_owned =
+                                                        caller_id_result.map_err(|e| e.to_string());
+                                                    mailbox_reply_and_ack(
+                                                        ws_gate, webrtc_gate, mailbox_c,
+                                                        caller_owned, request_id, route_key,
+                                                        traceparent, tracestate, expects_response,
+                                                        msg_id, result, span,
+                                                    )
+                                                    .await;
                                                 }
                                             }
                                             Err(e) => {
@@ -2668,8 +3175,17 @@ impl Inner {
                                             }
                                         }
                                     }
+                                    // Keep the read guard through the complete
+                                    // batch, including inline serial handling.
+                                    // Shutdown can close scheduler / runner
+                                    // intake only after this point.
+                                    drop(batch_admission);
                                 }
                                 Err(e) => {
+                                    // A failed dequeue marked no batch Inflight,
+                                    // so it need not delay graceful shutdown
+                                    // during the retry backoff.
+                                    drop(batch_admission);
                                     tracing::error!(
                                         severity = 9,
                                         error_category = "mailbox_error",
@@ -2681,6 +3197,9 @@ impl Inner {
                         }
                     }
                 }
+                // Drain any remaining reply+ack continuations so no in-flight
+                // reply is orphaned on shutdown.
+                while inflight.next().await.is_some() {}
                 tracing::info!("✅ Mailbox processing loop terminated gracefully");
             });
 
@@ -2695,10 +3214,11 @@ impl Inner {
             let invocation = lifecycle_invocation(&actor_id, "lifecycle:on_ready");
             let call_executor =
                 lifecycle_host_abi(ready_ctx.clone(), node_ref.workload_dispatch.clone());
-            let mut workload = node_ref.workload_dispatch.lock().await;
             if let Err(e) = crate::lifecycle::hooks::call_lifecycle_hook(
                 "on_ready",
-                workload.on_ready(ready_ctx, invocation, &call_executor),
+                node_ref
+                    .workload_dispatch
+                    .on_ready(ready_ctx, invocation, &call_executor),
             )
             .await
             {

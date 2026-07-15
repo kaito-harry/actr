@@ -9,7 +9,9 @@ use crate::wire::webrtc::SignalingClient;
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::inject_span_context_to_rpc;
 use actr_config::lock::LockFile;
-use actr_framework::{Bytes, Context, DataChunk, Dest, MediaSample};
+use actr_framework::{
+    Bytes, Context, DataChunk, Dest, MaybeSendBoxFuture, MaybeSendSync, MediaSample,
+};
 use actr_protocol::{
     AIdCredential, ActorResult, ActrError, ActrId, ActrType, ConnectionNotReadyInfo, Direction,
     PayloadType, RouteCandidatesRequest, RpcEnvelope, RpcRequest, route_candidates_request,
@@ -106,6 +108,11 @@ impl RuntimeContext {
             session_state,
             context_generation,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn data_chunk_registry_for_test(&self) -> Arc<DataChunkRegistry> {
+        self.data_chunk_registry.clone()
     }
 
     /// Select the appropriate gate based on `Dest`.
@@ -456,6 +463,14 @@ impl BootstrapContextBuilder {
         self.generation = generation;
     }
 
+    /// Force-close registered stream callbacks during node teardown.
+    ///
+    /// The builder is owned by `ActrRefShared`, so it remains available even
+    /// when background tasks holding `Inner` cannot be joined synchronously.
+    pub(crate) fn clear_data_chunk_callbacks(&self) {
+        self.data_chunk_registry.clear();
+    }
+
     /// Materialize a bootstrap `RuntimeContext` for lifecycle hooks.
     ///
     /// The produced context has no caller (`caller_id = None`) and a freshly
@@ -622,7 +637,9 @@ impl Context for RuntimeContext {
 
     async fn register_stream<F>(&self, stream_id: String, callback: F) -> ActorResult<()>
     where
-        F: Fn(DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
+        F: Fn(DataChunk, ActrId) -> MaybeSendBoxFuture<'static, ActorResult<()>>
+            + MaybeSendSync
+            + 'static,
     {
         tracing::debug!(
             "📊 Registering DataChunk callback for stream_id: {}",

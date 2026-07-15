@@ -2,7 +2,7 @@
 name = "actr-cli"
 version = "0.4.17"
 edition = "2024"
-rust-version = "1.88"
+rust-version.workspace = true
 license = "Apache-2.0"
 repository = "https://github.com/Actrium/actr"
 description = "Command line tool for Actor-RTC framework projects"

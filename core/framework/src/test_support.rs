@@ -3,7 +3,7 @@
 //! Currently provides a simple `DummyContext` implementation of the `Context` trait
 //! for unit tests that need a context but do not exercise transport logic.
 
-use crate::{Context, Dest, MediaSample};
+use crate::{Context, Dest, MaybeSendBoxFuture, MaybeSendSync, MediaSample};
 use actr_protocol::{ActorResult, ActrError, ActrId, ActrType, RpcRequest};
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
@@ -62,9 +62,8 @@ impl Context for DummyContext {
 
     async fn register_stream<F>(&self, _stream_id: String, _callback: F) -> ActorResult<()>
     where
-        F: Fn(actr_protocol::DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>>
-            + Send
-            + Sync
+        F: Fn(actr_protocol::DataChunk, ActrId) -> MaybeSendBoxFuture<'static, ActorResult<()>>
+            + MaybeSendSync
             + 'static,
     {
         Ok(())

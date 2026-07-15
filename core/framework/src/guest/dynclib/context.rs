@@ -6,7 +6,7 @@ use crate::guest::dynclib_abi::{
     InvocationContextV1, abi_error_to_actr, dest_to_v1, reply_to_actr_error,
 };
 use crate::guest::vtable::HostVTable;
-use crate::{Context, Dest, MediaSample};
+use crate::{Context, Dest, MaybeSendBoxFuture, MaybeSendSync, MediaSample};
 use actr_protocol::{ActorResult, ActrError, ActrId, ActrType, DataChunk, PayloadType};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -28,7 +28,7 @@ unsafe impl Send for DynclibContext {}
 unsafe impl Sync for DynclibContext {}
 
 type StreamCallback =
-    Arc<dyn Fn(DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync>;
+    Arc<dyn Fn(DataChunk, ActrId) -> MaybeSendBoxFuture<'static, ActorResult<()>> + Send + Sync>;
 
 fn stream_callbacks() -> &'static Mutex<HashMap<String, StreamCallback>> {
     static CALLBACKS: OnceLock<Mutex<HashMap<String, StreamCallback>>> = OnceLock::new();
@@ -175,7 +175,9 @@ impl Context for DynclibContext {
 
     async fn register_stream<F>(&self, stream_id: String, callback: F) -> ActorResult<()>
     where
-        F: Fn(DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
+        F: Fn(DataChunk, ActrId) -> MaybeSendBoxFuture<'static, ActorResult<()>>
+            + MaybeSendSync
+            + 'static,
     {
         stream_callbacks()
             .lock()

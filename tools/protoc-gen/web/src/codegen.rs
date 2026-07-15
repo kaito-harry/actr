@@ -658,7 +658,7 @@ fn gen_wasm_cargo_toml(pkg_name: &str) -> String {
 name = "{pkg_name}"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.95"
 
 [workspace]
 

@@ -13,7 +13,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use actr_framework::{Bytes, Context, MessageDispatcher, Workload};
+use actr_framework::{
+    Bytes, Context, MaybeSendBoxFuture, MaybeSendSync, MessageDispatcher, Workload,
+};
 use actr_hyper::outbound::HostGate;
 use actr_hyper::transport::HostTransport;
 use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
@@ -454,12 +456,8 @@ impl Context for MockContext {
 
     async fn register_stream<F>(&self, _stream_id: String, _callback: F) -> ActorResult<()>
     where
-        F: Fn(
-                actr_protocol::DataChunk,
-                ActrId,
-            ) -> futures_util::future::BoxFuture<'static, ActorResult<()>>
-            + Send
-            + Sync
+        F: Fn(actr_protocol::DataChunk, ActrId) -> MaybeSendBoxFuture<'static, ActorResult<()>>
+            + MaybeSendSync
             + 'static,
     {
         Err(ActrError::NotImplemented("mock context".to_string()))

@@ -27,10 +27,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use actr_hyper::config::WasmRuntimeLimits;
 use actr_hyper::test_support::instantiate_wasm_workload;
 use actr_hyper::wasm::{WasmError, WasmHost};
 use actr_hyper::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
-use actr_protocol::{ActrId, ActrType, Realm, RpcEnvelope, prost::Message as ProstMessage};
+use actr_protocol::{
+    ActrId, ActrType, DataChunk, Realm, RpcEnvelope, prost::Message as ProstMessage,
+};
 
 #[path = "wasm_actor_fixture.rs"]
 mod wasm_actor_fixture;
@@ -115,21 +118,59 @@ fn unreachable_bridge() -> HostAbiFn {
     Arc::new(|_| Box::pin(async move { HostOperationResult::Error(-1) }))
 }
 
+fn stream_registration_bridge() -> HostAbiFn {
+    Arc::new(|operation| {
+        Box::pin(async move {
+            match operation {
+                HostOperation::RegisterStream(request)
+                    if request.stream_id == "test/captured-context-stream" =>
+                {
+                    HostOperationResult::Done
+                }
+                _ => HostOperationResult::Error(-1),
+            }
+        })
+    })
+}
+
+fn stream_callback_bridge() -> (HostAbiFn, Arc<AtomicU64>) {
+    let calls = Arc::new(AtomicU64::new(0));
+    let calls_for_bridge = Arc::clone(&calls);
+    let bridge: HostAbiFn = Arc::new(move |operation| {
+        let calls = Arc::clone(&calls_for_bridge);
+        Box::pin(async move {
+            match operation {
+                HostOperation::CallRaw(request) if request.route_key == "test/stream-callback" => {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    HostOperationResult::Bytes(Vec::new())
+                }
+                _ => HostOperationResult::Error(-1),
+            }
+        })
+    });
+    (bridge, calls)
+}
+
+fn captured_context_chunk() -> DataChunk {
+    DataChunk {
+        stream_id: "test/captured-context-stream".to_string(),
+        sequence: 1,
+        payload: Vec::new().into(),
+        metadata: Vec::new(),
+        timestamp_ms: None,
+    }
+}
+
 // ─── Test 1 — basic async dispatch round-trip ───────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn component_model_basic_echo_round_trip() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
     let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
-    // NB: `call_on_start` is skipped in every test in this module. The
-    // Phase 1 Commit 3 guest adapter unconditionally builds a
-    // `WasmContext` via the `get-self-id` / `get-caller-id` /
-    // `get-request-id` host imports from inside every lifecycle hook,
-    // and the host deliberately traps those imports when no invocation
-    // context is installed (see core/hyper/src/wasm/host.rs). Threading
-    // an invocation through the lifecycle path is Phase 1 follow-up
-    // scope; these tests cover only `handle`, which installs the
-    // context before dispatching.
+    // This dispatch-focused test drives `handle` directly. Lifecycle context
+    // propagation has dedicated coverage in `component_model_call_on_start_*`
+    // below; the V2 ABI now threads an explicit invocation context into every
+    // guest export.
     let payload = b"hello-component".to_vec();
     let req = make_envelope("test/echo", payload.clone());
     let bridge = unreachable_bridge();
@@ -139,6 +180,99 @@ async fn component_model_basic_echo_round_trip() {
         .await
         .expect("echo dispatch should succeed");
     assert_eq!(reply, payload, "test/echo must round-trip the payload");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serial_stream_callback_rebinds_captured_context_token() {
+    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
+    let mut workload = instantiate_wasm_workload(&host).await.expect("instantiate");
+    workload
+        .handle(
+            &make_envelope("test/register-stream-context", Vec::new()),
+            test_ctx(),
+            &stream_registration_bridge(),
+        )
+        .await
+        .expect("register stream callback");
+
+    let (bridge, calls) = stream_callback_bridge();
+    workload
+        .handle_data_chunk(
+            captured_context_chunk(),
+            test_actr_id(),
+            test_ctx(),
+            &bridge,
+        )
+        .await
+        .expect("captured context must use the DataChunk invocation's live host bridge");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resident_stream_callback_rebinds_captured_context_token() {
+    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
+    let workload = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let runner = workload.into_interleaved_runner(None);
+    runner
+        .dispatch(
+            &make_envelope("test/register-stream-context", Vec::new()),
+            test_ctx(),
+            &stream_registration_bridge(),
+        )
+        .await
+        .expect("register stream callback through resident region");
+
+    let (bridge, calls) = stream_callback_bridge();
+    runner
+        .data_chunk(
+            captured_context_chunk(),
+            test_actr_id(),
+            test_ctx(),
+            &bridge,
+        )
+        .await
+        .expect("resident DataChunk barrier must rebind the captured context token");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    runner.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn non_yielding_guest_is_interrupted_and_store_recovers() {
+    let limits = WasmRuntimeLimits {
+        fuel_per_invocation: 50_000,
+        epoch_tick: Duration::from_millis(10),
+        invocation_timeout: Duration::from_secs(1),
+        ..WasmRuntimeLimits::default()
+    };
+    let host = WasmHost::compile_with_limits(fixture_component_bytes(), &limits)
+        .expect("compile component");
+    let mut workload = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let bridge = unreachable_bridge();
+
+    let started = Instant::now();
+    let error = workload
+        .handle(&make_envelope("test/spin", Vec::new()), test_ctx(), &bridge)
+        .await
+        .expect_err("non-yielding guest must be interrupted");
+    assert!(
+        matches!(error, WasmError::OutOfFuel | WasmError::EpochInterrupted),
+        "expected a stable execution-budget error, got {error:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "non-yielding guest exceeded its bounded execution window"
+    );
+
+    let payload = b"recovered".to_vec();
+    let reply = workload
+        .handle(
+            &make_envelope("test/echo", payload.clone()),
+            test_ctx(),
+            &bridge,
+        )
+        .await
+        .expect("poisoned Store must rebuild before the next invocation");
+    assert_eq!(reply, payload);
 }
 
 // ─── Test 2 — cross-instance parallelism ────────────────────────────────────
@@ -152,9 +286,6 @@ async fn component_model_cross_instance_parallelism() {
     let mut wl_b = instantiate_wasm_workload(&host)
         .await
         .expect("instantiate B");
-
-    // on_start skipped on both instances — see
-    // `component_model_basic_echo_round_trip` for why.
 
     // Each instance gets a bridge that sleeps 50 ms before responding —
     // if the two dispatches are truly concurrent the wall-clock total is
@@ -203,8 +334,6 @@ async fn component_model_cross_instance_parallelism() {
 async fn component_model_executor_non_blocking_during_host_await() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
     let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
-    // on_start skipped — see `component_model_basic_echo_round_trip`.
-
     let tick_count = Arc::new(AtomicU64::new(0));
     let tick_stop = Arc::new(AtomicBool::new(false));
 
@@ -246,8 +375,6 @@ async fn component_model_executor_non_blocking_during_host_await() {
 async fn component_model_error_variant_propagates() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
     let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
-    // on_start skipped — see `component_model_basic_echo_round_trip`.
-
     let bridge = unreachable_bridge();
     let req = make_envelope("unknown/route", Vec::new());
 
@@ -273,8 +400,6 @@ async fn component_model_error_variant_propagates() {
 async fn component_model_panic_after_await_surfaces_as_trap() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
     let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
-    // on_start skipped — see `component_model_basic_echo_round_trip`.
-
     // Bridge replies with any bytes; the guest panics immediately after
     // the .await returns.
     let (bridge, counter) = doubling_bridge(Some(Duration::from_millis(10)));
@@ -294,7 +419,7 @@ async fn component_model_panic_after_await_surfaces_as_trap() {
     );
 
     match &err {
-        WasmError::ExecutionFailed(msg) => {
+        WasmError::InstanceTrapped(msg) => {
             // The guest panic surfaces through wasmtime as a trap. The
             // message shape varies slightly across wasmtime versions, so
             // match on either "trap" or "panic" rather than exact text.
@@ -304,8 +429,103 @@ async fn component_model_panic_after_await_surfaces_as_trap() {
                 "expected trap/panic in error message, got: {msg}"
             );
         }
+        other => panic!("expected InstanceTrapped, got {other:?}"),
+    }
+}
+
+// ─── Test 9 — trap poisons the store, next call rebuilds and recovers ────────
+
+/// A guest trap poisons the wasmtime store (wasmtime v42+). Before the B0
+/// fix the poisoned store was reused, so the *next* dispatch failed with a
+/// "cannot enter component instance" style error even though the request
+/// was well-formed. The fix rebuilds a fresh instance lazily on the next
+/// call. This test drives two trap→recover rounds and asserts the rebuild
+/// counter advances 1→2, proving the poison flag is reset each time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn component_model_trap_rebuilds_instance_and_recovers() {
+    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
+    let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+
+    assert_eq!(wl.rebuild_count(), 0, "no rebuild before any trap");
+
+    for round in 1..=2u64 {
+        // Trigger a deterministic post-await guest panic: the bridge answers
+        // the pre-panic call_raw (no sleep needed), then the guest panics.
+        let (bridge, counter) = doubling_bridge(None);
+        let boom = make_envelope("test/boom-after-await", 1i32.to_le_bytes().to_vec());
+        let err = wl
+            .handle(&boom, test_ctx(), &bridge)
+            .await
+            .expect_err("boom route must trap");
+        assert!(
+            matches!(err, WasmError::InstanceTrapped(_)),
+            "round {round}: trap must surface as InstanceTrapped, got {err:?}"
+        );
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "round {round}: bridge must have serviced the pre-panic call_raw once"
+        );
+
+        // The next dispatch must succeed on a rebuilt instance. Before the
+        // fix this failed on the poisoned store.
+        let payload = format!("recover-{round}").into_bytes();
+        let echo = make_envelope("test/echo", payload.clone());
+        let reply = wl
+            .handle(&echo, test_ctx(), &unreachable_bridge())
+            .await
+            .unwrap_or_else(|e| panic!("round {round}: echo after trap must succeed, got {e:?}"));
+        assert_eq!(
+            reply, payload,
+            "round {round}: echo must round-trip payload"
+        );
+        assert_eq!(
+            wl.rebuild_count(),
+            round,
+            "round {round}: rebuild counter must advance once per recovered trap"
+        );
+    }
+}
+
+// ─── Test 10 — a business error does not poison / rebuild the store ──────────
+
+/// A guest-visible business error (`Ok(Err(actr-error))`) is not a trap and
+/// must never poison the store. This locks in the Err-vs-trap split: an
+/// unknown route surfaces as `ExecutionFailed`, the following dispatch
+/// succeeds on the *same* (never-rebuilt) instance, and `rebuild_count`
+/// stays at zero.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn component_model_business_error_does_not_rebuild() {
+    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
+    let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+
+    let req = make_envelope("unknown/route", Vec::new());
+    let err = wl
+        .handle(&req, test_ctx(), &unreachable_bridge())
+        .await
+        .expect_err("unknown route must surface a business error");
+    match &err {
+        WasmError::ExecutionFailed(msg) => assert!(
+            msg.contains("UnknownRoute"),
+            "business error should carry UnknownRoute, got: {msg}"
+        ),
         other => panic!("expected ExecutionFailed, got {other:?}"),
     }
+
+    // Same instance must keep serving; a business error is not fatal.
+    let payload = b"still-alive".to_vec();
+    let echo = make_envelope("test/echo", payload.clone());
+    let reply = wl
+        .handle(&echo, test_ctx(), &unreachable_bridge())
+        .await
+        .expect("echo after business error must succeed");
+    assert_eq!(reply, payload);
+
+    assert_eq!(
+        wl.rebuild_count(),
+        0,
+        "a business error must not poison the store or trigger a rebuild"
+    );
 }
 
 // ─── Per-call overhead micro-benchmark (supersedes spike Test 6) ────────────
@@ -324,8 +544,6 @@ async fn component_model_panic_after_await_surfaces_as_trap() {
 async fn component_model_per_call_overhead() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
     let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
-    // on_start skipped — see `component_model_basic_echo_round_trip`.
-
     let bridge = unreachable_bridge();
     let payload = vec![0u8; 64];
     let req = make_envelope("test/echo", payload);
@@ -377,4 +595,166 @@ async fn component_model_call_on_start_does_not_trap() {
         .await
         .expect("dispatch after on_start should succeed");
     assert_eq!(reply, b"after-on-start");
+}
+
+// ─── M2-B1 — dispatch through the per-actor serial command runner ────────────
+//
+// These drive the *same* wasm fixture through `TestWorkloadRunner`, i.e. the
+// production `spawn_runner` command-channel path that replaced the node-global
+// `Arc<Mutex<Workload>>`. They prove behavioural equivalence at the runner
+// seam: B0's trap→rebuild still fires on the next command, and concurrently
+// submitted commands run strictly one at a time on the single guest instance.
+
+/// A guest trap poisons the store; the runner's *next* command must trigger
+/// B0's lazy rebuild and recover — proving the runner reuses the underlying
+/// `WasmWorkload` (with its `ensure_instance` / `trap_poison` logic) unchanged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runner_trap_then_next_cmd_rebuilds() {
+    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
+    let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let runner = wl.into_workload_runner();
+
+    // Command 1: trap. The bridge answers the pre-panic call_raw, then the
+    // guest panics; the trap surfaces through the runner as an Internal error.
+    let (bridge, counter) = doubling_bridge(None);
+    let boom = make_envelope("test/boom-after-await", 1i32.to_le_bytes().to_vec());
+    let err = runner
+        .dispatch(&boom, test_ctx(), &bridge)
+        .await
+        .expect_err("boom command must fail through the runner");
+    let msg = err.to_string().to_lowercase();
+    assert!(
+        msg.contains("trap") || msg.contains("instance"),
+        "trap must surface through the runner, got: {msg}"
+    );
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "bridge must have serviced the pre-panic call_raw once"
+    );
+
+    // Command 2: the next command on the same runner must recover on a freshly
+    // rebuilt instance. A poisoned (non-rebuilt) store would fail here.
+    let payload = b"recovered-via-runner".to_vec();
+    let echo = make_envelope("test/echo", payload.clone());
+    let reply = runner
+        .dispatch(&echo, test_ctx(), &unreachable_bridge())
+        .await
+        .expect("echo command after trap must succeed on the rebuilt instance");
+    assert_eq!(reply.as_ref(), payload.as_slice());
+
+    runner.shutdown().await;
+}
+
+/// Two commands submitted concurrently to one runner must execute serially on
+/// the single guest instance: while command A is suspended inside a host
+/// import, command B must not have entered the guest (its bridge is untouched).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn runner_concurrent_dispatch_stays_serial_with_real_guest() {
+    use std::sync::atomic::AtomicU64;
+    use tokio::sync::{Semaphore, mpsc};
+
+    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
+    let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let runner = Arc::new(wl.into_workload_runner());
+
+    // Gating bridge: the FIRST call signals entry and blocks on a semaphore;
+    // later calls pass straight through. Shared by both dispatches, so it also
+    // counts total guest→host crossings.
+    let calls = Arc::new(AtomicU64::new(0));
+    let (entered_tx, mut entered_rx) = mpsc::unbounded_channel();
+    let release = Arc::new(Semaphore::new(0));
+    let bridge: HostAbiFn = {
+        let calls = calls.clone();
+        let release = release.clone();
+        Arc::new(move |op| {
+            let calls = calls.clone();
+            let release = release.clone();
+            let entered_tx = entered_tx.clone();
+            Box::pin(async move {
+                let n = calls.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    let _ = entered_tx.send(());
+                    release.acquire().await.expect("open").forget();
+                }
+                match op {
+                    HostOperation::CallRaw(req) if req.route_key == "test/double_impl" => {
+                        let x = i32::from_le_bytes([
+                            req.payload[0],
+                            req.payload[1],
+                            req.payload[2],
+                            req.payload[3],
+                        ]);
+                        HostOperationResult::Bytes((x * 2).to_le_bytes().to_vec())
+                    }
+                    _ => HostOperationResult::Error(-1),
+                }
+            })
+        })
+    };
+
+    // Command A: enters the guest, calls the bridge, and suspends there.
+    let a = {
+        let runner = runner.clone();
+        let bridge = bridge.clone();
+        tokio::spawn(async move {
+            let req = make_envelope("test/double", 7i32.to_le_bytes().to_vec());
+            runner.dispatch(&req, test_ctx(), &bridge).await
+        })
+    };
+
+    // Wait until A is parked inside the host import.
+    tokio::time::timeout(Duration::from_secs(5), entered_rx.recv())
+        .await
+        .expect("watchdog: command A did not reach the host bridge")
+        .expect("entered channel open");
+
+    // Command B is now submitted; the runner is busy with A, so B queues.
+    let b = {
+        let runner = runner.clone();
+        let bridge = bridge.clone();
+        tokio::spawn(async move {
+            let req = make_envelope("test/double", 11i32.to_le_bytes().to_vec());
+            runner.dispatch(&req, test_ctx(), &bridge).await
+        })
+    };
+
+    // Serial guarantee: B cannot have entered the guest (let alone the bridge)
+    // while A holds the runner. A concurrent runner would let B reach the
+    // bridge and bump the counter past 1.
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "command B must not enter the guest while A occupies the runner"
+    );
+
+    // Release A; both commands now complete in order.
+    release.add_permits(1);
+
+    let reply_a = tokio::time::timeout(Duration::from_secs(5), a)
+        .await
+        .expect("watchdog: A")
+        .expect("A task")
+        .expect("A dispatch ok");
+    let reply_b = tokio::time::timeout(Duration::from_secs(5), b)
+        .await
+        .expect("watchdog: B")
+        .expect("B task")
+        .expect("B dispatch ok");
+
+    assert_eq!(
+        i32::from_le_bytes([reply_a[0], reply_a[1], reply_a[2], reply_a[3]]),
+        14
+    );
+    assert_eq!(
+        i32::from_le_bytes([reply_b[0], reply_b[1], reply_b[2], reply_b[3]]),
+        22
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "each command crosses to the host bridge exactly once"
+    );
+
+    runner.shutdown().await;
 }

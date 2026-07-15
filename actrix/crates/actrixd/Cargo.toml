@@ -81,7 +81,7 @@ reqwest = { workspace = true }
 typetag = "0.2.20"
 pwrzv = { version = "0.7.0" }
 tonic = { workspace = true }
-prometheus = "0.13"
+prometheus = "0.14"
 lazy_static = "1.4"
 jsonwebtoken = "9"
 subtle = "2"

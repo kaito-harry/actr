@@ -3,6 +3,10 @@ use ed25519_dalek::{Signer, SigningKey};
 use rand::rngs::OsRng;
 
 fn make_minimal_package(signing_key: &SigningKey) -> Vec<u8> {
+    make_package_with_binary(signing_key, b"wasm")
+}
+
+fn make_package_with_binary(signing_key: &SigningKey, binary: &[u8]) -> Vec<u8> {
     let manifest = actr_pack::PackageManifest {
         manufacturer: "test-mfr".to_string(),
         name: "Test".to_string(),
@@ -25,7 +29,7 @@ fn make_minimal_package(signing_key: &SigningKey) -> Vec<u8> {
     };
     actr_pack::pack(&actr_pack::PackOptions {
         manifest,
-        binary_bytes: b"wasm".to_vec(),
+        binary_bytes: binary.to_vec(),
         resources: vec![],
         proto_files: vec![],
         lock_file: None,
@@ -56,6 +60,20 @@ async fn static_trust_rejects_wrong_key() {
         trust.verify_package(&pkg).await,
         Err(HyperError::SignatureVerificationFailed(_))
     ));
+}
+
+#[tokio::test]
+async fn static_trust_enforces_bounded_verification_limit() {
+    let key = SigningKey::generate(&mut OsRng);
+    let pkg = make_package_with_binary(&key, &[0u8; 2048]);
+    let trust = StaticTrust::new(key.verifying_key().to_bytes()).unwrap();
+
+    let error = trust.verify_package_bounded(&pkg, 1024).await.unwrap_err();
+    assert!(
+        matches!(&error, HyperError::InvalidManifest(message) if
+            message.contains("bin/actor.wasm") && message.contains("exceeds limit 1024")),
+        "unexpected error: {error:?}"
+    );
 }
 
 #[tokio::test]

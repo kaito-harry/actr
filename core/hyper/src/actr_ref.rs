@@ -285,6 +285,11 @@ impl Drop for ActrRefShared {
             actr_protocol::ActrId::to_string_repr(&self.actor_id)
         );
 
+        // Break stream callback ownership cycles even if a background task
+        // cannot be joined synchronously from Drop. The Inner-side cleanup
+        // guard remains the fallback for startup failures and other exits.
+        self.bootstrap_ctx_builder.clear_data_chunk_callbacks();
+
         // Cancel shutdown token
         self.shutdown_token.cancel();
         // Abort all background tasks (best-effort)

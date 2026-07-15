@@ -38,13 +38,15 @@ jobs:
           repo-token: ${{ github.token }}
 
       - name: Install wasm-tools
-        run: cargo install wasm-tools --version 1.247.0 --locked
+        run: cargo install wasm-tools --version 1.249.0 --locked
 
       - name: Install wasm-pack
         run: cargo install wasm-pack --version 0.13.1 --locked
 
       - name: Verify TypeScript workload WIT drift
-        run: cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
+        run: |
+          cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
+          cmp core/framework/wit-v2/actr-workload.wit bindings/typescript/actr-workload/src/wit-v2/actr-workload.wit
 
       - name: Build actr-workload package
         run: |

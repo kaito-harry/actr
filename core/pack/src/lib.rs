@@ -31,15 +31,19 @@ mod util;
 
 pub use error::PackError;
 pub use load::{
-    load_binary, read_glue_js, read_lock_file, read_manifest, read_manifest_raw, read_proto_files,
-    read_signature,
+    load_binary, load_binary_bounded, read_glue_js, read_glue_js_bounded, read_lock_file,
+    read_lock_file_bounded, read_manifest, read_manifest_raw, read_proto_files,
+    read_proto_files_bounded, read_signature,
 };
 pub use manifest::{
     BinaryEntry, BinaryKind, LockFileEntry, ManifestMetadata, PackageManifest, ProtoFileEntry,
     ResourceEntry,
 };
 pub use pack::{PackOptions, pack};
-pub use verify::{VerifiedPackage, verify};
+pub use verify::{
+    DEFAULT_MAX_VERIFIED_ENTRIES, DEFAULT_MAX_VERIFIED_ENTRY_BYTES, PackageVerificationLimits,
+    VerifiedPackage, verify, verify_bounded, verify_with_limits,
+};
 
 /// Compute deterministic key_id from Ed25519 public key bytes.
 ///

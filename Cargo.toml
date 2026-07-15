@@ -102,7 +102,7 @@ exclude = [
 [workspace.package]
 version = "0.4.17"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.95"
 license = "Apache-2.0"
 repository = "https://github.com/Actrium/actr"
 authors = ["Actor-RTC Contributors"]
@@ -194,20 +194,31 @@ rand = "0.8"
 rusqlite = { version = "0.32", features = ["bundled", "serde_json"] }
 
 # === WASM Runtime ===
-# Pinned to 43.0.1 for Component Model + async bindings (Phase 1 migration).
-# 44.0.0 requires rustc >= 1.92, which exceeds the workspace MSRV of 1.88;
-# revisit the pin once MSRV catches up.
-# The `component-model-async` + `async` features are required because
-# wit-bindgen 0.57 guest components emit async-ABI custom sections even when
-# every WIT function is declared sync.
-wasmtime = { version = "=43.0.1", default-features = false, features = [
+# Pinned to 46.0.1 for Component Model host execution. 46 requires rustc >=
+# 1.94 (workspace MSRV is 1.95, so satisfied) and carries the fix for
+# GHSA-4ch3-9j33-3pmj, so do NOT drop back to 46.0.0.
+#
+# The `async` feature powers the host-side wasmtime fibers we rely on
+# (`instantiate_async` / `call_async`); `component-model-async` stays enabled
+# as forward wiring for the M4 async world (the host still runs the 0.1.0
+# synchronous WIT world with a `&mut Store` serial dispatch here).
+#
+# NB (M3): guest components are now lifted *synchronously* (wit-bindgen 0.58
+# with `async: true` removed). wasmtime 46's embedded wasmparser rejects the
+# async canonical option on sync WIT function types, so pre-46 async-lift
+# `.actr` binaries no longer load; WasmHost::compile maps that error to a
+# rebuild-with-current-SDK diagnostic.
+#
+# `default-features = false` keeps the feature set minimal: 46's new default
+# `gc-copying` / `wit-parser` features are not pulled in and are not needed.
+wasmtime = { version = "=46.0.1", default-features = false, features = [
     "runtime",
     "cranelift",
     "component-model",
     "component-model-async",
     "async",
 ] }
-wasmtime-wasi = "=43.0.1"
+wasmtime-wasi = "=46.0.1"
 
 # === Networking ===
 tokio-tungstenite = { version = "0.28.0", features = [

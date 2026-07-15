@@ -1,5 +1,271 @@
 use super::*;
 
+// ── Strategy A: keyless zero-overhead scheduler gate ────────────────────────
+//
+// `scheduler_engaged` is the single predicate the node uses to decide whether
+// to spawn the interleaved runner + conflict-key scheduler. Strategy A's whole
+// promise lives here: default-on (gate on) with NO declared key must NOT engage
+// the scheduler, so a keyless actor stays bit-for-bit the serial M4 path.
+
+#[test]
+fn scheduler_engaged_only_with_gate_on_and_declared_keys() {
+    // Default-on + keyless ⇒ NOT engaged (the strategy A zero-overhead promise).
+    assert!(
+        !scheduler_engaged(true, false),
+        "keyless actor must stay serial (no scheduler) even with the gate on"
+    );
+    // Gate on + at least one key ⇒ engaged.
+    assert!(
+        scheduler_engaged(true, true),
+        "a declared conflict key with the gate on must engage the scheduler"
+    );
+    // Gate off ⇒ never engaged regardless of keys.
+    assert!(!scheduler_engaged(false, false));
+    assert!(!scheduler_engaged(false, true));
+}
+
+#[test]
+fn empty_conflict_key_spec_is_reported_empty() {
+    // The node's keyless predicate rides on `ConflictKeySpec::is_empty`.
+    let keyless = crate::dispatch::ConflictKeySpec::builder()
+        .build()
+        .expect("build empty spec");
+    assert!(keyless.is_empty(), "a spec with no rules must report empty");
+
+    let keyed = crate::dispatch::ConflictKeySpec::builder()
+        .method("svc/method", crate::dispatch::KeySource::Sender)
+        .build()
+        .expect("build keyed spec");
+    assert!(
+        !keyed.is_empty(),
+        "a spec with a rule must report non-empty"
+    );
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ShutdownOrderEvent {
+    FirstStarted,
+    FirstFinished,
+    SecondStarted,
+    OnStop,
+}
+
+async fn next_shutdown_event(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<ShutdownOrderEvent>,
+) -> ShutdownOrderEvent {
+    tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+        .await
+        .expect("shutdown-order event watchdog")
+        .expect("shutdown-order event channel open")
+}
+
+/// Linked actor used to prove that graceful teardown drains a durable mailbox
+/// batch's same-key tail before the lifecycle barrier is allowed to run.
+struct ShutdownOrderHandle {
+    events: tokio::sync::mpsc::UnboundedSender<ShutdownOrderEvent>,
+    release_first: Arc<tokio::sync::Semaphore>,
+}
+
+#[async_trait::async_trait]
+impl LinkedWorkloadHandle for ShutdownOrderHandle {
+    async fn dispatch(
+        &self,
+        envelope: RpcEnvelope,
+        _ctx: Arc<crate::context::RuntimeContext>,
+    ) -> ActorResult<bytes::Bytes> {
+        match envelope.request_id.as_str() {
+            "first" => {
+                let _ = self.events.send(ShutdownOrderEvent::FirstStarted);
+                self.release_first
+                    .acquire()
+                    .await
+                    .expect("release semaphore open")
+                    .forget();
+                let _ = self.events.send(ShutdownOrderEvent::FirstFinished);
+            }
+            "second" => {
+                let _ = self.events.send(ShutdownOrderEvent::SecondStarted);
+            }
+            other => panic!("unexpected dispatch {other}"),
+        }
+        Ok(bytes::Bytes::new())
+    }
+
+    async fn on_stop(&self, _ctx: &crate::context::RuntimeContext) -> ActorResult<()> {
+        let _ = self.events.send(ShutdownOrderEvent::OnStop);
+        Ok(())
+    }
+}
+
+fn shutdown_order_dispatch(
+    runner: Arc<crate::executor::ActorHandle>,
+    ctx: crate::context::RuntimeContext,
+    request_id: &'static str,
+) -> crate::dispatch::scheduler::DispatchFn {
+    Box::new(move || {
+        Box::pin(async move {
+            let envelope = RpcEnvelope {
+                request_id: request_id.to_string(),
+                ..RpcEnvelope::default()
+            };
+            let invocation = crate::workload::InvocationContext {
+                self_id: ActrId::default(),
+                caller_id: None,
+                request_id: request_id.to_string(),
+            };
+            let host_abi: crate::workload::HostAbiFn =
+                Arc::new(|_| Box::pin(async { HostOperationResult::Done }));
+            runner
+                .dispatch_envelope(envelope, ctx, invocation, &host_abi)
+                .await
+        })
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn graceful_shutdown_admits_active_mailbox_batch_before_on_stop() {
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let release_first = Arc::new(tokio::sync::Semaphore::new(0));
+    let workload = Workload::Linked(Arc::new(ShutdownOrderHandle {
+        events: events_tx,
+        release_first: release_first.clone(),
+    }) as Arc<dyn LinkedWorkloadHandle>);
+    let runner = Arc::new(crate::executor::spawn_runner_with_mode(
+        workload,
+        crate::executor::RunnerMode::Interleaved,
+        None,
+    ));
+    let scheduler = Arc::new(crate::dispatch::scheduler::SchedulerHandle::spawn(2, 8));
+    let ctx =
+        runtime_context_with_host_transport(ActrId::default(), Arc::new(HostTransport::new()));
+    let key = crate::dispatch::conflict_key::ConflictKey::Scoped {
+        domain: Arc::from("shutdown-order"),
+        value: bytes::Bytes::from_static(b"same"),
+    };
+    let mailbox_batch_admission = MailboxBatchAdmission::new();
+    // Models one successful dequeue: every record in the returned batch is
+    // already Inflight even though only the first has reached the scheduler.
+    let active_batch = mailbox_batch_admission
+        .enter()
+        .await
+        .expect("mailbox admission starts open");
+
+    let first = scheduler
+        .submit(
+            key.clone(),
+            shutdown_order_dispatch(runner.clone(), ctx.clone(), "first"),
+        )
+        .await;
+    assert_eq!(
+        next_shutdown_event(&mut events_rx).await,
+        ShutdownOrderEvent::FirstStarted
+    );
+
+    let stop_runner = runner.clone();
+    let stop_ctx = ctx.clone();
+    let stop = async move {
+        let invocation = crate::workload::InvocationContext {
+            self_id: ActrId::default(),
+            caller_id: None,
+            request_id: "lifecycle:on_stop".to_string(),
+        };
+        let host_abi: crate::workload::HostAbiFn =
+            Arc::new(|_| Box::pin(async { HostOperationResult::Done }));
+        stop_runner
+            .on_stop(stop_ctx, invocation, &host_abi)
+            .await
+            .expect("on_stop succeeds");
+    };
+    let shutdown_runner = runner.clone();
+    let shutdown_scheduler = scheduler.clone();
+    let shutdown_mailbox_admission = mailbox_batch_admission.clone();
+    let (prelude_started_tx, prelude_started_rx) = tokio::sync::oneshot::channel();
+    let shutdown = tokio::spawn(async move {
+        shutdown_actor_runner(
+            Some(shutdown_scheduler),
+            shutdown_runner,
+            Box::pin(async move {
+                let _ = prelude_started_tx.send(());
+                shutdown_mailbox_admission.close().await;
+            }),
+            Box::pin(stop),
+        )
+        .await;
+    });
+
+    prelude_started_rx
+        .await
+        .expect("shutdown prelude started while the batch is active");
+    // This is the tail record from the same dequeue batch. Shutdown is already
+    // waiting to close mailbox admission, but scheduler intake must remain open
+    // until the complete batch has been submitted.
+    let second = scheduler
+        .submit(
+            key,
+            shutdown_order_dispatch(runner.clone(), ctx.clone(), "second"),
+        )
+        .await;
+    drop(active_batch);
+    assert!(
+        mailbox_batch_admission.enter().await.is_none(),
+        "a batch starting after shutdown must not dequeue more durable messages"
+    );
+
+    release_first.add_permits(1);
+    assert_eq!(
+        next_shutdown_event(&mut events_rx).await,
+        ShutdownOrderEvent::FirstFinished
+    );
+    assert_eq!(
+        next_shutdown_event(&mut events_rx).await,
+        ShutdownOrderEvent::SecondStarted,
+        "the admitted same-key tail must execute during graceful drain"
+    );
+    assert_eq!(
+        next_shutdown_event(&mut events_rx).await,
+        ShutdownOrderEvent::OnStop,
+        "on_stop must follow every admitted scheduler job"
+    );
+    assert!(first.await.expect("scheduler alive").is_ok());
+    assert!(second.await.expect("scheduler alive").is_ok());
+    tokio::time::timeout(std::time::Duration::from_secs(5), shutdown)
+        .await
+        .expect("shutdown coordinator watchdog")
+        .expect("shutdown coordinator task");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_shutdown_prelude_aborts_runner() {
+    let workload = Workload::Linked(Arc::new(DummyLinkedHandle) as Arc<dyn LinkedWorkloadHandle>);
+    let runner = Arc::new(crate::executor::spawn_runner(workload));
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let pre_shutdown = async move {
+        let _ = entered_tx.send(());
+        std::future::pending::<()>().await;
+    };
+
+    let shutdown_runner = runner.clone();
+    let shutdown = tokio::spawn(async move {
+        shutdown_actor_runner(
+            None,
+            shutdown_runner,
+            Box::pin(pre_shutdown),
+            Box::pin(async {}),
+        )
+        .await;
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), entered_rx)
+        .await
+        .expect("shutdown prelude did not start")
+        .expect("shutdown prelude signal dropped");
+
+    shutdown.abort();
+    let _ = shutdown.await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), runner.join())
+        .await
+        .expect("cancelled shutdown coordinator detached the actor runner");
+}
+
 #[test]
 fn connection_not_ready_has_distinct_wire_code() {
     let err = ActrError::ConnectionNotReady(ConnectionNotReadyInfo::new(1200, 6000));
@@ -63,17 +329,17 @@ impl LinkedWorkloadHandle for DummyLinkedHandle {}
 
 async fn harness() -> (
     crate::context::RuntimeContext,
-    Arc<tokio::sync::Mutex<Workload>>,
+    Arc<crate::executor::ActorHandle>,
 ) {
     let ctx =
         runtime_context_with_host_transport(ActrId::default(), Arc::new(HostTransport::new()));
     let wl = Workload::Linked(Arc::new(DummyLinkedHandle) as Arc<dyn LinkedWorkloadHandle>);
-    (ctx, Arc::new(tokio::sync::Mutex::new(wl)))
+    (ctx, Arc::new(crate::executor::spawn_runner(wl)))
 }
 
 async fn actorless_harness() -> (
     crate::context::RuntimeContext,
-    Arc<tokio::sync::Mutex<Workload>>,
+    Arc<crate::executor::ActorHandle>,
 ) {
     use crate::inbound::{DataChunkRegistry, MediaFrameRegistry};
     use crate::outbound::{Gate, HostGate};
@@ -104,7 +370,7 @@ async fn actorless_harness() -> (
         0,
     );
     let wl = Workload::Linked(Arc::new(DummyLinkedHandle) as Arc<dyn LinkedWorkloadHandle>);
-    (ctx, Arc::new(tokio::sync::Mutex::new(wl)))
+    (ctx, Arc::new(crate::executor::spawn_runner(wl)))
 }
 
 fn expect_error_code(res: HostOperationResult, expected: i32) {
@@ -114,11 +380,21 @@ fn expect_error_code(res: HostOperationResult, expected: i32) {
     }
 }
 
+fn weak_runner(
+    runner: &Arc<crate::executor::ActorHandle>,
+) -> std::sync::Weak<crate::executor::ActorHandle> {
+    Arc::downgrade(runner)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn callraw_without_peer_returns_error_code() {
     let (ctx, wl) = actorless_harness().await;
-    let res =
-        host_operation_handler(ctx, wl, HostOperation::CallRaw(HostCallRawV1::default())).await;
+    let res = host_operation_handler(
+        ctx,
+        weak_runner(&wl),
+        HostOperation::CallRaw(HostCallRawV1::default()),
+    )
+    .await;
     // No remote actor gate is installed, so routing fails immediately.
     expect_error_code(res, abi_code::GENERIC_ERROR);
 }
@@ -126,22 +402,36 @@ async fn callraw_without_peer_returns_error_code() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn call_with_default_dest_returns_error() {
     let (ctx, wl) = harness().await;
-    let res = host_operation_handler(ctx, wl, HostOperation::Call(HostCallV1::default())).await;
+    let res = host_operation_handler(
+        ctx,
+        weak_runner(&wl),
+        HostOperation::Call(HostCallV1::default()),
+    )
+    .await;
     expect_error_code(res, abi_code::PROTOCOL_ERROR);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tell_with_default_dest_returns_error() {
     let (ctx, wl) = harness().await;
-    let res = host_operation_handler(ctx, wl, HostOperation::Tell(HostTellV1::default())).await;
+    let res = host_operation_handler(
+        ctx,
+        weak_runner(&wl),
+        HostOperation::Tell(HostTellV1::default()),
+    )
+    .await;
     expect_error_code(res, abi_code::PROTOCOL_ERROR);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn discover_without_realm_returns_error() {
     let (ctx, wl) = harness().await;
-    let res =
-        host_operation_handler(ctx, wl, HostOperation::Discover(HostDiscoverV1::default())).await;
+    let res = host_operation_handler(
+        ctx,
+        weak_runner(&wl),
+        HostOperation::Discover(HostDiscoverV1::default()),
+    )
+    .await;
     // Default ActrType with unreachable signaling → discover errors.
     expect_error_code(res, abi_code::GENERIC_ERROR);
 }
@@ -151,7 +441,7 @@ async fn register_and_unregister_stream_roundtrip() {
     let (ctx, wl) = harness().await;
     let register = host_operation_handler(
         ctx.clone(),
-        wl.clone(),
+        weak_runner(&wl),
         HostOperation::RegisterStream(HostRegisterStreamV1 {
             stream_id: "stream-1".to_string(),
         }),
@@ -164,7 +454,7 @@ async fn register_and_unregister_stream_roundtrip() {
 
     let unregister = host_operation_handler(
         ctx,
-        wl,
+        weak_runner(&wl),
         HostOperation::UnregisterStream(HostUnregisterStreamV1 {
             stream_id: "stream-1".to_string(),
         }),
@@ -177,11 +467,61 @@ async fn register_and_unregister_stream_roundtrip() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_teardown_releases_registered_stream_callback_cycle() {
+    let (ctx, wl) = harness().await;
+    let registry = ctx.data_chunk_registry_for_test();
+    let weak_registry = Arc::downgrade(&registry);
+    let cleanup = DataChunkRegistryCleanupGuard::new(&registry);
+
+    let register = host_operation_handler(
+        ctx.clone(),
+        weak_runner(&wl),
+        HostOperation::RegisterStream(HostRegisterStreamV1 {
+            stream_id: "cycle-stream".to_string(),
+        }),
+    )
+    .await;
+    assert!(matches!(register, HostOperationResult::Done));
+
+    // Execute the exact callback installed by the host bridge. A linked
+    // workload intentionally reports NotImplemented for package stream
+    // callbacks, which proves the callback reached the live actor runner.
+    let callback_result = registry
+        .invoke_for_test(
+            actr_protocol::DataChunk {
+                stream_id: "cycle-stream".to_string(),
+                sequence: 1,
+                ..Default::default()
+            },
+            ActrId::default(),
+        )
+        .await
+        .expect("registered callback");
+    assert!(matches!(callback_result, Err(ActrError::NotImplemented(_))));
+
+    drop(ctx);
+    drop(wl);
+    drop(registry);
+    assert!(
+        weak_registry.upgrade().is_some(),
+        "the regression fixture must retain the registry through its callback"
+    );
+
+    // `Inner` owns this guard in production. Dropping it clears callbacks,
+    // which drops the captured RuntimeContext and releases the registry.
+    drop(cleanup);
+    assert!(
+        weak_registry.upgrade().is_none(),
+        "node teardown must break the stream callback ownership cycle"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unregister_unknown_stream_is_idempotent_done() {
     let (ctx, wl) = harness().await;
     let res = host_operation_handler(
         ctx,
-        wl,
+        weak_runner(&wl),
         HostOperation::UnregisterStream(HostUnregisterStreamV1 {
             stream_id: "never-registered".to_string(),
         }),
@@ -200,7 +540,7 @@ async fn send_data_chunk_rejects_non_stream_payload_type() {
     // RpcReliable is a valid PayloadType but not a stream type → PROTOCOL_ERROR.
     let res = host_operation_handler(
         ctx,
-        wl,
+        weak_runner(&wl),
         HostOperation::SendDataChunk(HostSendDataChunkV1 {
             dest: DestV1::workload(),
             payload_type: PayloadType::RpcReliable as i32,
@@ -216,7 +556,7 @@ async fn send_data_chunk_rejects_unknown_payload_type() {
     let (ctx, wl) = harness().await;
     let res = host_operation_handler(
         ctx,
-        wl,
+        weak_runner(&wl),
         HostOperation::SendDataChunk(HostSendDataChunkV1 {
             dest: DestV1::workload(),
             payload_type: 9999,
@@ -233,7 +573,7 @@ async fn send_data_chunk_valid_type_routes_and_errors() {
     // Valid stream payload type, but no route to the default dest → routing error.
     let res = host_operation_handler(
         ctx,
-        wl,
+        weak_runner(&wl),
         HostOperation::SendDataChunk(HostSendDataChunkV1 {
             dest: DestV1::workload(),
             payload_type: PayloadType::StreamReliable as i32,
@@ -751,9 +1091,18 @@ async fn tell_dedup_harness(result: fn() -> ActorResult<FrameworkBytes>) -> Tell
         r#type: config.package.actr_type.clone(),
     };
 
-    let mut inner = Inner::build(config, workload, None, None, 100, Duration::from_secs(60))
-        .await
-        .expect("Inner::build must succeed with in-memory mailbox");
+    let mut inner = Inner::build(
+        config,
+        workload,
+        None,
+        None,
+        100,
+        Duration::from_secs(60),
+        crate::config::DispatchConcurrency::default(),
+        None,
+    )
+    .await
+    .expect("Inner::build must succeed with in-memory mailbox");
     // handle_incoming requires post-start identity/credential state; set it
     // directly instead of driving the full registration path.
     inner.actor_id = Some(actor_id);

@@ -35,7 +35,7 @@
 #[cfg(feature = "geoip")]
 use anyhow::{Context, Result};
 #[cfg(feature = "geoip")]
-use maxminddb::{MaxMindDBError, Reader, geoip2::City};
+use maxminddb::{Reader, geoip2::City};
 #[cfg(feature = "geoip")]
 use std::net::IpAddr;
 #[cfg(feature = "geoip")]
@@ -180,18 +180,21 @@ impl GeoIpService {
     /// * `Some((latitude, longitude))` - Coordinates found
     /// * `None` - IP not in database or no coordinate info
     pub fn lookup(&self, ip: IpAddr) -> Option<(f64, f64)> {
-        match self.reader.lookup::<City>(ip) {
-            Ok(city) => {
-                if let Some(location) = city.location {
-                    if let (Some(lat), Some(lon)) = (location.latitude, location.longitude) {
-                        debug!("GeoIP lookup: {} -> ({}, {})", ip, lat, lon);
-                        return Some((lat, lon));
-                    }
+        match self
+            .reader
+            .lookup(ip)
+            .and_then(|result| result.decode::<City>())
+        {
+            Ok(Some(city)) => {
+                let location = city.location;
+                if let (Some(lat), Some(lon)) = (location.latitude, location.longitude) {
+                    debug!("GeoIP lookup: {} -> ({}, {})", ip, lat, lon);
+                    return Some((lat, lon));
                 }
                 debug!("GeoIP lookup: {} found but no coordinates", ip);
                 None
             }
-            Err(MaxMindDBError::AddressNotFoundError(_)) => {
+            Ok(None) => {
                 debug!("GeoIP lookup: {} not in database", ip);
                 None
             }

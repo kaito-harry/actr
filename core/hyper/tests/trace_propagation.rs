@@ -24,7 +24,9 @@
 
 use std::sync::Arc;
 
-use actr_framework::{Bytes, Context, MessageDispatcher, Workload};
+use actr_framework::{
+    Bytes, Context, MaybeSendBoxFuture, MaybeSendSync, MessageDispatcher, Workload,
+};
 use actr_hyper::outbound::{HostGate, PeerGate};
 use actr_hyper::test_support::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
 use actr_hyper::transport::{
@@ -124,12 +126,8 @@ impl Context for MockCtx {
 
     async fn register_stream<F>(&self, _id: String, _cb: F) -> ActorResult<()>
     where
-        F: Fn(
-                actr_protocol::DataChunk,
-                ActrId,
-            ) -> futures_util::future::BoxFuture<'static, ActorResult<()>>
-            + Send
-            + Sync
+        F: Fn(actr_protocol::DataChunk, ActrId) -> MaybeSendBoxFuture<'static, ActorResult<()>>
+            + MaybeSendSync
             + 'static,
     {
         Err(ActrError::NotImplemented("mock".to_string()))

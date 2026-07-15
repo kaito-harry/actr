@@ -64,6 +64,26 @@ jobs:
             --head-sha "$HEAD_SHA" \
             --manual-full "$MANUAL_FULL"
 
+  audit:
+    name: Dependency Audit
+    needs: determine
+    if: needs.determine.outputs.rust_core == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit Cargo.lock
+        # Existing advisories outside the WASM host are tracked separately:
+        # maxminddb (framework GeoIP), protobuf 2 (prometheus), rsa (TURN).
+        run: >-
+          cargo audit
+          --ignore RUSTSEC-2025-0132
+          --ignore RUSTSEC-2024-0437
+          --ignore RUSTSEC-2023-0071
+
   rust:
     name: Rust
     needs: determine
@@ -96,7 +116,9 @@ jobs:
         # core/hyper/wit/actr-workload.wit is a publish-time copy of the
         # framework original (shipped in the actr-hyper tarball so bindgen
         # works without the sibling framework crate). Fail fast if they drift.
-        run: cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
+        run: |
+          cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
+          cmp core/framework/wit-v2/actr-workload.wit core/hyper/wit-v2/actr-workload.wit
       - name: Cache cargo-installed tools
         id: cargo-tools
         uses: actions/cache@v4
@@ -105,7 +127,7 @@ jobs:
             ~/.cargo/bin/wasm-pack
             ~/.cargo/bin/wasm-component-ld
             ~/.cargo/bin/wasm-tools
-          key: cargo-tools-v1-${{ runner.os }}-wp0.13.1-wcld0.5.22-wt1.247.0
+          key: cargo-tools-v1-${{ runner.os }}-wp0.13.1-wcld0.5.22-wt1.249.0
       - name: Install wasm-pack
         if: steps.cargo-tools.outputs.cache-hit != 'true'
         run: cargo install wasm-pack --version 0.13.1 --locked
@@ -113,7 +135,7 @@ jobs:
         if: steps.cargo-tools.outputs.cache-hit != 'true'
         run: |
           cargo install wasm-component-ld --version 0.5.22 --locked
-          cargo install wasm-tools --version 1.247.0 --locked
+          cargo install wasm-tools --version 1.249.0 --locked
       - uses: Swatinem/rust-cache@v2
       - name: Generate CLI web runtime assets
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
@@ -156,7 +178,9 @@ jobs:
         # core/hyper/wit/actr-workload.wit is a publish-time copy of the
         # framework original (shipped in the actr-hyper tarball so bindgen
         # works without the sibling framework crate). Fail fast if they drift.
-        run: cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
+        run: |
+          cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
+          cmp core/framework/wit-v2/actr-workload.wit core/hyper/wit-v2/actr-workload.wit
       - name: Cache cargo-installed tools
         id: cargo-tools
         uses: actions/cache@v4
@@ -165,7 +189,7 @@ jobs:
             ~/.cargo/bin/wasm-pack
             ~/.cargo/bin/wasm-component-ld
             ~/.cargo/bin/wasm-tools
-          key: cargo-tools-v1-${{ runner.os }}-wp0.13.1-wcld0.5.22-wt1.247.0
+          key: cargo-tools-v1-${{ runner.os }}-wp0.13.1-wcld0.5.22-wt1.249.0
       - name: Install wasm-pack
         if: steps.cargo-tools.outputs.cache-hit != 'true'
         run: cargo install wasm-pack --version 0.13.1 --locked
@@ -173,12 +197,59 @@ jobs:
         if: steps.cargo-tools.outputs.cache-hit != 'true'
         run: |
           cargo install wasm-component-ld --version 0.5.22 --locked
-          cargo install wasm-tools --version 1.247.0 --locked
+          cargo install wasm-tools --version 1.249.0 --locked
       - uses: Swatinem/rust-cache@v2
       - name: Generate CLI web runtime assets
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
       - name: Run tests
         run: cargo test --workspace --verbose --all-features
+
+  rust_msrv:
+    name: Rust MSRV (1.95)
+    needs: determine
+    if: needs.determine.outputs.rust_core == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      # Force the wasip2 guest fixture to link under the pinned MSRV toolchain
+      # instead of silently compiling the fixture tests out.
+      ACTR_REQUIRE_WASM_FIXTURE: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust (MSRV)
+        uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: wasm32-wasip2,wasm32-unknown-unknown
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+      - name: Cache cargo-installed tools
+        id: cargo-tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/wasm-pack
+            ~/.cargo/bin/wasm-component-ld
+            ~/.cargo/bin/wasm-tools
+          key: cargo-tools-v1-${{ runner.os }}-wp0.13.1-wcld0.5.22-wt1.249.0
+      - name: Install wasm-pack
+        if: steps.cargo-tools.outputs.cache-hit != 'true'
+        run: cargo install wasm-pack --version 0.13.1 --locked
+      - name: Install wasm Component Model toolchain
+        if: steps.cargo-tools.outputs.cache-hit != 'true'
+        run: |
+          cargo install wasm-component-ld --version 0.5.22 --locked
+          cargo install wasm-tools --version 1.249.0 --locked
+      - uses: Swatinem/rust-cache@v2
+      - name: Generate CLI web runtime assets
+        run: bash bindings/web/scripts/sync-cli-assets.sh --build
+      - name: Build at MSRV (locked)
+        run: cargo build --workspace --all-targets --all-features --locked
 
   typescript:
     name: TypeScript
@@ -246,7 +317,9 @@ jobs:
             bindings/typescript/actr-workload/package-lock.json
             examples/typescript/echo-workload/package-lock.json
       - name: Verify TypeScript workload WIT drift
-        run: cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
+        run: |
+          cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
+          cmp core/framework/wit-v2/actr-workload.wit bindings/typescript/actr-workload/src/wit-v2/actr-workload.wit
       - name: Build TypeScript workload package
         working-directory: bindings/typescript/actr-workload
         run: |
@@ -362,7 +435,9 @@ jobs:
         # core/hyper/wit/actr-workload.wit is a publish-time copy of the
         # framework original (shipped in the actr-hyper tarball so bindgen
         # works without the sibling framework crate). Fail fast if they drift.
-        run: cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
+        run: |
+          cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
+          cmp core/framework/wit-v2/actr-workload.wit core/hyper/wit-v2/actr-workload.wit
       - name: Cache cargo-installed tools
         id: cargo-tools
         uses: actions/cache@v4
@@ -370,15 +445,17 @@ jobs:
           path: |
             ~/.cargo/bin/wasm-tools
             ~/.cargo/bin/wasm-pack
-          key: cargo-tools-v1-${{ runner.os }}-wt1.247.0-wp0.13.1
+          key: cargo-tools-v1-${{ runner.os }}-wt1.249.0-wp0.13.1
       - name: Install wasm-tools
         if: steps.cargo-tools.outputs.cache-hit != 'true'
-        run: cargo install wasm-tools --version 1.247.0 --locked
+        run: cargo install wasm-tools --version 1.249.0 --locked
       - name: Install wasm-pack
         if: steps.cargo-tools.outputs.cache-hit != 'true'
         run: cargo install wasm-pack --version 0.13.1 --locked
       - name: Verify TypeScript workload WIT drift
-        run: cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
+        run: |
+          cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
+          cmp core/framework/wit-v2/actr-workload.wit bindings/typescript/actr-workload/src/wit-v2/actr-workload.wit
       - name: Build actr-workload package
         run: |
           python -m pip install -U build
@@ -538,6 +615,7 @@ jobs:
     if: always()
     needs:
       - determine
+      - audit
       - rust
       - typescript
       - typescript_workload
@@ -552,6 +630,7 @@ jobs:
       CHANGED_FILES_JSON: ${{ needs.determine.outputs.changed_files_json }}
       REASONS_JSON: ${{ needs.determine.outputs.reasons_json }}
       RUST_RESULT: ${{ needs.rust.result }}
+      AUDIT_RESULT: ${{ needs.audit.result }}
       TYPESCRIPT_RESULT: ${{ needs.typescript.result }}
       TYPESCRIPT_WORKLOAD_RESULT: ${{ needs.typescript_workload.result }}
       PYTHON_CODEGEN_RESULT: ${{ needs.python_codegen.result }}
@@ -569,6 +648,7 @@ jobs:
           import sys
 
           results = {
+              "audit": os.environ["AUDIT_RESULT"],
               "rust": os.environ["RUST_RESULT"],
               "typescript": os.environ["TYPESCRIPT_RESULT"],
               "typescript_workload": os.environ["TYPESCRIPT_WORKLOAD_RESULT"],

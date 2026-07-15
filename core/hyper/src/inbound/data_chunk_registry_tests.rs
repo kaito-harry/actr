@@ -149,6 +149,23 @@ fn unregister_removes_stream() {
     assert_eq!(reg.callback_len(), 0);
 }
 
+#[test]
+fn clear_removes_all_streams_and_closes_registry() {
+    let reg = DataChunkRegistry::new();
+    let (first, _) = counting_callback();
+    let (second, _) = counting_callback();
+    reg.register("s1".into(), first);
+    reg.register("s2".into(), second);
+
+    reg.clear();
+    assert_eq!(reg.callback_len(), 0);
+    assert!(reg.shutdown_token().is_cancelled());
+
+    let (replacement, _) = counting_callback();
+    reg.register("s3".into(), replacement);
+    assert_eq!(reg.callback_len(), 0);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dispatch_invokes_registered_callback() {
     let reg = DataChunkRegistry::new();
@@ -386,6 +403,65 @@ async fn shutdown_is_terminal_for_late_dispatch() {
         panic!("callback ran after registry shutdown: {started}");
     }
     assert_eq!(reg.worker_len(), 0, "late dispatch resurrected a worker");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_shutdown_aborts_taken_workers() {
+    struct DropSignal(Option<oneshot::Sender<()>>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            if let Some(tx) = self.0.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    let reg = Arc::new(DataChunkRegistry::new());
+    let (started_tx, started_rx) = oneshot::channel();
+    let started_tx = Arc::new(Mutex::new(Some(started_tx)));
+    let (dropped_tx, dropped_rx) = oneshot::channel();
+    let dropped_tx = Arc::new(Mutex::new(Some(dropped_tx)));
+
+    let callback: DataChunkCallback = Arc::new(move |_chunk, _sender| {
+        let started_tx = started_tx.clone();
+        let dropped_tx = dropped_tx.clone();
+        Box::pin(async move {
+            let _drop_signal = DropSignal(dropped_tx.lock().unwrap().take());
+            if let Some(tx) = started_tx.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            std::future::pending::<()>().await;
+            #[allow(unreachable_code)]
+            Ok(())
+        })
+    });
+    reg.register("s1".into(), callback);
+    reg.dispatch(chunk("s1"), ActrId::default(), RELIABLE).await;
+    tokio::time::timeout(Duration::from_secs(2), started_rx)
+        .await
+        .expect("callback did not start")
+        .expect("callback start signal dropped");
+
+    let shutdown_registry = reg.clone();
+    let shutdown = tokio::spawn(async move {
+        shutdown_registry.shutdown().await;
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while reg.callback_len() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("shutdown did not take worker handles");
+    shutdown.abort();
+    let _ = shutdown.await;
+
+    tokio::time::timeout(Duration::from_secs(2), dropped_rx)
+        .await
+        .expect("worker callback was detached instead of aborted")
+        .expect("callback drop signal sender disappeared");
 }
 
 /// (6) LatencyFirst overflow: with capacity 1 and a blocked callback,

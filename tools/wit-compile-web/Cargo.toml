@@ -37,6 +37,6 @@ path = "src/lib.rs"
 # Pinned to the same wit-parser release wit-lint uses, so both tools see
 # identical parse output and CI does not have to reconcile two views of
 # the WIT file. Bumping this pin is a conscious cross-tool decision.
-wit-parser = "=0.247.0"
+wit-parser = "=0.251.0"
 anyhow = { workspace = true }
 heck = "0.5"

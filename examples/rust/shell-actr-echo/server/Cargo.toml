@@ -3,7 +3,7 @@
 name = "echo-real-server"
 version = "0.2.1"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.95"
 
 [dependencies]
 actr = { path = "../../../..", features = ["opentelemetry"] }

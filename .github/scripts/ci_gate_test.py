@@ -42,6 +42,18 @@ def test_rust_gate_avoids_slow_workspace_tests_and_unused_prewarm() -> None:
     assert "cargo test --workspace" in test_job
 
 
+def test_msrv_gate_builds_full_workspace_on_pinned_toolchain() -> None:
+    workflow = CI_GATE_WORKFLOW.read_text(encoding="utf-8")
+    msrv_job = _job(workflow, "rust_msrv", "typescript")
+
+    assert "dtolnay/rust-toolchain@1.95.0" in msrv_job
+    assert "targets: wasm32-wasip2,wasm32-unknown-unknown" in msrv_job
+    assert 'ACTR_REQUIRE_WASM_FIXTURE: "1"' in msrv_job
+    assert (
+        "cargo build --workspace --all-targets --all-features --locked" in msrv_job
+    )
+
+
 def test_pr_gate_excludes_heavy_root_e2e_jobs() -> None:
     workflow = CI_GATE_WORKFLOW.read_text(encoding="utf-8")
 
@@ -582,6 +594,7 @@ def test_service_readiness_waits_for_exact_registration() -> None:
 
 if __name__ == "__main__":
     test_rust_gate_avoids_slow_workspace_tests_and_unused_prewarm()
+    test_msrv_gate_builds_full_workspace_on_pinned_toolchain()
     test_pr_gate_excludes_heavy_root_e2e_jobs()
     test_scheduled_e2e_runs_root_level_browser_and_stream_e2e()
     test_pr_gate_swift_uses_macos_only_xcframework()

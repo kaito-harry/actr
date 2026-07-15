@@ -297,3 +297,91 @@ fn resolve_plain_string_without_placeholders() {
     let path = resolver.resolve("/plain/path/no/vars").unwrap();
     assert_eq!(path, PathBuf::from("/plain/path/no/vars"));
 }
+
+// ── Dispatch concurrency (B2) ────────────────────────────────────────────────
+
+#[test]
+fn dispatch_concurrency_default_is_on() {
+    // Strategy A: the gate defaults *on*. This is safe for keyless actors
+    // because the node never spawns a scheduler for them (proven in
+    // `lifecycle::node_tests::scheduler_engaged_*`); default-on only unlocks
+    // concurrency once a method declares a conflict key.
+    let cfg = DispatchConcurrency::default();
+    assert!(cfg.enabled);
+    assert_eq!(cfg.budget, 8);
+    assert_eq!(cfg.queue_cap, 256);
+    assert!(cfg.dispatch_timeout.is_none());
+}
+
+#[test]
+fn hyper_config_dispatch_concurrency_none_resolves_to_default_on() {
+    let config = stub_config("/tmp");
+    assert!(config.dispatch_concurrency.is_none());
+    // With no explicit config, the resolved value is the default — now on.
+    let resolved = config.resolved_dispatch_concurrency();
+    assert!(resolved.enabled);
+}
+
+#[test]
+fn explicit_disabled_still_opts_out_of_default_on() {
+    // The `Option` field is unchanged, so a caller can still force the
+    // fully-serial B1 runner by passing an explicit disabled config.
+    let config = stub_config("/tmp").with_dispatch_concurrency(Some(DispatchConcurrency {
+        enabled: false,
+        ..DispatchConcurrency::default()
+    }));
+    let resolved = config.resolved_dispatch_concurrency();
+    assert!(!resolved.enabled);
+}
+
+#[test]
+fn with_dispatch_concurrency_builder_sets_field() {
+    let config = stub_config("/tmp").with_dispatch_concurrency(Some(DispatchConcurrency {
+        enabled: true,
+        budget: 4,
+        queue_cap: 32,
+        dispatch_timeout: None,
+    }));
+    let dc = config.dispatch_concurrency.expect("set");
+    assert!(dc.enabled);
+    assert_eq!(dc.budget, 4);
+    assert_eq!(dc.queue_cap, 32);
+}
+
+#[test]
+fn env_escape_hatch_parsing() {
+    assert!(dispatch_serial_env_override(Some("1")));
+    assert!(dispatch_serial_env_override(Some("true")));
+    assert!(dispatch_serial_env_override(Some("TRUE")));
+    assert!(dispatch_serial_env_override(Some(" 1 ")));
+    assert!(dispatch_serial_env_override(Some("yes")));
+    assert!(!dispatch_serial_env_override(Some("0")));
+    assert!(!dispatch_serial_env_override(Some("false")));
+    assert!(!dispatch_serial_env_override(Some("")));
+    assert!(!dispatch_serial_env_override(None));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_runtime_limits_reject_zero_security_bounds() {
+    let limits = WasmRuntimeLimits {
+        max_outstanding_invocations: 0,
+        ..WasmRuntimeLimits::default()
+    };
+    let error = limits.validate().expect_err("zero quota must be rejected");
+    assert!(error.to_string().contains("max_outstanding_invocations"));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_runtime_limits_reject_inconsistent_memory_budget() {
+    let limits = WasmRuntimeLimits {
+        max_linear_memory: 128,
+        max_total_linear_memory: 64,
+        ..WasmRuntimeLimits::default()
+    };
+    let error = limits
+        .validate()
+        .expect_err("per-Store memory must fit aggregate memory");
+    assert!(error.to_string().contains("max_total_linear_memory"));
+}

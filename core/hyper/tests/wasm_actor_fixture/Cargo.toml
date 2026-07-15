@@ -7,6 +7,13 @@ edition = "2021"
 
 # cdylib is the correct crate-type for wasm32-wasip2 Component Model builds
 # (wasm-component-ld links a cdylib into a Component).
+#
+# The SAME guest source is ALSO compiled natively by the M6 isomorphism suite
+# (`dispatch_isomorphism.rs`), but via a `#[path]` module include rather than a
+# crate dependency — this crate deliberately stays its own workspace (see
+# `core/hyper/build.rs`), so it is never linked as an rlib dependency. On a
+# native (non-wasm32, no `cdylib` feature) build the `entry!` macro expands to
+# nothing, leaving only the plain `DoubleActor` / `DoubleDispatcher` types.
 [lib]
 crate-type = ["cdylib"]
 

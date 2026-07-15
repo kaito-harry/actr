@@ -64,7 +64,7 @@ actrix-proto = { path = "../contracts" }
 # Note: circular dependency avoided - platform depends on signer for client types
 
 # Monitoring
-prometheus = "0.13"
+prometheus = "0.14"
 lazy_static = "1.4"
 
 [dev-dependencies]

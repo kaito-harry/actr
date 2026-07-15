@@ -21,7 +21,7 @@ uuid = { version = "1.18" }
 # Optional dependencies for utilities
 anyhow = "1.0"
 tracing = "0.1"
-maxminddb = { version = "0.24", optional = true }
+maxminddb = { version = "0.27", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "blocking"], optional = true }
 flate2 = { version = "1.1", optional = true }
 tar = { version = "0.4", optional = true }
@@ -52,9 +52,11 @@ geoip = [
 
 # wit-bindgen is only needed when compiling the guest for wasm32-wasip2.
 # The generated code is gated by `#[cfg(target_arch = "wasm32")]`, so hosts
-# never pull it in.
+# never pull it in. Pinned to 0.58.0 to share wasm-tools 0.251 with wasmtime
+# 46; the guest is lifted synchronously (no `async: true` in generated.rs) so
+# wasmtime 46's async-canonical-option validation accepts the component.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wit-bindgen = "=0.57.1"
+wit-bindgen = "=0.58.0"
 
 # Optional wasm-bindgen stack — only compiled in when `web` feature is
 # enabled (which itself requires a `wasm32-unknown-unknown` target).

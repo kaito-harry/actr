@@ -1,0 +1,367 @@
+// actr workload contract — Component Model WIT, v2 (async world)
+//
+// v2 (`actr:workload@0.2.0`) is the run_concurrent-ready contract. It is a
+// controlled fork of `actr:workload@0.1.0` (core/framework/wit/actr-workload.wit)
+// that turns every host import and every workload export into a real WIT
+// `async func`. That single change is what unlocks wasmtime 46's Component
+// Model Concurrency: multiple `dispatch` calls may be IN FLIGHT on one
+// component instance, cooperatively interleaving at each host-import `.await`.
+//
+// Design decisions (locked in during the Phase 0.75 run_concurrent spike,
+// see experiments/component-spike-runconcurrent/REPORT.md):
+//
+// 1. Every function is a real WIT `async func`, never a plain `func`. wasmtime
+//    46's bindgen does NOT support mixing synchronous imports into an async
+//    world ("not yet implemented" — the store-access trait split for sync
+//    imports is incomplete), so the world must be uniformly async. wasmtime 46
+//    then emits Accessor-based host bindings for the imports (static trait
+//    methods taking `&Accessor<T, Self>` rather than `&mut self`) and
+//    `call_*(accessor, ...)` for the exports, driven by
+//    `Store::run_concurrent`. wit-bindgen 0.58 auto-generates async guest
+//    bindings from `async func` — no `async: true` flag needed.
+//
+// 2. Per-call context is carried EXPLICITLY, not via getter imports. The
+//    0.1.0 contract exposed `get-self-id` / `get-caller-id` /
+//    `get-request-id` imports that read a single per-instance context slot on
+//    the host. Under N concurrently in-flight dispatches on one instance that
+//    single slot necessarily cross-talks (task A's getter reads task B's slot).
+//    v2 removes those three getters and instead threads the identity triple
+//    plus a `ctx-token` through each fallible/dispatch export as an explicit
+//    `invocation-ctx` record; the SDK answers `ctx.self_id()` etc. locally.
+//
+// 3. Every host import takes a `ctx-token: u64` first parameter. Every guest
+//    export, including the twelve infallible observation hooks, receives a
+//    complete `invocation-ctx`. Its token keys the host's per-invocation table
+//    (`HostState.invocations`), letting the host recover the correct
+//    `HostAbiFn` / `InvocationContext` for the calling task even when several
+//    are interleaved on one instance.
+//
+// Type naming: WIT kebab-case with a prefix to avoid colliding with
+// stdlib-ish names during binding generation (e.g. `actr-error` rather
+// than bare `error`, which clashes with `wasi:io/error`).
+
+package actr:workload@0.2.0;
+
+// ─────────────────────────────────────────────────────────────────────────
+// Shared value types
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Copied verbatim from 0.1.0 (no semantic change) plus the new
+// `invocation-ctx` record used by the dispatch / lifecycle / data-chunk
+// exports.
+
+interface types {
+    // Actor realm container identifier (see actr_protocol::Realm).
+    record realm {
+        realm-id: u32,
+    }
+
+    // Three-part actor type coordinate (manufacturer, name, semantic
+    // version string). Mirrors actr_protocol::ActrType.
+    record actr-type {
+        manufacturer: string,
+        name: string,
+        version: string,
+    }
+
+    // Fully-qualified actor identity — the Component Model analogue of
+    // actr_protocol::ActrId.
+    record actr-id {
+        realm: realm,
+        serial-number: u64,
+        %type: actr-type,
+    }
+
+    // Dispatch destination for host-routed calls (the Component Model
+    // analogue of actr_framework::Dest encoded via guest abi::DestV1).
+    variant dest {
+        // Deliver to this node's host side (the process embedding the workload).
+        host,
+        // Deliver to this node's workload (self when sent from the workload).
+        workload,
+        // Deliver to the named remote peer.
+        peer(actr-id),
+    }
+
+    // RPC envelope (mirrors actr_protocol::RpcEnvelope). The payload is
+    // emitted/consumed as `list<u8>` to keep the canonical ABI
+    // representation independent of downstream prost message types.
+    record rpc-envelope {
+        request-id: string,
+        route-key: string,
+        payload: list<u8>,
+    }
+
+    record metadata-entry {
+        key: string,
+        value: string,
+    }
+
+    record data-chunk {
+        stream-id: string,
+        sequence: u64,
+        payload: list<u8>,
+        metadata: list<metadata-entry>,
+        timestamp-ms: option<s64>,
+    }
+
+    variant payload-type {
+        rpc-reliable,
+        rpc-signal,
+        stream-reliable,
+        stream-latency-first,
+        media-rtp,
+    }
+
+    // Coarse error classification — one-to-one with
+    // `actr_framework::ErrorCategory`.
+    variant error-category {
+        handler-panic,
+        handler-error,
+        signaling-failure,
+        transport-failure,
+        data-chunk-delivery-uncertain,
+    }
+
+    // Coarse WebRTC send-readiness state — one-to-one with
+    // `actr_framework::WebRtcPeerStatus`. Carried by `peer-event.status`
+    // so guests can distinguish an initial connection attempt, an active
+    // connection, and a recovery window from a terminal teardown.
+    variant webrtc-peer-status {
+        idle,
+        connecting,
+        connected,
+        recovering,
+    }
+
+    // Structured error — one-to-one with `actr_protocol::ActrError`.
+    //
+    // Closed variant mirroring the Rust enum's shape; any future addition
+    // to `ActrError` needs a matched addition here (and a version bump
+    // on the WIT package). The `dependency-not-found` case carries the
+    // two-field record so hosts that translate back into
+    // `ActrError::DependencyNotFound` don't lose structure.
+    variant actr-error {
+        unavailable(string),
+        connection-not-ready(connection-not-ready-info),
+        timed-out,
+        not-found(string),
+        permission-denied(string),
+        invalid-argument(string),
+        unknown-route(string),
+        dependency-not-found(dependency-not-found-payload),
+        decode-failure(string),
+        not-implemented(string),
+        internal(string),
+    }
+
+    // Payload for the `dependency-not-found` arm.
+    record dependency-not-found-payload {
+        service-name: string,
+        message: string,
+    }
+
+    // Send preflight failure payload. The operation did not enter transport.
+    record connection-not-ready-info {
+        retry-after-ms: option<u64>,
+    }
+
+    // Peer-scoped event (actr_framework::PeerEvent) carried by the
+    // WebSocket / WebRTC transport hooks. `relayed` is Some(true) when a
+    // WebRTC connection traverses TURN, Some(false) for a direct P2P
+    // connection, None for WebSocket events. `status` is the coarse
+    // WebRTC send-readiness state; None for WebSocket events.
+    record peer-event {
+        peer: actr-id,
+        relayed: option<bool>,
+        status: option<webrtc-peer-status>,
+    }
+
+    // Wall-clock timestamp represented as "whole seconds + nanoseconds"
+    // since the Unix epoch. WIT has no native timestamp type; this
+    // mirrors the SystemTime serialisation used by the rest of actr.
+    record timestamp {
+        seconds: u64,
+        nanoseconds: u32,
+    }
+
+    // Dispatch-boundary error event (actr_framework::ErrorEvent).
+    record error-event {
+        source: actr-error,
+        category: error-category,
+        context: string,
+        timestamp: timestamp,
+    }
+
+    // Credential lifecycle event (actr_framework::CredentialEvent).
+    record credential-event {
+        new-expiry: timestamp,
+    }
+
+    // Mailbox backpressure event (actr_framework::BackpressureEvent).
+    record backpressure-event {
+        queue-len: u64,
+        threshold: u64,
+    }
+
+    // ── Per-invocation context (v2) ──────────────────────────────────────
+    //
+    // Carries the identity triple that the 0.1.0 world exposed through the
+    // `get-self-id` / `get-caller-id` / `get-request-id` getters, plus the
+    // `ctx-token` that keys the host's per-invocation table. Threaded as an
+    // explicit parameter through every export so several concurrently
+    // in-flight invocations on one instance never cross-read a shared context
+    // slot. `self-id` is an instance constant; `caller-id` is None for
+    // host-originated lifecycle and observation hooks; `request-id` identifies
+    // the originating operation.
+    record invocation-ctx {
+        ctx-token: u64,
+        self-id: actr-id,
+        caller-id: option<actr-id>,
+        request-id: string,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Host imports — guest->host surface
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Corresponds to the HostCallV1 / HostTellV1 / HostCallRawV1 /
+// HostDiscoverV1 operations routed through the host ABI bridge. Every import
+// is a real `async func` (so wasmtime 46 emits the Accessor-based, static
+// host trait) and takes a `ctx-token: u64` first parameter identifying the
+// calling invocation, which the host uses to recover the correct
+// `HostAbiFn` even when multiple invocations interleave on one instance.
+
+interface host {
+    use types.{actr-id, actr-type, actr-error, data-chunk, dest, payload-type};
+
+    // Typed-routed call: host forwards to the destination, returning the
+    // encoded response payload.
+    call: async func(
+        ctx-token: u64,
+        target: dest,
+        route-key: string,
+        payload: list<u8>,
+    ) -> result<list<u8>, actr-error>;
+
+    // Fire-and-forget: host forwards the message and returns without
+    // waiting for a response.
+    tell: async func(
+        ctx-token: u64,
+        target: dest,
+        route-key: string,
+        payload: list<u8>,
+    ) -> result<_, actr-error>;
+
+    // Raw RPC against a known actor identity (no Dest routing).
+    call-raw: async func(
+        ctx-token: u64,
+        target: actr-id,
+        route-key: string,
+        payload: list<u8>,
+    ) -> result<list<u8>, actr-error>;
+
+    // Discovery: find a candidate actor serving the requested type.
+    discover: async func(ctx-token: u64, target-type: actr-type) -> result<actr-id, actr-error>;
+
+    register-stream: async func(ctx-token: u64, stream-id: string) -> result<_, actr-error>;
+
+    unregister-stream: async func(ctx-token: u64, stream-id: string) -> result<_, actr-error>;
+
+    send-data-chunk: async func(
+        ctx-token: u64,
+        target: dest,
+        chunk: data-chunk,
+        payload-type: payload-type,
+    ) -> result<_, actr-error>;
+
+    // Structured log sink. Host-side maps `level` to tracing log levels.
+    log-message: async func(ctx-token: u64, level: string, message: string);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Workload exports — the guest-implemented surface
+// ─────────────────────────────────────────────────────────────────────────
+//
+// One `dispatch` entry that takes an RpcEnvelope and returns the reply
+// bytes, plus the sixteen observation hooks from
+// actr_framework::Workload. Every export is a real `async func`. The four
+// lifecycle hooks and `on-data-chunk` are fallible; `dispatch`,
+// `on-data-chunk`, and the four lifecycle hooks additionally take an
+// `invocation-ctx` so the guest SDK can answer `ctx.self_id()` /
+// `caller_id()` / `request_id()` locally and carry the `ctx-token` into
+// host imports. The twelve infallible observation hooks receive the same
+// complete context so identity semantics match linked and dynclib workloads.
+
+interface workload {
+    use types.{
+        rpc-envelope,
+        actr-error,
+        actr-id,
+        data-chunk,
+        peer-event,
+        error-event,
+        credential-event,
+        backpressure-event,
+        invocation-ctx,
+    };
+
+    // ── Inbound RPC dispatch ─────────────────────────────────────────────
+
+    // Single-entry dispatch for RPC envelopes (Workload::Dispatcher).
+    // Returns the response bytes on success, or an error variant that the
+    // host translates back into actr_protocol::ActrError.
+    dispatch: async func(envelope: rpc-envelope, ctx: invocation-ctx) -> result<list<u8>, actr-error>;
+
+    // ── Lifecycle (4, fallible) ──────────────────────────────────────────
+
+    on-start: async func(ctx: invocation-ctx) -> result<_, actr-error>;
+    on-ready: async func(ctx: invocation-ctx) -> result<_, actr-error>;
+    on-stop: async func(ctx: invocation-ctx) -> result<_, actr-error>;
+    on-error: async func(event: error-event, ctx: invocation-ctx) -> result<_, actr-error>;
+
+    // ── Signaling (3, infallible) ────────────────────────────────────────
+
+    on-signaling-connecting: async func(ctx: invocation-ctx);
+    on-signaling-connected: async func(ctx: invocation-ctx);
+    on-signaling-disconnected: async func(ctx: invocation-ctx);
+
+    // ── Transport: WebSocket (3, infallible) ─────────────────────────────
+
+    on-websocket-connecting: async func(event: peer-event, ctx: invocation-ctx);
+    on-websocket-connected: async func(event: peer-event, ctx: invocation-ctx);
+    on-websocket-disconnected: async func(event: peer-event, ctx: invocation-ctx);
+
+    // ── Transport: WebRTC P2P (3, infallible) ────────────────────────────
+
+    on-webrtc-connecting: async func(event: peer-event, ctx: invocation-ctx);
+    on-webrtc-connected: async func(event: peer-event, ctx: invocation-ctx);
+    on-webrtc-disconnected: async func(event: peer-event, ctx: invocation-ctx);
+
+    // ── Credential (2, infallible) ───────────────────────────────────────
+
+    on-credential-renewed: async func(event: credential-event, ctx: invocation-ctx);
+    on-credential-expiring: async func(event: credential-event, ctx: invocation-ctx);
+
+    // ── Mailbox (1, infallible) ──────────────────────────────────────────
+
+    on-mailbox-backpressure: async func(event: backpressure-event, ctx: invocation-ctx);
+
+    // ── Fast path: DataChunk ────────────────────────────────────────────
+
+    on-data-chunk: async func(chunk: data-chunk, sender: actr-id, ctx: invocation-ctx) -> result<_, actr-error>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// World — single-world embedding used by both host bindgen! and guest
+// wit-bindgen. Host imports are imported by the guest; guest exports are
+// imported by the host (via the generated `ActrWorkloadGuestV2::call_*`
+// family). Because every function is `async func`, wasmtime 46 emits the
+// Accessor-based host trait and `run_concurrent`-driven export calls.
+// ─────────────────────────────────────────────────────────────────────────
+
+world actr-workload-guest-v2 {
+    import host;
+    export workload;
+}

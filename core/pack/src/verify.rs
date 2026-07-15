@@ -4,7 +4,50 @@ use ed25519_dalek::{Signature, VerifyingKey};
 
 use crate::error::PackError;
 use crate::manifest::PackageManifest;
-use crate::util::{read_zip_entry, sha256_hex};
+use crate::util::{read_zip_entry_bounded, sha256_zip_entry_bounded};
+
+const MAX_SIGNATURE_BYTES: usize = 64;
+const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
+
+/// Default decompressed-size limit for each binary or auxiliary payload
+/// verified by [`verify`]. Call [`verify_bounded`] to select another limit.
+pub const DEFAULT_MAX_VERIFIED_ENTRY_BYTES: usize = 64 * 1024 * 1024;
+
+/// Default maximum number of signed payload entries in one package.
+pub const DEFAULT_MAX_VERIFIED_ENTRIES: usize = 1024;
+
+/// Decompression limits applied while verifying signed package payloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackageVerificationLimits {
+    /// Maximum decompressed bytes for any one payload entry.
+    pub max_entry_bytes: usize,
+    /// Maximum cumulative decompressed bytes across the binary, resources,
+    /// proto files, and optional lock file.
+    pub max_total_bytes: usize,
+    /// Maximum number of those payload entries, including the binary.
+    pub max_entries: usize,
+}
+
+impl PackageVerificationLimits {
+    /// Derive package verification limits from Hyper's component-byte limit.
+    ///
+    /// The component limit caps both each entry and the cumulative signed
+    /// payload set; the fixed entry-count ceiling prevents manifests from
+    /// multiplying work through thousands of tiny or duplicate entries.
+    pub const fn from_max_component_bytes(max_component_bytes: usize) -> Self {
+        Self {
+            max_entry_bytes: max_component_bytes,
+            max_total_bytes: max_component_bytes,
+            max_entries: DEFAULT_MAX_VERIFIED_ENTRIES,
+        }
+    }
+}
+
+impl Default for PackageVerificationLimits {
+    fn default() -> Self {
+        Self::from_max_component_bytes(DEFAULT_MAX_VERIFIED_ENTRY_BYTES)
+    }
+}
 
 /// Result of a successful package verification.
 ///
@@ -20,7 +63,12 @@ pub struct VerifiedPackage {
     pub sig_raw: Vec<u8>,
 }
 
-/// Verify an .actr package.
+/// Verify an .actr package with a safe default payload limit.
+///
+/// Each binary, resource, proto, and lock-file entry is limited to
+/// [`DEFAULT_MAX_VERIFIED_ENTRY_BYTES`] of decompressed data. Payloads are
+/// hashed as streams instead of being buffered in memory. Use
+/// [`verify_bounded`] when the embedding runtime has its own package limit.
 ///
 /// Verification flow:
 /// 1. Read manifest.sig (64 bytes raw Ed25519 signature)
@@ -33,12 +81,44 @@ pub struct VerifiedPackage {
 /// 8. For the optional packaged lock file, verify SHA-256 matches manifest.lock_file.hash
 /// 9. Return VerifiedPackage with manifest + raw bytes
 pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<VerifiedPackage, PackError> {
+    verify_with_limits(actr_bytes, pubkey, PackageVerificationLimits::default())
+}
+
+/// Verify an .actr package using one configured component/payload budget.
+///
+/// `max_component_bytes` caps both each individual payload and their
+/// cumulative decompressed size. At most [`DEFAULT_MAX_VERIFIED_ENTRIES`]
+/// payload entries are accepted. Use [`verify_with_limits`] to tune these
+/// dimensions independently.
+pub fn verify_bounded(
+    actr_bytes: &[u8],
+    pubkey: &VerifyingKey,
+    max_component_bytes: usize,
+) -> Result<VerifiedPackage, PackError> {
+    verify_with_limits(
+        actr_bytes,
+        pubkey,
+        PackageVerificationLimits::from_max_component_bytes(max_component_bytes),
+    )
+}
+
+/// Verify an .actr package with explicit decompression and entry-count limits.
+///
+/// `manifest.sig` is always capped at 64 bytes and `manifest.toml` at 1 MiB.
+/// The remaining signed payloads are metadata-checked against `limits` before
+/// any of them is decompressed, then hashed incrementally under the same
+/// cumulative budget.
+pub fn verify_with_limits(
+    actr_bytes: &[u8],
+    pubkey: &VerifyingKey,
+    limits: PackageVerificationLimits,
+) -> Result<VerifiedPackage, PackError> {
     let cursor = Cursor::new(actr_bytes);
     let mut archive = zip::ZipArchive::new(cursor)?;
 
     // 1. Read manifest.sig
-    let sig_raw =
-        read_zip_entry(&mut archive, "manifest.sig").map_err(|_| PackError::SignatureNotFound)?;
+    let sig_raw = read_zip_entry_bounded(&mut archive, "manifest.sig", MAX_SIGNATURE_BYTES)
+        .map_err(|error| required_entry(error, PackError::SignatureNotFound))?;
     if sig_raw.len() != 64 {
         return Err(PackError::SignatureVerificationFailed(format!(
             "manifest.sig must be exactly 64 bytes, got {}",
@@ -49,8 +129,8 @@ pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<VerifiedPackag
     let signature = Signature::from_bytes(&sig_arr);
 
     // 2. Read manifest.toml
-    let manifest_bytes =
-        read_zip_entry(&mut archive, "manifest.toml").map_err(|_| PackError::ManifestNotFound)?;
+    let manifest_bytes = read_zip_entry_bounded(&mut archive, "manifest.toml", MAX_MANIFEST_BYTES)
+        .map_err(|error| required_entry(error, PackError::ManifestNotFound))?;
 
     // 3. Verify signature over manifest.toml
     pubkey
@@ -65,11 +145,46 @@ pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<VerifiedPackag
     let manifest_str = std::str::from_utf8(&manifest_bytes)
         .map_err(|e| PackError::ManifestParseError(format!("manifest is not valid UTF-8: {e}")))?;
     let manifest = PackageManifest::from_toml(manifest_str)?;
+    validate_manifest_integrity_fields(&manifest)?;
+
+    // Reject excessive declared work before decompressing any payload. Count
+    // duplicate manifest paths separately because verification would otherwise
+    // decompress and hash each occurrence separately.
+    let mut preflight = PayloadPreflight::new(limits);
+    preflight.check(
+        &mut archive,
+        &manifest.binary.path,
+        PackError::BinaryNotFound(manifest.binary.path.clone()),
+    )?;
+    for resource in &manifest.resources {
+        preflight.check(
+            &mut archive,
+            &resource.path,
+            PackError::BinaryNotFound(resource.path.clone()),
+        )?;
+    }
+    for proto in &manifest.proto_files {
+        preflight.check(
+            &mut archive,
+            &proto.path,
+            PackError::BinaryNotFound(proto.path.clone()),
+        )?;
+    }
+    if let Some(lock_file) = &manifest.lock_file {
+        preflight.check(
+            &mut archive,
+            &lock_file.path,
+            PackError::BinaryNotFound(lock_file.path.clone()),
+        )?;
+    }
+    let mut budget = PayloadBudget::new(limits);
 
     // 5. Verify binary hash
-    let binary_bytes = read_zip_entry(&mut archive, &manifest.binary.path)
-        .map_err(|_| PackError::BinaryNotFound(manifest.binary.path.clone()))?;
-    let computed_hash = sha256_hex(&binary_bytes);
+    let computed_hash = budget.hash(
+        &mut archive,
+        &manifest.binary.path,
+        PackError::BinaryNotFound(manifest.binary.path.clone()),
+    )?;
     if computed_hash != manifest.binary.hash {
         tracing::warn!(
             expected = %manifest.binary.hash,
@@ -84,9 +199,11 @@ pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<VerifiedPackag
 
     // 6. Verify resource hashes
     for resource in &manifest.resources {
-        let res_bytes = read_zip_entry(&mut archive, &resource.path)
-            .map_err(|_| PackError::BinaryNotFound(resource.path.clone()))?;
-        let computed = sha256_hex(&res_bytes);
+        let computed = budget.hash(
+            &mut archive,
+            &resource.path,
+            PackError::BinaryNotFound(resource.path.clone()),
+        )?;
         if computed != resource.hash {
             tracing::warn!(
                 expected = %resource.hash,
@@ -101,9 +218,11 @@ pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<VerifiedPackag
     }
     // 7. Verify proto file hashes
     for proto in &manifest.proto_files {
-        let proto_bytes = read_zip_entry(&mut archive, &proto.path)
-            .map_err(|_| PackError::BinaryNotFound(proto.path.clone()))?;
-        let computed = sha256_hex(&proto_bytes);
+        let computed = budget.hash(
+            &mut archive,
+            &proto.path,
+            PackError::BinaryNotFound(proto.path.clone()),
+        )?;
         if computed != proto.hash {
             tracing::warn!(
                 expected = %proto.hash,
@@ -119,9 +238,11 @@ pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<VerifiedPackag
 
     // 8. Verify packaged manifest.lock.toml hash when present
     if let Some(lock_file) = &manifest.lock_file {
-        let lock_bytes = read_zip_entry(&mut archive, &lock_file.path)
-            .map_err(|_| PackError::BinaryNotFound(lock_file.path.clone()))?;
-        let computed = sha256_hex(&lock_bytes);
+        let computed = budget.hash(
+            &mut archive,
+            &lock_file.path,
+            PackError::BinaryNotFound(lock_file.path.clone()),
+        )?;
         if computed != lock_file.hash {
             tracing::warn!(
                 expected = %lock_file.hash,
@@ -147,14 +268,140 @@ pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<VerifiedPackag
     })
 }
 
+fn validate_manifest_integrity_fields(manifest: &PackageManifest) -> Result<(), PackError> {
+    if manifest.signature_algorithm != "ed25519" {
+        return Err(PackError::ManifestParseError(
+            "signature_algorithm must be `ed25519`".to_string(),
+        ));
+    }
+    validate_sha256("binary.hash", &manifest.binary.hash)?;
+    for resource in &manifest.resources {
+        validate_sha256("resources[].hash", &resource.hash)?;
+    }
+    for proto in &manifest.proto_files {
+        validate_sha256("proto_files[].hash", &proto.hash)?;
+    }
+    if let Some(lock_file) = &manifest.lock_file {
+        validate_sha256("lock_file.hash", &lock_file.hash)?;
+    }
+    Ok(())
+}
+
+fn validate_sha256(field: &'static str, value: &str) -> Result<(), PackError> {
+    if value.len() != 64 || !value.as_bytes().iter().all(u8::is_ascii_hexdigit) {
+        return Err(PackError::ManifestParseError(format!(
+            "{field} must be a 64-character SHA-256 hex string"
+        )));
+    }
+    Ok(())
+}
+
+struct PayloadPreflight {
+    limits: PackageVerificationLimits,
+    entries: usize,
+    total_bytes: usize,
+}
+
+impl PayloadPreflight {
+    fn new(limits: PackageVerificationLimits) -> Self {
+        Self {
+            limits,
+            entries: 0,
+            total_bytes: 0,
+        }
+    }
+
+    fn check<R: std::io::Read + std::io::Seek>(
+        &mut self,
+        archive: &mut zip::ZipArchive<R>,
+        name: &str,
+        missing: PackError,
+    ) -> Result<(), PackError> {
+        self.entries = self.entries.checked_add(1).ok_or_else(|| {
+            PackError::InvalidPackage("signed payload entry count overflows usize".to_string())
+        })?;
+        if self.entries > self.limits.max_entries {
+            return Err(PackError::InvalidPackage(format!(
+                "signed payload has {} entries, exceeds limit {}",
+                self.entries, self.limits.max_entries
+            )));
+        }
+
+        let entry = archive
+            .by_name(name)
+            .map_err(PackError::from)
+            .map_err(|error| required_entry(error, missing))?;
+        let size = usize::try_from(entry.size()).map_err(|_| {
+            PackError::InvalidPackage(format!(
+                "ZIP entry `{name}` declares {} bytes, cannot fit in usize",
+                entry.size()
+            ))
+        })?;
+        if size > self.limits.max_entry_bytes {
+            return Err(PackError::InvalidPackage(format!(
+                "ZIP entry `{name}` declares {size} bytes, exceeds limit {}",
+                self.limits.max_entry_bytes
+            )));
+        }
+        self.total_bytes = self.total_bytes.checked_add(size).ok_or_else(|| {
+            PackError::InvalidPackage("signed payload size overflows usize".to_string())
+        })?;
+        if self.total_bytes > self.limits.max_total_bytes {
+            return Err(PackError::InvalidPackage(format!(
+                "signed payload declares {} cumulative bytes at `{name}`, exceeds limit {}",
+                self.total_bytes, self.limits.max_total_bytes
+            )));
+        }
+        Ok(())
+    }
+}
+
+struct PayloadBudget {
+    limits: PackageVerificationLimits,
+    consumed: usize,
+}
+
+impl PayloadBudget {
+    fn new(limits: PackageVerificationLimits) -> Self {
+        Self {
+            limits,
+            consumed: 0,
+        }
+    }
+
+    fn hash<R: std::io::Read + std::io::Seek>(
+        &mut self,
+        archive: &mut zip::ZipArchive<R>,
+        name: &str,
+        missing: PackError,
+    ) -> Result<String, PackError> {
+        let remaining = self.limits.max_total_bytes.saturating_sub(self.consumed);
+        let allowed = self.limits.max_entry_bytes.min(remaining);
+        let (hash, bytes) = sha256_zip_entry_bounded(archive, name, allowed)
+            .map_err(|error| required_entry(error, missing))?;
+        self.consumed = self.consumed.checked_add(bytes).ok_or_else(|| {
+            PackError::InvalidPackage("signed payload size overflows usize".to_string())
+        })?;
+        Ok(hash)
+    }
+}
+
+fn required_entry(error: PackError, missing: PackError) -> PackError {
+    match error {
+        PackError::ZipError(zip::result::ZipError::FileNotFound) => missing,
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::manifest::{BinaryEntry, ManifestMetadata, PackageManifest, ResourceEntry};
     use crate::pack::{PackOptions, pack};
-    use ed25519_dalek::SigningKey;
+    use crate::util::sha256_hex;
+    use ed25519_dalek::{Signer, SigningKey};
     use rand::rngs::OsRng;
-    use std::io::Write;
+    use std::io::{Cursor, Write};
 
     fn test_manifest() -> PackageManifest {
         PackageManifest {
@@ -199,6 +446,42 @@ mod tests {
             lock_file: None,
         };
         pack(&opts).unwrap()
+    }
+
+    fn make_deflated_package(
+        signing_key: &SigningKey,
+        binary: &[u8],
+        resources: &[(String, Vec<u8>)],
+    ) -> Vec<u8> {
+        let mut manifest = test_manifest();
+        manifest.binary.hash = sha256_hex(binary);
+        manifest.binary.size = Some(binary.len() as u64);
+        manifest.resources = resources
+            .iter()
+            .map(|(path, bytes)| ResourceEntry {
+                path: path.clone(),
+                hash: sha256_hex(bytes),
+            })
+            .collect();
+
+        let manifest_toml = manifest.to_toml().unwrap();
+        let signature = signing_key.sign(manifest_toml.as_bytes()).to_bytes();
+        let cursor = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+
+        zip.start_file("manifest.toml", options).unwrap();
+        zip.write_all(manifest_toml.as_bytes()).unwrap();
+        zip.start_file("manifest.sig", options).unwrap();
+        zip.write_all(&signature).unwrap();
+        zip.start_file(&manifest.binary.path, options).unwrap();
+        zip.write_all(binary).unwrap();
+        for (path, bytes) in resources {
+            zip.start_file(path, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
     }
 
     #[test]
@@ -289,6 +572,117 @@ mod tests {
         let pkg = make_package(&key, b"wasm", resources);
         let result = verify(&pkg, &key.verifying_key()).unwrap();
         assert_eq!(result.manifest.resources.len(), 2);
+    }
+
+    #[test]
+    fn bounded_verify_rejects_deflated_binary_bomb() {
+        let key = SigningKey::generate(&mut OsRng);
+        let binary = vec![0u8; 128 * 1024];
+        let pkg = make_deflated_package(&key, &binary, &[]);
+        assert!(
+            pkg.len() < binary.len() / 4,
+            "fixture should be highly compressed"
+        );
+
+        let error = verify_bounded(&pkg, &key.verifying_key(), 1024).unwrap_err();
+        assert!(
+            matches!(&error, PackError::InvalidPackage(message) if
+                message.contains("bin/actor.wasm") && message.contains("exceeds limit 1024")),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn manifest_integrity_fields_are_strictly_validated() {
+        let mut manifest = test_manifest();
+        manifest.signature_algorithm = "rsa".to_string();
+        let error = validate_manifest_integrity_fields(&manifest).unwrap_err();
+        assert!(matches!(&error, PackError::ManifestParseError(message) if
+            message.contains("signature_algorithm")));
+
+        manifest.signature_algorithm = "ed25519".to_string();
+        manifest.binary.hash = "00".repeat(32);
+        manifest.resources = vec![ResourceEntry {
+            path: "resources/a.bin".to_string(),
+            hash: "not-a-sha256".to_string(),
+        }];
+        let error = validate_manifest_integrity_fields(&manifest).unwrap_err();
+        assert!(matches!(&error, PackError::ManifestParseError(message) if
+            message.contains("resources[].hash")));
+    }
+
+    #[test]
+    fn bounded_verify_rejects_deflated_resource_bomb() {
+        let key = SigningKey::generate(&mut OsRng);
+        let resource = vec![0u8; 128 * 1024];
+        let resources = vec![("resources/bomb.bin".to_string(), resource.clone())];
+        let pkg = make_deflated_package(&key, b"wasm", &resources);
+        assert!(
+            pkg.len() < resource.len() / 4,
+            "fixture should be highly compressed"
+        );
+
+        let error = verify_bounded(&pkg, &key.verifying_key(), 1024).unwrap_err();
+        assert!(
+            matches!(&error, PackError::InvalidPackage(message) if
+                message.contains("resources/bomb.bin") && message.contains("exceeds limit 1024")),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn bounded_verify_rejects_cumulative_payload_bomb() {
+        let key = SigningKey::generate(&mut OsRng);
+        let resources = vec![("resources/second.bin".to_string(), vec![0u8; 700])];
+        let pkg = make_deflated_package(&key, &[0u8; 700], &resources);
+
+        let error = verify_bounded(&pkg, &key.verifying_key(), 1024).unwrap_err();
+        assert!(
+            matches!(&error, PackError::InvalidPackage(message) if
+                message.contains("cumulative bytes") && message.contains("exceeds limit 1024")),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn verify_with_limits_rejects_excessive_payload_entry_count() {
+        let key = SigningKey::generate(&mut OsRng);
+        let resources = vec![
+            ("resources/a.bin".to_string(), b"a".to_vec()),
+            ("resources/b.bin".to_string(), b"b".to_vec()),
+        ];
+        let pkg = make_deflated_package(&key, b"wasm", &resources);
+        let limits = PackageVerificationLimits {
+            max_entry_bytes: 1024,
+            max_total_bytes: 1024,
+            max_entries: 2,
+        };
+
+        let error = verify_with_limits(&pkg, &key.verifying_key(), limits).unwrap_err();
+        assert!(
+            matches!(&error, PackError::InvalidPackage(message) if
+                message.contains("3 entries") && message.contains("exceeds limit 2")),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_deflated_oversized_signature() {
+        let cursor = Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("manifest.sig", options).unwrap();
+        zip.write_all(&vec![0u8; 128 * 1024]).unwrap();
+        let pkg = zip.finish().unwrap().into_inner();
+
+        let key = SigningKey::generate(&mut OsRng);
+        let error = verify(&pkg, &key.verifying_key()).unwrap_err();
+        assert!(
+            matches!(&error, PackError::InvalidPackage(message) if
+                message.contains("manifest.sig") && message.contains("exceeds limit 64")),
+            "unexpected error: {error:?}"
+        );
     }
 
     fn make_package_with_protos(

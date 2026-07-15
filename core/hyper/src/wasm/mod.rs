@@ -5,9 +5,13 @@
 //! contract.
 
 pub(crate) mod component_bindings;
+pub(crate) mod component_bindings_v2;
 mod error;
 mod host;
+mod host_v2;
+mod runtime_limits;
 
 pub use error::WasmError;
 pub use host::WasmHost;
-pub(crate) use host::WasmWorkload;
+pub(crate) use host::WasmKernel;
+pub use runtime_limits::{WasmRuntimeStats, wasm_runtime_stats};

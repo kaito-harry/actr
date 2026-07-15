@@ -2,7 +2,7 @@
 name = "echo-client-guest-web"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.95"
 description = "Echo Client Guest WASM for Web — unified (CM wasm32-wasip2 + WBG wasm32-unknown-unknown)"
 
 # Standalone project, not part of any workspace. Same source compiles

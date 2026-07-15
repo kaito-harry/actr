@@ -4,6 +4,18 @@ use actr_protocol::{ActorResult, ActrId, ActrType, DataChunk, PayloadType};
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
 
+/// Boxed callback future that is `Send` on native targets and local on WASM.
+///
+/// This mirrors [`MaybeSendSync`]: native runtimes may move callbacks between
+/// executor threads, while Component Model and web guests run cooperatively on
+/// one WASM thread and may legitimately capture a non-`Send` [`Context`].
+#[cfg(not(target_arch = "wasm32"))]
+pub type MaybeSendBoxFuture<'a, T> = futures_util::future::BoxFuture<'a, T>;
+
+/// Boxed callback future that is `Send` on native targets and local on WASM.
+#[cfg(target_arch = "wasm32")]
+pub type MaybeSendBoxFuture<'a, T> = futures_util::future::LocalBoxFuture<'a, T>;
+
 // ── MaybeSendSync marker ────────────────────────────────────────────────
 //
 // Auto-trait-style marker that is `Send + Sync` on native targets and empty
@@ -143,7 +155,9 @@ pub trait Context: Clone + MaybeSendSync + 'static {
     /// Register a DataChunk callback for a specific stream
     ///
     /// When a DataChunk with matching stream_id arrives, the registered callback will be invoked.
-    /// Callbacks are executed concurrently and do not block other streams.
+    /// Delivery is FIFO and run-to-completion for one stream. Different streams
+    /// use independent inbound workers, although a serial-only workload backend
+    /// may still serialize their final guest callbacks.
     ///
     /// # Parameters
     ///
@@ -162,7 +176,9 @@ pub trait Context: Clone + MaybeSendSync + 'static {
     /// ```
     async fn register_stream<F>(&self, stream_id: String, callback: F) -> ActorResult<()>
     where
-        F: Fn(DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static;
+        F: Fn(DataChunk, ActrId) -> MaybeSendBoxFuture<'static, ActorResult<()>>
+            + MaybeSendSync
+            + 'static;
 
     /// Unregister a DataChunk callback
     ///

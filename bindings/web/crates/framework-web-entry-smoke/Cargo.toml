@@ -2,7 +2,7 @@
 name = "framework-web-entry-smoke"
 version = "0.4.17"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.95"
 license = "Apache-2.0"
 description = "Compile-only smoke test for Option U Phase 6b `entry!` web branch."
 

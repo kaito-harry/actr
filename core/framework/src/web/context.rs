@@ -40,7 +40,7 @@ use async_trait::async_trait;
 use futures_util::future::BoxFuture;
 use prost::Message as ProstMessage;
 
-use crate::{Context, Dest, LogLevel, MediaSample};
+use crate::{Context, Dest, LogLevel, MaybeSendBoxFuture, MaybeSendSync, MediaSample};
 
 // Pull in the WIT-lowered mirror types from `actr-web-abi` under aliases
 // so the guest-import call sites don't have to disambiguate per line.
@@ -301,7 +301,9 @@ impl Context for WebContext {
 
     async fn register_stream<F>(&self, _stream_id: String, _callback: F) -> ActorResult<()>
     where
-        F: Fn(DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
+        F: Fn(DataChunk, ActrId) -> MaybeSendBoxFuture<'static, ActorResult<()>>
+            + MaybeSendSync
+            + 'static,
     {
         Err(Self::not_implemented("register_stream"))
     }

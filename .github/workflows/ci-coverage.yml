@@ -31,7 +31,7 @@ jobs:
       - name: Install wasm Component Model toolchain
         run: |
           cargo install wasm-component-ld --version 0.5.22 --locked
-          cargo install wasm-tools --version 1.247.0 --locked
+          cargo install wasm-tools --version 1.249.0 --locked
       - name: Install wasm-pack
         run: cargo install wasm-pack --version 0.13.1 --locked
       - name: Install cargo-llvm-cov

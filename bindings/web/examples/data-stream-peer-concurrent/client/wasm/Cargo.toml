@@ -2,7 +2,7 @@
 name = "data-stream-peer-concurrent-client-wasm"
 version = "0.2.1"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.95"
 description = "Data stream peer concurrent client WASM"
 
 [workspace]

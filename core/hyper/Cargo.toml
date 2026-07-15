@@ -121,6 +121,16 @@ wasmtime-wasi = { workspace = true, optional = true }
 # Dynclib Runtime (native shared library, optional)
 libloading = { version = "0.8", optional = true }
 
+# Dispatch throughput / per-dispatch overhead benchmark. `harness = false`: it
+# is a plain `fn main()` that builds its own fixed-worker tokio runtime (the
+# load is multi-threaded async, so criterion's synchronous harness does not
+# apply). Requires `--features wasm-engine,test-utils` and the wasm fixture
+# toolchain (build.rs emits `actr_wasm_fixture_available`); otherwise its main
+# is a no-op stub.
+[[bench]]
+name = "dispatch_throughput"
+harness = false
+
 [dev-dependencies]
 tokio = { workspace = true }
 rand.workspace = true

@@ -384,6 +384,27 @@ impl HostTransport {
         }
     }
 
+    /// Drain one envelope from the Reliable channel **without** the
+    /// response-matching step [`Self::recv`] performs.
+    ///
+    /// [`Self::recv`] calls `try_complete_response`, which — on a single
+    /// bidirectional `HostTransport` where the guest both registers its pending
+    /// (`send_request`) and the envelope is later drained on the same
+    /// correlation map — would immediately self-complete the guest's own
+    /// outbound request as if it were its response (an echo). A gate harness
+    /// needs to instead *observe* the outbound request (its `route_key` +
+    /// `request_id`), hold it suspended for as long as the test wants, and only
+    /// then answer it via [`Self::complete_response`] / [`Self::complete_error`].
+    ///
+    /// This raw drain returns the request envelope untouched so the harness owns
+    /// the release timing. It is the native-`Linked` mirror of the WASM
+    /// `HostAbiFn` bridge's `CallRaw` interception used by the M6 isomorphism
+    /// suite; it changes no production path (test-utils only).
+    #[cfg(feature = "test-utils")]
+    pub async fn recv_reliable_raw(&self) -> Option<RpcEnvelope> {
+        self.reliable_rx.lock().await.recv().await
+    }
+
     /// Complete a pending request with response payload
     ///
     /// # Arguments

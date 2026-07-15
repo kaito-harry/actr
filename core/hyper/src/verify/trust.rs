@@ -10,8 +10,9 @@
 //!   `(manufacturer, signing_key_id)`, cached locally.
 //! - [`ChainTrust`] — try a list of providers in order; first success wins.
 //!
-//! Both built-in Ed25519-based providers delegate to [`actr_pack::verify`],
-//! which performs the full signature + binary-hash + resource-hash chain.
+//! Both built-in Ed25519-based providers delegate to [`actr_pack::verify`]
+//! (or its configurable bounded variant), which performs the full signature +
+//! binary-hash + resource-hash chain.
 //! Custom providers (e.g. wasm-side keyless verification, HSM, threshold
 //! signatures) may implement [`TrustProvider`] however they want — the trait
 //! only obliges them to take raw bytes in and return a verified manifest out.
@@ -33,6 +34,22 @@ use crate::verify::cert_cache::MfrCertCache;
 #[async_trait]
 pub trait TrustProvider: Send + Sync + std::fmt::Debug {
     async fn verify_package(&self, bytes: &[u8]) -> HyperResult<VerifiedPackage>;
+
+    /// Verify while limiting decompression of signed package payloads. Hyper's
+    /// workload-loading path always calls this method with its configured
+    /// `max_component_bytes`; built-in providers use that value for both each
+    /// entry and the cumulative payload set.
+    ///
+    /// The default preserves compatibility for custom providers. Providers
+    /// that decompress package entries should override it and enforce the
+    /// supplied limit, as the built-in providers do.
+    async fn verify_package_bounded(
+        &self,
+        bytes: &[u8],
+        _max_entry_bytes: usize,
+    ) -> HyperResult<VerifiedPackage> {
+        self.verify_package(bytes).await
+    }
 }
 
 // ── shared helper for the Ed25519 + pubkey path ──────────────────────────────
@@ -49,6 +66,23 @@ pub(crate) fn verify_ed25519_manifest(
     tracing::info!(
         actr_type = %verified.manifest.actr_type_str(),
         ".actr package verified"
+    );
+
+    Ok(verified)
+}
+
+fn verify_ed25519_manifest_bounded(
+    bytes: &[u8],
+    pubkey: &VerifyingKey,
+    max_entry_bytes: usize,
+) -> HyperResult<VerifiedPackage> {
+    let verified =
+        actr_pack::verify_bounded(bytes, pubkey, max_entry_bytes).map_err(pack_err_to_hyper)?;
+
+    tracing::info!(
+        actr_type = %verified.manifest.actr_type_str(),
+        max_entry_bytes,
+        ".actr package verified with decompression limits"
     );
 
     Ok(verified)
@@ -126,6 +160,14 @@ impl TrustProvider for StaticTrust {
     async fn verify_package(&self, bytes: &[u8]) -> HyperResult<VerifiedPackage> {
         verify_ed25519_manifest(bytes, &self.pubkey)
     }
+
+    async fn verify_package_bounded(
+        &self,
+        bytes: &[u8],
+        max_entry_bytes: usize,
+    ) -> HyperResult<VerifiedPackage> {
+        verify_ed25519_manifest_bounded(bytes, &self.pubkey, max_entry_bytes)
+    }
 }
 
 // ── RegistryTrust ────────────────────────────────────────────────────────────
@@ -147,11 +189,12 @@ impl RegistryTrust {
             cache: MfrCertCache::new(endpoint),
         }
     }
-}
 
-#[async_trait]
-impl TrustProvider for RegistryTrust {
-    async fn verify_package(&self, bytes: &[u8]) -> HyperResult<VerifiedPackage> {
+    async fn verify_package_inner(
+        &self,
+        bytes: &[u8],
+        max_entry_bytes: Option<usize>,
+    ) -> HyperResult<VerifiedPackage> {
         let pack_manifest = actr_pack::read_manifest(bytes).map_err(|e| match e {
             actr_pack::PackError::ManifestNotFound => HyperError::ManifestNotFound,
             actr_pack::PackError::ManifestParseError(msg) => HyperError::InvalidManifest(msg),
@@ -170,7 +213,28 @@ impl TrustProvider for RegistryTrust {
             .get_or_fetch(&pack_manifest.manufacturer, Some(key_id))
             .await?;
 
-        verify_ed25519_manifest(bytes, &pubkey)
+        match max_entry_bytes {
+            Some(max_entry_bytes) => {
+                verify_ed25519_manifest_bounded(bytes, &pubkey, max_entry_bytes)
+            }
+            None => verify_ed25519_manifest(bytes, &pubkey),
+        }
+    }
+}
+
+#[async_trait]
+impl TrustProvider for RegistryTrust {
+    async fn verify_package(&self, bytes: &[u8]) -> HyperResult<VerifiedPackage> {
+        self.verify_package_inner(bytes, None).await
+    }
+
+    async fn verify_package_bounded(
+        &self,
+        bytes: &[u8],
+        max_entry_bytes: usize,
+    ) -> HyperResult<VerifiedPackage> {
+        self.verify_package_inner(bytes, Some(max_entry_bytes))
+            .await
     }
 }
 
@@ -205,6 +269,26 @@ impl TrustProvider for ChainTrust {
             match p.verify_package(bytes).await {
                 Ok(m) => return Ok(m),
                 Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            HyperError::SignatureVerificationFailed("empty trust chain".to_string())
+        }))
+    }
+
+    async fn verify_package_bounded(
+        &self,
+        bytes: &[u8],
+        max_entry_bytes: usize,
+    ) -> HyperResult<VerifiedPackage> {
+        let mut last_err: Option<HyperError> = None;
+        for provider in &self.providers {
+            match provider
+                .verify_package_bounded(bytes, max_entry_bytes)
+                .await
+            {
+                Ok(package) => return Ok(package),
+                Err(error) => last_err = Some(error),
             }
         }
         Err(last_err.unwrap_or_else(|| {

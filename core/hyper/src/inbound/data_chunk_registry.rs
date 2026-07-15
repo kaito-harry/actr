@@ -61,7 +61,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 /// Default per-stream bounded queue depth.
@@ -108,6 +108,41 @@ struct StreamWorker {
     generation: u64,
     /// Completion signal for dispatches waiting on a draining old worker.
     done: Arc<WorkerDone>,
+}
+
+/// Ensures workers cannot detach if the async shutdown coordinator is itself
+/// cancelled after taking ownership of their join handles.
+struct AbortWorkersOnDrop {
+    handles: Vec<AbortHandle>,
+    armed: bool,
+}
+
+impl AbortWorkersOnDrop {
+    fn new(handles: &[JoinHandle<()>]) -> Self {
+        Self {
+            handles: handles.iter().map(JoinHandle::abort_handle).collect(),
+            armed: true,
+        }
+    }
+
+    fn abort(&mut self) {
+        for handle in &self.handles {
+            handle.abort();
+        }
+        self.armed = false;
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for AbortWorkersOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.abort();
+        }
+    }
 }
 
 struct WorkerDone {
@@ -322,6 +357,49 @@ impl DataChunkRegistry {
         tracing::info!("🚫 Unregistered data stream handler: {}", stream_id);
     }
 
+    /// Force-close the registry during synchronous teardown.
+    ///
+    /// Normal shutdown uses [`Self::shutdown`] so in-flight callbacks can
+    /// finish. Drop paths cannot await, so they cancel the registry, remove all
+    /// callbacks to break ownership cycles, and abort any remaining workers.
+    pub(crate) fn clear(&self) {
+        self.inner.shutdown.cancel();
+
+        let (count, handles) = {
+            let mut state = self.inner.state.lock().unwrap_or_else(|poisoned| {
+                tracing::error!(
+                    "data stream registry state poisoned during forced teardown; recovering"
+                );
+                poisoned.into_inner()
+            });
+            state.shutting_down = true;
+
+            let count = state
+                .streams
+                .values()
+                .filter(|entry| entry.callback.is_some())
+                .count();
+            let handles = state
+                .streams
+                .drain()
+                .filter_map(|(_, mut entry)| {
+                    entry.worker.take().map(|mut worker| {
+                        worker.tx.take();
+                        worker.handle
+                    })
+                })
+                .collect::<Vec<_>>();
+            (count, handles)
+        };
+
+        for handle in handles {
+            handle.abort();
+        }
+        if count > 0 {
+            tracing::debug!(count, "force-closed data stream callbacks");
+        }
+    }
+
     /// Dispatch a data stream chunk to its per-stream serial worker.
     ///
     /// # Arguments
@@ -393,6 +471,28 @@ impl DataChunkRegistry {
         }
     }
 
+    /// Invoke one callback inline so ownership and host-bridge behaviour can
+    /// be asserted deterministically without observing a detached task.
+    #[cfg(test)]
+    pub(crate) async fn invoke_for_test(
+        &self,
+        chunk: DataChunk,
+        sender_id: ActrId,
+    ) -> Option<ActorResult<()>> {
+        let callback = {
+            let state = self
+                .inner
+                .state
+                .lock()
+                .expect("data stream registry state poisoned");
+            state
+                .streams
+                .get(&chunk.stream_id)
+                .and_then(|entry| entry.callback.clone())
+        }?;
+        Some(callback(chunk, sender_id).await)
+    }
+
     /// Gracefully shut down every worker: cancel queued work, let in-flight
     /// callbacks finish, then join all worker tasks (bounded, else abort).
     pub(crate) async fn shutdown(&self) {
@@ -420,17 +520,16 @@ impl DataChunkRegistry {
             return;
         }
 
-        let abort_handles: Vec<_> = handles.iter().map(|h| h.abort_handle()).collect();
+        let mut abort_guard = AbortWorkersOnDrop::new(&handles);
         let joined = futures_util::future::join_all(handles);
 
         match tokio::time::timeout(SHUTDOWN_JOIN_TIMEOUT, joined).await {
             Ok(_) => {
+                abort_guard.disarm();
                 tracing::debug!("data stream workers joined on shutdown");
             }
             Err(_) => {
-                for abort in abort_handles {
-                    abort.abort();
-                }
+                abort_guard.abort();
                 tracing::error!(
                     timeout_secs = SHUTDOWN_JOIN_TIMEOUT.as_secs(),
                     "data stream workers did not finish before timeout; aborted"

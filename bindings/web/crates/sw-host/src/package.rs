@@ -120,11 +120,16 @@ pub fn verify_and_extract_actr_package(
     let verified = actr_pack::verify(package_bytes, &vk)
         .map_err(|e| JsError::new(&format!("package verification failed: {e}")))?;
 
-    let binary = actr_pack::load_binary(package_bytes)
-        .map_err(|e| JsError::new(&format!("extract binary: {e}")))?;
+    let binary =
+        actr_pack::load_binary_bounded(package_bytes, actr_pack::DEFAULT_MAX_VERIFIED_ENTRY_BYTES)
+            .map_err(|e| JsError::new(&format!("extract binary: {e}")))?;
 
-    let glue_js = actr_pack::read_glue_js(package_bytes)
-        .map_err(|e| JsError::new(&format!("extract glue.js: {e}")))?;
+    let glue_js = actr_pack::read_glue_js_bounded(
+        package_bytes,
+        &verified.manifest,
+        actr_pack::DEFAULT_MAX_VERIFIED_ENTRY_BYTES,
+    )
+    .map_err(|e| JsError::new(&format!("extract glue.js: {e}")))?;
 
     Ok(ExtractedPackage {
         manifest_json: manifest_to_json(&verified.manifest)?,

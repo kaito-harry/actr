@@ -20,11 +20,15 @@
 //!
 //! # Per-dispatch `WasmContext`
 //!
-//! Every adapter method constructs a fresh [`super::WasmContext`] by
-//! calling the host's `get-self-id` / `get-caller-id` / `get-request-id`
-//! imports. The context is cheap to build (three async import calls)
-//! and its fields are owned `Clone`able values — no lifetimes threaded
-//! through the async boundary.
+//! Under the 0.2.0 async world each adapter method constructs a fresh
+//! [`super::WasmContext`] from the explicit `invocation-ctx` the host
+//! threads into every export ([`WasmContext::from_invocation`][fi]). The
+//! 0.1.0 getter imports (`get-self-id` / `get-caller-id` / `get-request-id`)
+//! are gone; identity arrives as data. The token is carried into every
+//! outbound host import so the host routes the right bridge under concurrent
+//! in-flight calls.
+//!
+//! [fi]: super::context::WasmContext::from_invocation
 
 use std::sync::OnceLock;
 
@@ -183,8 +187,9 @@ fn rpc_envelope_from_wit(envelope: wit_types::RpcEnvelope) -> RpcEnvelope {
 pub async fn run_dispatch<W: Workload>(
     workload: &W,
     envelope: wit_types::RpcEnvelope,
+    inv: wit_types::InvocationCtx,
 ) -> Result<Vec<u8>, wit_types::ActrError> {
-    let ctx = WasmContext::from_host().await;
+    let ctx = WasmContext::from_invocation(inv);
     let envelope = rpc_envelope_from_wit(envelope);
     match <W::Dispatcher as MessageDispatcher>::dispatch(workload, envelope, &ctx).await {
         Ok(bytes) => Ok(bytes.to_vec()),
@@ -204,24 +209,33 @@ pub async fn run_dispatch<W: Workload>(
 // dispatch so wasm, dynclib, and linked workloads observe matching
 // `self_id` / `caller_id` / `request_id` semantics.
 
-pub async fn run_on_start<W: Workload>(workload: &W) -> Result<(), wit_types::ActrError> {
-    let ctx = WasmContext::from_host().await;
+pub async fn run_on_start<W: Workload>(
+    workload: &W,
+    inv: wit_types::InvocationCtx,
+) -> Result<(), wit_types::ActrError> {
+    let ctx = WasmContext::from_invocation(inv);
     match workload.on_start(&ctx).await {
         Ok(()) => Ok(()),
         Err(e) => Err(actr_error_to_wit(e)),
     }
 }
 
-pub async fn run_on_ready<W: Workload>(workload: &W) -> Result<(), wit_types::ActrError> {
-    let ctx = WasmContext::from_host().await;
+pub async fn run_on_ready<W: Workload>(
+    workload: &W,
+    inv: wit_types::InvocationCtx,
+) -> Result<(), wit_types::ActrError> {
+    let ctx = WasmContext::from_invocation(inv);
     match workload.on_ready(&ctx).await {
         Ok(()) => Ok(()),
         Err(e) => Err(actr_error_to_wit(e)),
     }
 }
 
-pub async fn run_on_stop<W: Workload>(workload: &W) -> Result<(), wit_types::ActrError> {
-    let ctx = WasmContext::from_host().await;
+pub async fn run_on_stop<W: Workload>(
+    workload: &W,
+    inv: wit_types::InvocationCtx,
+) -> Result<(), wit_types::ActrError> {
+    let ctx = WasmContext::from_invocation(inv);
     match workload.on_stop(&ctx).await {
         Ok(()) => Ok(()),
         Err(e) => Err(actr_error_to_wit(e)),
@@ -231,8 +245,9 @@ pub async fn run_on_stop<W: Workload>(workload: &W) -> Result<(), wit_types::Act
 pub async fn run_on_error<W: Workload>(
     workload: &W,
     event: wit_types::ErrorEvent,
+    inv: wit_types::InvocationCtx,
 ) -> Result<(), wit_types::ActrError> {
-    let ctx = WasmContext::from_host().await;
+    let ctx = WasmContext::from_invocation(inv);
     let event = error_event_from_wit(event);
     match workload.on_error(&ctx, &event).await {
         Ok(()) => Ok(()),
@@ -250,57 +265,84 @@ pub async fn run_on_error<W: Workload>(
 // case (where the pre-Phase-1 host passed `None`) does not fire through
 // the guest runtime path.
 
-pub async fn run_on_signaling_connecting<W: Workload>(workload: &W) {
-    let ctx = WasmContext::from_host().await;
+pub async fn run_on_signaling_connecting<W: Workload>(workload: &W, inv: wit_types::InvocationCtx) {
+    let ctx = WasmContext::from_invocation(inv);
     workload.on_signaling_connecting(Some(&ctx)).await;
 }
 
-pub async fn run_on_signaling_connected<W: Workload>(workload: &W) {
-    let ctx = WasmContext::from_host().await;
+pub async fn run_on_signaling_connected<W: Workload>(workload: &W, inv: wit_types::InvocationCtx) {
+    let ctx = WasmContext::from_invocation(inv);
     workload.on_signaling_connected(Some(&ctx)).await;
 }
 
-pub async fn run_on_signaling_disconnected<W: Workload>(workload: &W) {
-    let ctx = WasmContext::from_host().await;
+pub async fn run_on_signaling_disconnected<W: Workload>(
+    workload: &W,
+    inv: wit_types::InvocationCtx,
+) {
+    let ctx = WasmContext::from_invocation(inv);
     workload.on_signaling_disconnected(&ctx).await;
 }
 
 // ── WebSocket (3, infallible) ─────────────────────────────────────────────
 
-pub async fn run_on_websocket_connecting<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
-    let ctx = WasmContext::from_host().await;
+pub async fn run_on_websocket_connecting<W: Workload>(
+    workload: &W,
+    event: wit_types::PeerEvent,
+    inv: wit_types::InvocationCtx,
+) {
+    let ctx = WasmContext::from_invocation(inv);
     let event = peer_event_from_wit(event);
     workload.on_websocket_connecting(&ctx, &event).await;
 }
 
-pub async fn run_on_websocket_connected<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
-    let ctx = WasmContext::from_host().await;
+pub async fn run_on_websocket_connected<W: Workload>(
+    workload: &W,
+    event: wit_types::PeerEvent,
+    inv: wit_types::InvocationCtx,
+) {
+    let ctx = WasmContext::from_invocation(inv);
     let event = peer_event_from_wit(event);
     workload.on_websocket_connected(&ctx, &event).await;
 }
 
-pub async fn run_on_websocket_disconnected<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
-    let ctx = WasmContext::from_host().await;
+pub async fn run_on_websocket_disconnected<W: Workload>(
+    workload: &W,
+    event: wit_types::PeerEvent,
+    inv: wit_types::InvocationCtx,
+) {
+    let ctx = WasmContext::from_invocation(inv);
     let event = peer_event_from_wit(event);
     workload.on_websocket_disconnected(&ctx, &event).await;
 }
 
 // ── WebRTC P2P (3, infallible) ────────────────────────────────────────────
 
-pub async fn run_on_webrtc_connecting<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
-    let ctx = WasmContext::from_host().await;
+pub async fn run_on_webrtc_connecting<W: Workload>(
+    workload: &W,
+    event: wit_types::PeerEvent,
+    inv: wit_types::InvocationCtx,
+) {
+    let ctx = WasmContext::from_invocation(inv);
     let event = peer_event_from_wit(event);
     workload.on_webrtc_connecting(&ctx, &event).await;
 }
 
-pub async fn run_on_webrtc_connected<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
-    let ctx = WasmContext::from_host().await;
+pub async fn run_on_webrtc_connected<W: Workload>(
+    workload: &W,
+    event: wit_types::PeerEvent,
+    inv: wit_types::InvocationCtx,
+) {
+    let ctx = WasmContext::from_invocation(inv);
     let event = peer_event_from_wit(event);
     workload.on_webrtc_connected(&ctx, &event).await;
 }
 
-pub async fn run_on_webrtc_disconnected<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
-    let ctx = WasmContext::from_host().await;
+pub async fn run_on_webrtc_disconnected<W: Workload>(
+    workload: &W,
+    event: wit_types::PeerEvent,
+    inv: wit_types::InvocationCtx,
+) {
+    let ctx = WasmContext::from_invocation(inv);
     let event = peer_event_from_wit(event);
     workload.on_webrtc_disconnected(&ctx, &event).await;
 }
@@ -310,8 +352,9 @@ pub async fn run_on_webrtc_disconnected<W: Workload>(workload: &W, event: wit_ty
 pub async fn run_on_credential_renewed<W: Workload>(
     workload: &W,
     event: wit_types::CredentialEvent,
+    inv: wit_types::InvocationCtx,
 ) {
-    let ctx = WasmContext::from_host().await;
+    let ctx = WasmContext::from_invocation(inv);
     let event = credential_event_from_wit(event);
     workload.on_credential_renewed(&ctx, &event).await;
 }
@@ -319,8 +362,9 @@ pub async fn run_on_credential_renewed<W: Workload>(
 pub async fn run_on_credential_expiring<W: Workload>(
     workload: &W,
     event: wit_types::CredentialEvent,
+    inv: wit_types::InvocationCtx,
 ) {
-    let ctx = WasmContext::from_host().await;
+    let ctx = WasmContext::from_invocation(inv);
     let event = credential_event_from_wit(event);
     workload.on_credential_expiring(&ctx, &event).await;
 }
@@ -330,8 +374,9 @@ pub async fn run_on_credential_expiring<W: Workload>(
 pub async fn run_on_mailbox_backpressure<W: Workload>(
     workload: &W,
     event: wit_types::BackpressureEvent,
+    inv: wit_types::InvocationCtx,
 ) {
-    let ctx = WasmContext::from_host().await;
+    let ctx = WasmContext::from_invocation(inv);
     let event = backpressure_event_from_wit(event);
     workload.on_mailbox_backpressure(&ctx, &event).await;
 }
@@ -339,8 +384,20 @@ pub async fn run_on_mailbox_backpressure<W: Workload>(
 pub async fn run_on_data_chunk(
     chunk: wit_types::DataChunk,
     sender: wit_types::ActrId,
+    _inv: wit_types::InvocationCtx,
 ) -> Result<(), wit_types::ActrError> {
+    // The registered stream callback receives (chunk, sender) only; it has
+    // no fresh `Context`, so the invocation-ctx is accepted for contract
+    // uniformity but not consumed on this path. The host temporarily aliases
+    // the registering context's retired token to this DataChunk invocation's
+    // live bridge while the callback runs.
     super::context::dispatch_registered_stream(chunk, sender)
         .await
         .map_err(actr_error_to_wit)
 }
+
+// (`complete_sync` was removed with the M4 switch to the 0.2.0 async world:
+// the guest exports are now real `async func`, driven to completion by the
+// host's `Store::run_concurrent` region rather than by an in-guest poll
+// loop. Each adapter helper above is a plain `async fn` awaited directly by
+// the generated `Guest` impl.)
