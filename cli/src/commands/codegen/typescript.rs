@@ -1349,11 +1349,9 @@ impl TypeScriptGenerator {
             ActrCliError::command_error(format!("Failed to create extract directory: {}", e))
         })?;
 
+        let unzip_args = unzip_extract_args(&archive_path, &extract_dir);
         let output = StdCommand::new("unzip")
-            .arg("-q")
-            .arg(&archive_path)
-            .arg("-C")
-            .arg(&extract_dir)
+            .args(&unzip_args)
             .output()
             .map_err(|e| ActrCliError::command_error(format!("Failed to execute unzip: {}", e)))?;
 
@@ -1695,6 +1693,21 @@ fn rewrite_imports(output: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Build the argument vector for the `unzip` invocation that extracts
+/// `archive_path` into `extract_dir`. Extracted as a helper so the exact flag
+/// set is unit-testable: `unzip` selects its destination directory with `-d`;
+/// `-C` enables case-insensitive member matching rather than selecting a
+/// destination, so using it here makes the extract path a member pattern and
+/// breaks extraction in CI.
+fn unzip_extract_args(archive_path: &Path, extract_dir: &Path) -> Vec<std::ffi::OsString> {
+    vec![
+        "-q".into(),
+        archive_path.as_os_str().to_owned(),
+        "-d".into(),
+        extract_dir.as_os_str().to_owned(),
+    ]
 }
 
 fn normalize_proto_path(path: &Path) -> String {

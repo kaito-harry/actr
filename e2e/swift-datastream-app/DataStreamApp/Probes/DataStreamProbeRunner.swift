@@ -6,10 +6,10 @@ import SwiftProtobuf
 final class DataStreamProbeRunner: @unchecked Sendable {
     typealias StreamEchoLogHandler = @Sendable (_ logLine: String, _ receivedLine: String?) async -> Void
 
-    private let ctx: Context
+    private let ctx: any ActrContext
     private let target: ActrId
 
-    init(ctx: Context, target: ActrId) {
+    init(ctx: any ActrContext, target: ActrId) {
         self.ctx = ctx
         self.target = target
     }

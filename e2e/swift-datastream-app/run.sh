@@ -605,7 +605,7 @@ provision_mfr_keychain() {
 }
 
 write_service_cargo_toml() {
-    cat >"$TMP_SERVICE_DIR/Cargo.toml" <<'EOF'
+    cat >"$TMP_SERVICE_DIR/Cargo.toml" <<EOF
 [package]
 name = "duplex-stream-service"
 version = "1.0.0"
@@ -621,8 +621,8 @@ default = ["cdylib"]
 cdylib = ["actr-framework/cdylib"]
 
 [dependencies]
-actr-framework = "0.3"
-actr-protocol = "0.3"
+actr-framework = { path = "${REPO_ROOT}/core/framework" }
+actr-protocol = { path = "${REPO_ROOT}/core/protocol" }
 async-trait = "0.1"
 prost = "0.14"
 prost-types = "0.14"

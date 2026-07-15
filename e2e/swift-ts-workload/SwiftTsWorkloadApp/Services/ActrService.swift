@@ -313,12 +313,17 @@ private final class ProbeHandlerImpl: ProbeServiceHandler, @unchecked Sendable {
 
     func startProbe(
         req: Local_StartProbeRequest,
-        ctx: Context
-    ) async throws -> Local_StartProbeResponse {
+        ctx: any ActrContext
+    ) async throws(ActrError) -> Local_StartProbeResponse {
         fileLog("[SwiftTsWorkloadApp] 🔵 startProbe handler, discovering DuplexEchoService...")
 
         // Discover target synchronously so we can return immediately if not found
-        let targetType = try ActrType.fromStringRepr(req.targetType.isEmpty ? "actrium:DuplexEchoService:1.0.0" : req.targetType)
+        let targetType: ActrType
+        do {
+            targetType = try ActrType.fromStringRepr(req.targetType.isEmpty ? "actrium:DuplexEchoService:1.0.0" : req.targetType)
+        } catch {
+            throw ActrError.Config(msg: "Invalid target type: \(error)")
+        }
         let target: ActrId
         do {
             target = try await ctx.discover(targetType: targetType)
