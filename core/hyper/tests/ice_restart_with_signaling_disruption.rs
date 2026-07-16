@@ -303,10 +303,17 @@ async fn test_answerer_request_wakes_inflight_ice_restart_retry() {
     sleep(Duration::from_millis(2200)).await;
     server.resume_forwarding();
 
+    let recovery_targets = answerer
+        .begin_network_recovery("test answerer retry wake")
+        .await;
+    assert_eq!(
+        recovery_targets,
+        vec![id_offerer.clone()],
+        "answerer should guard the active offerer session before requesting ICE restart"
+    );
     answerer
-        .restart_ice(&id_offerer)
-        .await
-        .expect("answerer restart_ice request failed");
+        .restart_network_recovery_connections_for(&recovery_targets)
+        .await;
     wait_for_restart_request_count(&server, 1, Duration::from_secs(2)).await;
 
     let started = Instant::now();

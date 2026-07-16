@@ -14,6 +14,8 @@ struct ForceReconnectFakeSignalingClient {
     connect_once_should_fail: bool,
     disconnect_calls: AtomicUsize,
     connect_once_calls: AtomicUsize,
+    auto_reconnect_suppressed: AtomicBool,
+    suppress_auto_reconnect_calls: AtomicUsize,
     schedule_auto_reconnect_calls: AtomicUsize,
     schedule_auto_reconnect_reset_backoff_calls: AtomicUsize,
     event_tx: broadcast::Sender<SignalingEvent>,
@@ -27,6 +29,8 @@ impl ForceReconnectFakeSignalingClient {
             connect_once_should_fail,
             disconnect_calls: AtomicUsize::new(0),
             connect_once_calls: AtomicUsize::new(0),
+            auto_reconnect_suppressed: AtomicBool::new(false),
+            suppress_auto_reconnect_calls: AtomicUsize::new(0),
             schedule_auto_reconnect_calls: AtomicUsize::new(0),
             schedule_auto_reconnect_reset_backoff_calls: AtomicUsize::new(0),
             event_tx,
@@ -52,7 +56,16 @@ impl SignalingClient for ForceReconnectFakeSignalingClient {
         Ok(())
     }
 
+    fn suppress_auto_reconnect(&self) {
+        self.auto_reconnect_suppressed
+            .store(true, AtomicOrdering::SeqCst);
+        self.suppress_auto_reconnect_calls
+            .fetch_add(1, AtomicOrdering::SeqCst);
+    }
+
     fn schedule_auto_reconnect(&self) {
+        self.auto_reconnect_suppressed
+            .store(false, AtomicOrdering::SeqCst);
         self.schedule_auto_reconnect_calls
             .fetch_add(1, AtomicOrdering::SeqCst);
     }
@@ -65,6 +78,7 @@ impl SignalingClient for ForceReconnectFakeSignalingClient {
 
     async fn disconnect(&self) -> NetworkResult<()> {
         self.disconnect_calls.fetch_add(1, AtomicOrdering::SeqCst);
+        self.suppress_auto_reconnect();
         self.connected.store(false, AtomicOrdering::SeqCst);
         Ok(())
     }
@@ -215,6 +229,76 @@ fn lifecycle_barrier_is_scoped_to_events_that_change_connections() {
             "{event:?}"
         );
     }
+}
+
+#[test]
+fn long_foreground_suppresses_auto_reconnect_before_settle() {
+    let signaling = Arc::new(ForceReconnectFakeSignalingClient::new(false));
+    let processor = DefaultNetworkEventProcessor::new(signaling.clone(), None);
+
+    processor.prepare_network_event(&NetworkEvent::AppLifecycleChanged {
+        state: AppLifecycleState::Foreground {
+            background_duration_ms: LONG_BACKGROUND_RECONNECT_THRESHOLD_MS - 1,
+        },
+    });
+    assert_eq!(
+        signaling
+            .suppress_auto_reconnect_calls
+            .load(AtomicOrdering::SeqCst),
+        0,
+        "short foreground recovery must keep the Probe path unchanged"
+    );
+
+    processor.prepare_network_event(&NetworkEvent::AppLifecycleChanged {
+        state: AppLifecycleState::Foreground {
+            background_duration_ms: LONG_BACKGROUND_RECONNECT_THRESHOLD_MS,
+        },
+    });
+    assert_eq!(
+        signaling
+            .suppress_auto_reconnect_calls
+            .load(AtomicOrdering::SeqCst),
+        1,
+        "long foreground recovery must suppress stale auto-reconnect before settling"
+    );
+}
+
+#[tokio::test]
+async fn force_reconnect_reenables_auto_reconnect_after_early_suppression() {
+    let signaling = Arc::new(ForceReconnectFakeSignalingClient::new(false));
+    let processor = DefaultNetworkEventProcessor::new(signaling.clone(), None);
+    let long_foreground = NetworkEvent::AppLifecycleChanged {
+        state: AppLifecycleState::Foreground {
+            background_duration_ms: LONG_BACKGROUND_RECONNECT_THRESHOLD_MS,
+        },
+    };
+
+    processor.prepare_network_event(&long_foreground);
+    assert!(
+        signaling
+            .auto_reconnect_suppressed
+            .load(AtomicOrdering::SeqCst),
+        "long foreground preparation should pause automatic reconnect"
+    );
+
+    processor
+        .force_reconnect()
+        .await
+        .expect("ForceReconnect should restore signaling");
+
+    assert!(
+        !signaling
+            .auto_reconnect_suppressed
+            .load(AtomicOrdering::SeqCst),
+        "successful ForceReconnect should re-enable future automatic reconnects"
+    );
+    assert_eq!(
+        signaling
+            .schedule_auto_reconnect_reset_backoff_calls
+            .load(AtomicOrdering::SeqCst),
+        1,
+        "ForceReconnect should re-arm automatic reconnect before its explicit restore"
+    );
 }
 
 #[tokio::test]

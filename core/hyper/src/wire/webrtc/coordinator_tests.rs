@@ -99,6 +99,7 @@ async fn mark_peer_as_answerer(
 struct CapturingSignalingClient {
     sent: Mutex<Vec<SignalingEnvelope>>,
     event_tx: broadcast::Sender<super::super::SignalingEvent>,
+    connected: AtomicBool,
     send_control: Option<Arc<SendControl>>,
 }
 
@@ -142,10 +143,15 @@ impl SendControl {
 
 impl CapturingSignalingClient {
     fn new() -> Self {
+        Self::with_connected(true)
+    }
+
+    fn with_connected(connected: bool) -> Self {
         let (event_tx, _rx) = broadcast::channel(16);
         Self {
             sent: Mutex::new(Vec::new()),
             event_tx,
+            connected: AtomicBool::new(connected),
             send_control: None,
         }
     }
@@ -155,8 +161,14 @@ impl CapturingSignalingClient {
         Self {
             sent: Mutex::new(Vec::new()),
             event_tx,
+            connected: AtomicBool::new(true),
             send_control: Some(send_control),
         }
+    }
+
+    fn reconnect(&self) {
+        self.connected.store(true, Ordering::Release);
+        let _ = self.event_tx.send(super::super::SignalingEvent::Connected);
     }
 
     async fn last_relay_source(&self) -> ActrId {
@@ -250,6 +262,11 @@ impl SignalingClient for CapturingSignalingClient {
         &self,
         envelope: SignalingEnvelope,
     ) -> crate::transport::NetworkResult<()> {
+        if !self.is_connected() {
+            return Err(crate::transport::NetworkError::ConnectionError(
+                "injected disconnected signaling client".to_string(),
+            ));
+        }
         if let Some(control) = &self.send_control {
             let _drop_flag = TaskDropFlag(Arc::clone(&control.dropped));
             control.started.add_permits(1);
@@ -276,7 +293,7 @@ impl SignalingClient for CapturingSignalingClient {
     }
 
     fn is_connected(&self) -> bool {
-        true
+        self.connected.load(Ordering::Acquire)
     }
 
     fn get_stats(&self) -> super::super::SignalingStats {
@@ -478,6 +495,100 @@ async fn stale_answerer_state_does_not_request_ice_restart() {
 }
 
 #[tokio::test]
+async fn answerer_waits_for_signaling_reconnect_before_request() {
+    let local_id = test_actor_id(1);
+    let peer_id = test_actor_id(99);
+    let credential_state = CredentialState::new(test_credential(), None, None);
+    let signaling_client = Arc::new(CapturingSignalingClient::with_connected(false));
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        local_id,
+        credential_state,
+        signaling_client.clone(),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+
+    insert_pending_offer_peer(&coordinator, peer_id.clone(), "current-exchange").await;
+    let (session_id, webrtc_conn) = mark_peer_as_answerer(&coordinator, &peer_id).await;
+
+    coordinator
+        .handle_peer_state_change(
+            &webrtc_conn,
+            &peer_id,
+            session_id,
+            RTCPeerConnectionState::Disconnected,
+        )
+        .await;
+
+    assert!(signaling_client.sent_envelopes().await.is_empty());
+    signaling_client.reconnect();
+
+    let sent = signaling_client.wait_for_sent_envelopes(1).await;
+    assert_eq!(
+        sent.len(),
+        1,
+        "Answerer should send exactly once after reconnect"
+    );
+}
+
+#[tokio::test]
+async fn recovered_answerer_skips_deferred_restart_request() {
+    let local_id = test_actor_id(1);
+    let peer_id = test_actor_id(99);
+    let credential_state = CredentialState::new(test_credential(), None, None);
+    let signaling_client = Arc::new(CapturingSignalingClient::with_connected(false));
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        local_id,
+        credential_state,
+        signaling_client.clone(),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+
+    insert_pending_offer_peer(&coordinator, peer_id.clone(), "current-exchange").await;
+    let (session_id, webrtc_conn) = mark_peer_as_answerer(&coordinator, &peer_id).await;
+
+    coordinator
+        .handle_peer_state_change(
+            &webrtc_conn,
+            &peer_id,
+            session_id,
+            RTCPeerConnectionState::Disconnected,
+        )
+        .await;
+    coordinator
+        .peers
+        .write()
+        .await
+        .get_mut(&peer_id)
+        .expect("peer should remain current")
+        .update_connection_state(RTCPeerConnectionState::Connected);
+
+    signaling_client.reconnect();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let task_cleared = coordinator
+                .peers
+                .read()
+                .await
+                .get(&peer_id)
+                .is_some_and(|state| state.restart_task_handle.is_none());
+            if task_cleared {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("deferred Answerer request task should finish after reconnect");
+
+    assert!(
+        signaling_client.sent_envelopes().await.is_empty(),
+        "recovered Answerer must not send a late IceRestartRequest"
+    );
+}
+
+#[tokio::test]
 async fn reliable_queue_backpressure_does_not_block_rpc_queue() {
     let coordinator = new_test_coordinator(test_actor_id(1));
     let peer_bytes = test_actor_id(2).encode_to_vec();
@@ -614,6 +725,211 @@ async fn expect_disconnected_hook(
         }
         other => panic!("unexpected hook event: {other:?}"),
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_recovering_and_idle_hooks_follow_state_commit_order() {
+    let local_id = test_actor_id(1);
+    let peer_id = test_actor_id(99);
+    let coordinator = new_test_coordinator(local_id);
+    let session_id =
+        insert_pending_offer_peer(&coordinator, peer_id.clone(), "current-exchange").await;
+
+    {
+        let mut peers = coordinator.peers.write().await;
+        let state = peers.get_mut(&peer_id).expect("peer should exist");
+        state.update_connection_state(RTCPeerConnectionState::Connected);
+        state.mark_data_channel_opened();
+        state.mark_sendable_hook_reported();
+    }
+
+    let recovering_entered = Arc::new(tokio::sync::Notify::new());
+    let release_recovering = Arc::new(tokio::sync::Notify::new());
+    let (hook_tx, mut hook_rx) = mpsc::unbounded_channel();
+    let hook: crate::wire::webrtc::HookCallback = Arc::new({
+        let recovering_entered = Arc::clone(&recovering_entered);
+        let release_recovering = Arc::clone(&release_recovering);
+        move |event| {
+            let hook_tx = hook_tx.clone();
+            let recovering_entered = Arc::clone(&recovering_entered);
+            let release_recovering = Arc::clone(&release_recovering);
+            Box::pin(async move {
+                if matches!(
+                    &event,
+                    crate::wire::webrtc::HookEvent::WebRtcDisconnected {
+                        status: WebRtcPeerStatus::Recovering,
+                        ..
+                    }
+                ) {
+                    recovering_entered.notify_one();
+                    release_recovering.notified().await;
+                }
+                let _ = hook_tx.send(event);
+            })
+        }
+    });
+    coordinator.set_hook_callback(hook);
+
+    let recovering_task = {
+        let coordinator = Arc::clone(&coordinator);
+        let peer_id = peer_id.clone();
+        tokio::spawn(async move {
+            coordinator
+                .notify_webrtc_recovering_once(&peer_id, session_id, "disconnect detected")
+                .await;
+        })
+    };
+
+    tokio::time::timeout(Duration::from_secs(1), recovering_entered.notified())
+        .await
+        .expect("Recovering hook should enter its callback");
+
+    let idle_started = Arc::new(tokio::sync::Notify::new());
+    let idle_task = {
+        let coordinator = Arc::clone(&coordinator);
+        let peer_id = peer_id.clone();
+        let idle_started = Arc::clone(&idle_started);
+        tokio::spawn(async move {
+            idle_started.notify_one();
+            coordinator
+                .notify_webrtc_idle_if_changed(&peer_id, session_id, "cleanup completed")
+                .await;
+        })
+    };
+
+    tokio::time::timeout(Duration::from_secs(1), idle_started.notified())
+        .await
+        .expect("Idle task should start while Recovering callback is blocked");
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), hook_rx.recv())
+            .await
+            .is_err(),
+        "Idle must not overtake the earlier Recovering state commit"
+    );
+
+    release_recovering.notify_one();
+    expect_disconnected_hook(
+        &mut hook_rx,
+        &peer_id,
+        WebRtcPeerStatus::Recovering,
+        "Recovering should be delivered first",
+    )
+    .await;
+    expect_disconnected_hook(
+        &mut hook_rx,
+        &peer_id,
+        WebRtcPeerStatus::Idle,
+        "Idle should follow Recovering",
+    )
+    .await;
+
+    recovering_task
+        .await
+        .expect("Recovering task should finish");
+    idle_task.await.expect("Idle task should finish");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn removed_peer_idle_is_enqueued_before_replacement_gate_reopens() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let peer_id = test_actor_id(99);
+    let session_id =
+        insert_pending_offer_peer(&coordinator, peer_id.clone(), "current-exchange").await;
+    {
+        let mut peers = coordinator.peers.write().await;
+        let state = peers.get_mut(&peer_id).expect("peer should exist");
+        state.update_connection_state(RTCPeerConnectionState::Connected);
+        state.mark_data_channel_opened();
+        state.mark_sendable_hook_reported();
+    }
+
+    let mut hook_rx = install_hook_recorder(&coordinator);
+    let replacement_gate = coordinator.restart_signaling_gate_for(&peer_id).await;
+    let hook_emission_guard = coordinator.hook_emission_lock.lock().await;
+    let recovery_guard = coordinator.network_recovering_peers.write().await;
+
+    let cleanup_task = {
+        let coordinator = Arc::clone(&coordinator);
+        let peer_id = peer_id.clone();
+        tokio::spawn(async move {
+            coordinator
+                .cleanup_connection_if_session(&peer_id, session_id, true, "replace old session")
+                .await
+        })
+    };
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while coordinator.peers.read().await.contains_key(&peer_id) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("old peer should be removed before teardown completes");
+
+    let replacement_gate_entered = Arc::new(tokio::sync::Notify::new());
+    let replacement_task = {
+        let coordinator = Arc::clone(&coordinator);
+        let peer_id = peer_id.clone();
+        let replacement_gate_entered = Arc::clone(&replacement_gate_entered);
+        tokio::spawn(async move {
+            {
+                let _replacement_guard = replacement_gate.lock().await;
+                replacement_gate_entered.notify_one();
+            }
+            coordinator
+                .invoke_hook(crate::wire::webrtc::HookEvent::WebRtcConnected {
+                    peer_id,
+                    relayed: false,
+                })
+                .await;
+        })
+    };
+
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            replacement_gate_entered.notified(),
+        )
+        .await
+        .is_err(),
+        "replacement gate must remain closed until the removed peer's Idle hook is enqueued"
+    );
+
+    drop(hook_emission_guard);
+    expect_disconnected_hook(
+        &mut hook_rx,
+        &peer_id,
+        WebRtcPeerStatus::Idle,
+        "removed peer Idle should be delivered before replacement hooks",
+    )
+    .await;
+
+    let replacement_event = tokio::time::timeout(Duration::from_secs(1), hook_rx.recv())
+        .await
+        .expect("replacement hook should follow removed peer Idle")
+        .expect("hook channel should remain open");
+    match replacement_event {
+        crate::wire::webrtc::HookEvent::WebRtcConnected {
+            peer_id: got,
+            relayed,
+        } => {
+            assert_eq!(got, peer_id);
+            assert!(!relayed);
+        }
+        other => panic!("unexpected replacement hook event: {other:?}"),
+    }
+
+    replacement_task
+        .await
+        .expect("replacement hook task should finish");
+    drop(recovery_guard);
+    assert!(
+        cleanup_task
+            .await
+            .expect("old peer cleanup task should finish"),
+        "old peer cleanup should remove the expected session"
+    );
 }
 
 #[tokio::test]
@@ -2462,13 +2778,12 @@ async fn clear_pending_restarts_cancels_blocked_answerer_restart_request() {
     ));
     let target_id = test_actor_id(99);
     insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
-    coordinator
-        .peers
-        .write()
-        .await
-        .get_mut(&target_id)
-        .expect("peer should exist")
-        .is_offerer = false;
+    {
+        let mut peers = coordinator.peers.write().await;
+        let state = peers.get_mut(&target_id).expect("peer should exist");
+        state.is_offerer = false;
+        state.update_connection_state(RTCPeerConnectionState::Disconnected);
+    }
 
     coordinator
         .restart_ice(&target_id)
@@ -2769,7 +3084,7 @@ async fn stale_peer_creation_epoch_cannot_insert_after_close_all() {
     };
     assert!(coordinator.peers.read().await.is_empty());
     coordinator
-        .teardown_removed_peer_state(&target, peer, false, "stale test insertion")
+        .teardown_removed_peer_state(&target, peer, false, None, "stale test insertion")
         .await;
 }
 
@@ -2896,13 +3211,12 @@ async fn close_all_peers_cancels_blocked_answerer_restart_request() {
     ));
     let target_id = test_actor_id(99);
     insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
-    coordinator
-        .peers
-        .write()
-        .await
-        .get_mut(&target_id)
-        .expect("peer should exist")
-        .is_offerer = false;
+    {
+        let mut peers = coordinator.peers.write().await;
+        let state = peers.get_mut(&target_id).expect("peer should exist");
+        state.is_offerer = false;
+        state.update_connection_state(RTCPeerConnectionState::Disconnected);
+    }
 
     coordinator
         .restart_ice(&target_id)

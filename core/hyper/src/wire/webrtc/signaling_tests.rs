@@ -819,6 +819,30 @@ async fn test_schedule_auto_reconnect_reenables_after_explicit_disconnect() {
     );
 }
 
+#[test]
+fn test_suppress_auto_reconnect_invalidates_generation_until_rescheduled() {
+    let client = make_ws_client(make_config());
+    let generation = client.reconnect_generation.load(Ordering::Acquire);
+
+    client.suppress_auto_reconnect();
+
+    assert!(
+        client.auto_reconnect_suppressed.load(Ordering::Acquire),
+        "lifecycle preparation should pause automatic reconnect"
+    );
+    assert_eq!(
+        client.reconnect_generation.load(Ordering::Acquire),
+        generation + 1,
+        "lifecycle preparation should invalidate the current reconnect generation"
+    );
+
+    client.schedule_auto_reconnect_reset_backoff();
+    assert!(
+        !client.auto_reconnect_suppressed.load(Ordering::Acquire),
+        "network recovery should re-enable future automatic reconnects"
+    );
+}
+
 #[tokio::test]
 async fn test_schedule_auto_reconnect_reset_backoff_restarts_attempt_sequence() {
     let mut config = make_config();
@@ -985,6 +1009,10 @@ async fn test_explicit_disconnect_suppresses_in_flight_auto_reconnect_connected_
     assert!(
         !client.is_connected(),
         "cancelled auto-reconnect must not leave signaling connected"
+    );
+    assert!(
+        client.auto_reconnect_suppressed.load(Ordering::Acquire),
+        "cancelled auto-reconnect must not clear lifecycle suppression"
     );
 
     tokio::time::timeout(Duration::from_secs(1), server_task)

@@ -12,22 +12,21 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{Notify, mpsc};
 
 #[tokio::test(flavor = "current_thread")]
-async fn spawn_hook_survives_panic() {
-    spawn_hook("test", async {
+async fn call_observation_hook_survives_panic() {
+    call_observation_hook("test", async {
         panic!("intentional");
-    });
-    // Give the spawned task a chance to run.
-    tokio::task::yield_now().await;
-    tokio::task::yield_now().await;
+    })
+    .await;
     // If we got here without aborting, the panic was isolated.
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn spawn_hook_runs_clean_body() {
+async fn call_observation_hook_runs_clean_body() {
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-    spawn_hook("test", async move {
+    call_observation_hook("test", async move {
         let _ = tx.send(());
-    });
+    })
+    .await;
     tokio::time::timeout(std::time::Duration::from_secs(1), rx)
         .await
         .expect("hook did not run")
@@ -251,6 +250,24 @@ impl WorkloadHookObserver for BlockingWebRtcObserver {
     }
 }
 
+struct BlockingDisconnectObserver {
+    statuses: mpsc::UnboundedSender<WebRtcPeerStatus>,
+    recovering_entered: Arc<Notify>,
+    release_recovering: Arc<Notify>,
+}
+
+#[async_trait::async_trait]
+impl WorkloadHookObserver for BlockingDisconnectObserver {
+    async fn on_webrtc_disconnected(&self, _ctx: &RuntimeContext, event: &PeerEvent) {
+        let status = event.status.expect("WebRTC status should be present");
+        let _ = self.statuses.send(status);
+        if status == WebRtcPeerStatus::Recovering {
+            self.recovering_entered.notify_one();
+            self.release_recovering.notified().await;
+        }
+    }
+}
+
 async fn expect_recorded(rx: &mut mpsc::UnboundedReceiver<String>, expected: &'static str) {
     let observed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
@@ -385,7 +402,7 @@ async fn hook_callback_invokes_linked_observer_once_per_event() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn chained_observation_hooks_do_not_let_first_observer_block_second() {
+async fn chained_observation_hooks_run_branches_concurrently() {
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let first: WorkloadHookObserverRef = Arc::new(BlockingWebRtcObserver {
@@ -404,18 +421,82 @@ async fn chained_observation_hooks_do_not_let_first_observer_block_second() {
         status: Some(WebRtcPeerStatus::Connected),
     };
 
-    tokio::time::timeout(
-        std::time::Duration::from_millis(100),
-        observer.on_webrtc_connected(&ctx, &event),
-    )
-    .await
-    .expect("chained observer must not wait for either observation branch");
+    let invocation = tokio::spawn(async move {
+        observer.on_webrtc_connected(&ctx, &event).await;
+    });
 
     tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
         .await
         .expect("first observer should still be invoked");
     expect_recorded(&mut rx, "on_webrtc_connected:peer=10:relayed=false").await;
-    release.notify_waiters();
+    assert!(
+        !invocation.is_finished(),
+        "chained observer must await the blocked branch before the next event"
+    );
+    release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(1), invocation)
+        .await
+        .expect("chained observer did not finish after release")
+        .expect("chained observer task panicked");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn hook_dispatcher_preserves_recovering_then_idle_order() {
+    let (statuses, mut status_rx) = mpsc::unbounded_channel();
+    let recovering_entered = Arc::new(Notify::new());
+    let release_recovering = Arc::new(Notify::new());
+    let observer: WorkloadHookObserverRef = Arc::new(BlockingDisconnectObserver {
+        statuses,
+        recovering_entered: recovering_entered.clone(),
+        release_recovering: release_recovering.clone(),
+    });
+    let ctx = test_runtime_context();
+    let ctx_builder: HookContextBuilder = Arc::new(move || {
+        let ctx = ctx.clone();
+        Box::pin(async move { Some(ctx) })
+    });
+    let cb = build_hook_callback(Some(observer), ctx_builder);
+    let peer_id = test_actr_id(10);
+
+    tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        cb(HookEvent::WebRtcDisconnected {
+            peer_id: peer_id.clone(),
+            status: WebRtcPeerStatus::Recovering,
+        }),
+    )
+    .await
+    .expect("event source should return after enqueueing Recovering");
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        recovering_entered.notified(),
+    )
+    .await
+    .expect("Recovering callback was not entered");
+    assert_eq!(status_rx.recv().await, Some(WebRtcPeerStatus::Recovering));
+
+    tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        cb(HookEvent::WebRtcDisconnected {
+            peer_id,
+            status: WebRtcPeerStatus::Idle,
+        }),
+    )
+    .await
+    .expect("event source should return after enqueueing Idle");
+
+    tokio::task::yield_now().await;
+    assert!(
+        status_rx.try_recv().is_err(),
+        "Idle must wait for the earlier Recovering callback to complete"
+    );
+
+    release_recovering.notify_one();
+    let terminal = tokio::time::timeout(std::time::Duration::from_secs(1), status_rx.recv())
+        .await
+        .expect("Idle callback was not delivered after Recovering completed");
+    assert_eq!(terminal, Some(WebRtcPeerStatus::Idle));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -690,7 +771,7 @@ async fn hook_callback_signaling_events_with_and_without_ctx() {
     let (obs2, mut rx2) = recording();
     let cb_none = build_hook_callback(Some(obs2 as WorkloadHookObserverRef), ctx_builder_none());
     cb_none(HookEvent::SignalingDisconnected).await;
-    // Yield so a (wrongly-spawned) task could record; none should arrive.
+    // Let the dispatcher process the event; none should arrive without a context.
     tokio::task::yield_now().await;
     tokio::task::yield_now().await;
     assert!(
@@ -862,6 +943,13 @@ async fn hook_callback_without_observer_still_builds_context_for_observable_even
         threshold: 2,
     })
     .await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while calls.load(Ordering::SeqCst) < 3 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("dispatcher did not build all hook contexts");
     assert_eq!(
         calls.load(Ordering::SeqCst),
         3,

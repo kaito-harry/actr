@@ -208,9 +208,14 @@ async fn test_pending_requests_cleanup_on_close() {
         })
         .ok();
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let pending_after = gate_a.pending_count().await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let pending_after = loop {
+        let pending = gate_a.pending_count().await;
+        if pending == 0 || tokio::time::Instant::now() >= deadline {
+            break pending;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
     tracing::info!("📊 Pending after close: {}", pending_after);
     assert_eq!(pending_after, 0, "Pending requests should be cleaned up");
 

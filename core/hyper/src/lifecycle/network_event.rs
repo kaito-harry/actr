@@ -202,6 +202,17 @@ fn network_event_needs_lifecycle_barrier(event: &NetworkEvent) -> bool {
     }
 }
 
+fn network_event_suppresses_auto_reconnect(event: &NetworkEvent) -> bool {
+    matches!(
+        event,
+        NetworkEvent::AppLifecycleChanged {
+            state: AppLifecycleState::Foreground {
+                background_duration_ms,
+            },
+        } if *background_duration_ms >= LONG_BACKGROUND_RECONNECT_THRESHOLD_MS
+    )
+}
+
 /// Network event processing result
 #[derive(Debug, Clone)]
 pub struct NetworkEventResult {
@@ -243,6 +254,10 @@ impl NetworkEventResult {
 /// Defines the processing logic for network events; can be custom-implemented by users
 #[async_trait::async_trait]
 pub trait NetworkEventProcessor: Send + Sync {
+    /// Perform synchronous, non-blocking preparation as soon as an event is
+    /// dequeued, before the reconciler waits for more events to settle.
+    fn prepare_network_event(&self, _event: &NetworkEvent) {}
+
     /// Enter a lifecycle barrier as soon as a queued event is observed by the
     /// reconciler. The default is no barrier for custom processors.
     fn begin_network_event_barrier(&self, _event: &NetworkEvent) -> Option<NetworkEventBarrier> {
@@ -674,6 +689,16 @@ impl DefaultNetworkEventProcessor {
 
 #[async_trait::async_trait]
 impl NetworkEventProcessor for DefaultNetworkEventProcessor {
+    fn prepare_network_event(&self, event: &NetworkEvent) {
+        if network_event_suppresses_auto_reconnect(event) {
+            tracing::info!(
+                event = ?event,
+                "Long-background recovery suppressing stale signaling auto-reconnect before settle"
+            );
+            self.signaling_client.suppress_auto_reconnect();
+        }
+    }
+
     fn begin_network_event_barrier(&self, event: &NetworkEvent) -> Option<NetworkEventBarrier> {
         if network_event_needs_lifecycle_barrier(event) {
             self.lifecycle_barrier()
@@ -915,6 +940,7 @@ pub async fn run_network_event_reconciler(
                     event = ?first_request.event,
                     "network_event.reconciler.received"
                 );
+                processor.prepare_network_event(&first_request.event);
                 let mut event_barrier = processor.begin_network_event_barrier(&first_request.event);
                 let mut requests = vec![first_request];
                 let settle = tokio::time::sleep(NETWORK_EVENT_SETTLE_WINDOW);
@@ -927,6 +953,7 @@ pub async fn run_network_event_reconciler(
                                 event = ?next_request.event,
                                 "network_event.reconciler.coalesced"
                             );
+                            processor.prepare_network_event(&next_request.event);
                             if event_barrier.is_none() {
                                 event_barrier = processor.begin_network_event_barrier(&next_request.event);
                             }
@@ -950,6 +977,7 @@ pub async fn run_network_event_reconciler(
                         event = ?next_request.event,
                         "network_event.reconciler.coalesced"
                     );
+                    processor.prepare_network_event(&next_request.event);
                     if event_barrier.is_none() {
                         event_barrier = processor.begin_network_event_barrier(&next_request.event);
                     }

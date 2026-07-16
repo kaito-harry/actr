@@ -164,6 +164,13 @@ pub trait SignalingClient: Send + Sync {
         self.connect().await
     }
 
+    /// Invalidate in-flight automatic reconnect attempts and keep new attempts
+    /// paused until a recovery path explicitly schedules them again.
+    ///
+    /// This method must remain synchronous and non-blocking because lifecycle
+    /// reconciliation calls it before its event-settle window.
+    fn suppress_auto_reconnect(&self) {}
+
     /// Re-enable and wake the automatic reconnect manager after an explicit
     /// lifecycle recovery attempt failed.
     fn schedule_auto_reconnect(&self) {}
@@ -270,9 +277,10 @@ pub trait SignalingClient: Send + Sync {
 
     /// Set a lifecycle hook callback for signaling state changes.
     ///
-    /// State-transition paths normally await the callback. Envelope send
-    /// failures dispatch it asynchronously because their callers may hold a
-    /// peer signaling commit gate that re-entrant cleanup also needs.
+    /// State-transition paths normally await the ordered enqueue operation.
+    /// Envelope send failures enqueue from a detached task because their
+    /// callers may hold a peer signaling commit gate that re-entrant cleanup
+    /// also needs.
     /// Default implementation is a no-op for clients that don't support hooks.
     fn set_hook_callback(&self, _cb: HookCallback) {}
 }
@@ -321,13 +329,13 @@ pub enum DisconnectReason {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Hook callback for synchronous lifecycle notification
+// Hook callback for ordered lifecycle notification
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Events that trigger workload lifecycle hooks.
 ///
-/// Used by `HookCallback` to invoke workload hooks synchronously (awaited)
-/// at the point where the state change occurs.
+/// Used by `HookCallback` to enqueue workload hooks in emission order at the
+/// point where the state change occurs.
 #[derive(Clone, Debug)]
 pub enum HookEvent {
     // ── Signaling ──
@@ -379,8 +387,9 @@ pub enum HookEvent {
 
 /// Callback closure used when a hook event occurs.
 ///
-/// Set once via `set_hook_callback()`. State-change paths normally await it;
-/// see [`SignalingClient::set_hook_callback`] for the send-failure exception.
+/// Set once via `set_hook_callback()`. State-change paths normally await the
+/// enqueue operation; observer execution is handled by the callback's FIFO
+/// dispatcher.
 pub type HookCallback =
     Arc<dyn Fn(HookEvent) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
@@ -436,7 +445,7 @@ pub struct WebSocketSignalingClient {
     reconnect_generation: AtomicU64,
     /// Incremented by external recovery events that should restart reconnect backoff.
     reconnect_backoff_reset_generation: AtomicU64,
-    /// Hook callback for synchronous lifecycle notification (set once, lock-free read)
+    /// Hook callback for ordered lifecycle notification (set once, lock-free read)
     hook_callback: OnceLock<HookCallback>,
 }
 
@@ -934,6 +943,13 @@ impl WebSocketSignalingClient {
             || self.reconnect_generation.load(Ordering::Acquire) != generation
     }
 
+    fn suppress_auto_reconnect_internal(&self) {
+        self.reconnect_generation.fetch_add(1, Ordering::AcqRel);
+        self.auto_reconnect_suppressed
+            .store(true, Ordering::Release);
+        self.reconnect_notify.notify_waiters();
+    }
+
     /// Establish a single signaling WebSocket connection attempt, honoring connection_timeout.
     ///
     /// This does not perform any retry logic; callers that want retries should wrap this.
@@ -1013,10 +1029,12 @@ impl WebSocketSignalingClient {
         *self.ws_sink.lock().await = Some(sink);
         *self.ws_stream.lock().await = Some(stream);
         self.connected.store(true, Ordering::Release);
-        self.auto_reconnect_suppressed
-            .store(false, Ordering::Release);
+        if matches!(intent, ConnectIntent::Explicit) {
+            self.auto_reconnect_suppressed
+                .store(false, Ordering::Release);
+        }
         self.last_pong.store(current_unix_secs(), Ordering::Release);
-        // Invoke hook synchronously, then broadcast for other subscribers
+        // Enqueue the hook before broadcasting to other subscribers.
         self.invoke_hook(HookEvent::SignalingConnected).await;
         let _ = self.event_tx.send(SignalingEvent::Connected);
 
@@ -1361,10 +1379,7 @@ impl WebSocketSignalingClient {
 
     async fn disconnect_internal(&self, suppress_auto_reconnect: bool) -> NetworkResult<()> {
         if suppress_auto_reconnect {
-            self.reconnect_generation.fetch_add(1, Ordering::AcqRel);
-            self.auto_reconnect_suppressed
-                .store(true, Ordering::Release);
-            self.reconnect_notify.notify_waiters();
+            self.suppress_auto_reconnect_internal();
         }
 
         self.drop_pending_replies("signaling disconnect").await;
@@ -1464,7 +1479,7 @@ impl WebSocketSignalingClient {
 
         self.reset_inbound_channel().await;
 
-        // Invoke hook synchronously, then broadcast for other subscribers
+        // Enqueue the hook before broadcasting to other subscribers.
         Self::publish_disconnected_transition(
             was_connected,
             &self.stats,
@@ -1689,6 +1704,10 @@ impl SignalingClient for WebSocketSignalingClient {
                 Err(e)
             }
         }
+    }
+
+    fn suppress_auto_reconnect(&self) {
+        self.suppress_auto_reconnect_internal();
     }
 
     fn schedule_auto_reconnect(&self) {

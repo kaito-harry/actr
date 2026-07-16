@@ -165,8 +165,8 @@ pub(crate) struct Inner {
     ///
     /// `None` means "no observer installed"; the built-in tracing defaults
     /// still fire from the event-source wiring sites. When `Some`, hook
-    /// invocations are dispatched through `lifecycle::hooks::spawn_hook`
-    /// so panics in observer code cannot unwind into the event source.
+    /// invocations are dispatched through the ordered hook dispatcher so
+    /// panics in observer code cannot unwind into the event source.
     #[allow(dead_code)]
     pub(crate) hook_observer: Option<crate::lifecycle::hooks::WorkloadHookObserverRef>,
 
