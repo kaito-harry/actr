@@ -777,36 +777,60 @@ impl ServiceRegistry {
             actor_id.to_string_repr()
         );
 
+        let mut restored_count = 0;
+
         // 将每个服务重新注册到内存
         for service in services {
-            // 添加到服务映射表
-            self.services
-                .entry(service.service_name.clone())
-                .or_default()
-                .push(service.clone());
+            if service.actor_id != *actor_id {
+                platform::recording::warn!(
+                    "Skipping mismatched cached service for Actor {}: cached Actor {}",
+                    actor_id.to_string_repr(),
+                    service.actor_id.to_string_repr()
+                );
+                continue;
+            }
 
-            // 更新消息类型索引
-            for message_type in &service.message_types {
-                self.message_type_index
-                    .entry(message_type.clone())
-                    .or_default()
-                    .push(service.service_name.clone());
+            let service_name = service.service_name.clone();
+            let service_entries = self.services.entry(service_name.clone()).or_default();
+            let inserted = if service_entries
+                .iter()
+                .any(|entry| entry.actor_id == service.actor_id)
+            {
+                false
+            } else {
+                service_entries.push(service.clone());
+                true
+            };
+
+            // 只有新增服务实例时才追加消息类型索引，避免重复恢复制造重复项。
+            if inserted {
+                for message_type in &service.message_types {
+                    self.message_type_index
+                        .entry(message_type.clone())
+                        .or_default()
+                        .push(service_name.clone());
+                }
             }
 
             // 更新 Actor 索引
-            self.actor_index
+            let actor_services = self
+                .actor_index
                 .entry(service.actor_id.clone())
-                .or_default()
-                .push(service.service_name.clone());
+                .or_default();
+            if !actor_services.contains(&service_name) {
+                actor_services.push(service_name.clone());
+            }
+
+            restored_count += 1;
 
             platform::recording::info!(
                 "  ✅ Restored service: {} (Actor {})",
-                service.service_name,
+                service_name,
                 service.actor_id.to_string_repr()
             );
         }
 
-        Ok(true)
+        Ok(restored_count > 0)
     }
 
     /// 获取所有服务统计信息
@@ -1755,5 +1779,74 @@ mod tests {
 
         let results = registry.find_by_actr_type(&target_type);
         assert!(results.is_empty(), "version mismatch must not match");
+    }
+
+    #[tokio::test]
+    async fn test_restore_service_from_storage_preserves_actor_version() {
+        let actor_id = ActrId {
+            serial_number: 914_562_612_010_752,
+            realm: actr_protocol::Realm {
+                realm_id: 33_554_433,
+            },
+            r#type: ActrType {
+                manufacturer: "goaskaway".to_string(),
+                name: "BotService".to_string(),
+                version: "4.0.0".to_string(),
+            },
+        };
+        let service = ServiceInfo {
+            actor_id: actor_id.clone(),
+            service_name: "goaskaway:BotService".to_string(),
+            message_types: vec!["goaskaway.Ask".to_string()],
+            capabilities: None,
+            status: ServiceStatus::Available,
+            last_heartbeat_time_secs: current_timestamp(),
+            service_spec: None,
+            acl: None,
+            service_availability_state: None,
+            power_reserve: None,
+            mailbox_backlog: None,
+            worst_dependency_health_state: None,
+            geo_location: None,
+            is_exact_match: false,
+            sticky_client_ids: vec![],
+            ws_address: None,
+            is_restored_from_storage: false,
+        };
+
+        let storage = Arc::new(
+            ServiceRegistryStorage::new(":memory:", Some(3600))
+                .await
+                .unwrap(),
+        );
+        storage.save_service(&service).await.unwrap();
+
+        let mut registry = ServiceRegistry::new();
+        registry.set_storage(storage);
+
+        assert!(
+            registry
+                .restore_service_from_storage(&actor_id)
+                .await
+                .unwrap()
+        );
+        registry
+            .update_load_metrics(&actor_id, 0, 0.75, 0.1)
+            .unwrap();
+
+        let candidates = registry.find_by_actr_type(&actor_id.r#type);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].actor_id, actor_id);
+        assert_eq!(candidates[0].power_reserve, Some(0.75));
+
+        assert!(
+            registry
+                .restore_service_from_storage(&actor_id)
+                .await
+                .unwrap()
+        );
+        let candidates_after_retry = registry.find_by_actr_type(&actor_id.r#type);
+        assert_eq!(candidates_after_retry.len(), 1);
+        assert_eq!(candidates_after_retry[0].power_reserve, Some(0.75));
     }
 }
