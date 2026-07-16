@@ -156,6 +156,47 @@ impl ServiceRegistry {
         Self::default()
     }
 
+    /// Rebuild the secondary indexes for one service name after replacing instances.
+    fn rebuild_indexes_for_service(&mut self, service_name: &str) {
+        let mut actor_ids = Vec::new();
+        let mut message_types = Vec::new();
+
+        if let Some(services) = self.services.get(service_name) {
+            for service in services {
+                if !actor_ids.contains(&service.actor_id) {
+                    actor_ids.push(service.actor_id.clone());
+                }
+                for message_type in &service.message_types {
+                    if !message_types.contains(message_type) {
+                        message_types.push(message_type.clone());
+                    }
+                }
+            }
+        }
+
+        self.message_type_index.retain(|_, service_names| {
+            service_names.retain(|name| name != service_name);
+            !service_names.is_empty()
+        });
+        for message_type in message_types {
+            self.message_type_index
+                .entry(message_type)
+                .or_default()
+                .push(service_name.to_string());
+        }
+
+        self.actor_index.retain(|_, service_names| {
+            service_names.retain(|name| name != service_name);
+            !service_names.is_empty()
+        });
+        for actor_id in actor_ids {
+            self.actor_index
+                .entry(actor_id)
+                .or_default()
+                .push(service_name.to_string());
+        }
+    }
+
     /// 设置持久化存储（启动时调用）
     pub fn set_storage(&mut self, storage: Arc<ServiceRegistryStorage>) {
         platform::recording::info!("ServiceRegistry 启用 SQLite 持久化缓存");
@@ -265,42 +306,26 @@ impl ServiceRegistry {
             });
         }
 
-        // 添加到服务映射表。
-        // 清理同 service_name 下的 storage-restored 幽灵候选（actrix 重启后遗留的旧条目）。
-        // 来自活跃 WebSocket 连接的并发注册（is_restored_from_storage=false）不做去重，
-        // 以支持同类型多实例水平扩展场景。
+        // 添加到服务映射表。清理 storage-restored 幽灵候选，并替换同一 Actor
+        // 对同一服务的已有注册。其他活跃 Actor 的实例继续保留，以支持水平扩展。
         let entry = self.services.entry(service_name.clone()).or_default();
         let ghost_actor_ids: Vec<ActrId> = entry
             .iter()
             .filter(|s| s.is_restored_from_storage)
             .map(|s| s.actor_id.clone())
             .collect();
-        if !ghost_actor_ids.is_empty() {
-            entry.retain(|s| !s.is_restored_from_storage);
-            for ghost_id in &ghost_actor_ids {
-                self.actor_index.remove(ghost_id);
-                platform::recording::info!(
-                    "清除 storage-restored 幽灵候选: service={}, actor serial={}",
-                    service_name,
-                    ghost_id.to_string_repr()
-                );
-            }
-        }
+        entry.retain(|s| !s.is_restored_from_storage && s.actor_id != actor_id);
         entry.push(service_info);
 
-        // 更新消息类型索引
-        for message_type in &message_types {
-            self.message_type_index
-                .entry(message_type.clone())
-                .or_default()
-                .push(service_name.clone());
+        for ghost_id in &ghost_actor_ids {
+            platform::recording::info!(
+                "清除 storage-restored 幽灵候选: service={}, actor={}",
+                service_name,
+                ghost_id.to_string_repr()
+            );
         }
 
-        // 更新 Actor 索引
-        self.actor_index
-            .entry(actor_id.clone())
-            .or_default()
-            .push(service_name.clone());
+        self.rebuild_indexes_for_service(&service_name);
 
         Ok(())
     }
@@ -777,36 +802,77 @@ impl ServiceRegistry {
             actor_id.to_string_repr()
         );
 
-        // 将每个服务重新注册到内存
-        for service in services {
-            // 添加到服务映射表
-            self.services
-                .entry(service.service_name.clone())
-                .or_default()
-                .push(service.clone());
+        let mut restored_count = 0;
 
-            // 更新消息类型索引
+        // 将每个服务重新注册到内存
+        for mut service in services {
+            if service.actor_id != *actor_id {
+                platform::recording::warn!(
+                    "Skipping mismatched cached service for Actor {}: cached Actor {}",
+                    actor_id.to_string_repr(),
+                    service.actor_id.to_string_repr()
+                );
+                continue;
+            }
+
+            service.is_restored_from_storage = true;
+
+            let service_name = service.service_name.clone();
+            let service_entries = self.services.entry(service_name.clone()).or_default();
+            let inserted = if service_entries
+                .iter()
+                .any(|entry| entry.actor_id == service.actor_id)
+            {
+                false
+            } else {
+                service_entries.push(service.clone());
+                true
+            };
+
+            // 消息类型索引存储 service_name；确保每个映射只出现一次。
+            let mut message_index_updated = false;
             for message_type in &service.message_types {
-                self.message_type_index
+                let service_names = self
+                    .message_type_index
                     .entry(message_type.clone())
-                    .or_default()
-                    .push(service.service_name.clone());
+                    .or_default();
+                if !service_names.contains(&service_name) {
+                    service_names.push(service_name.clone());
+                    message_index_updated = true;
+                }
             }
 
             // 更新 Actor 索引
-            self.actor_index
+            let actor_services = self
+                .actor_index
                 .entry(service.actor_id.clone())
-                .or_default()
-                .push(service.service_name.clone());
+                .or_default();
+            let actor_index_updated = if actor_services.contains(&service_name) {
+                false
+            } else {
+                actor_services.push(service_name.clone());
+                true
+            };
+
+            if !inserted && !message_index_updated && !actor_index_updated {
+                platform::recording::debug!(
+                    "Service already present in memory for Actor {}: {}",
+                    service.actor_id.to_string_repr(),
+                    service_name
+                );
+                continue;
+            }
+
+            restored_count += 1;
 
             platform::recording::info!(
                 "  ✅ Restored service: {} (Actor {})",
-                service.service_name,
+                service_name,
                 service.actor_id.to_string_repr()
             );
         }
 
-        Ok(true)
+        Ok(restored_count > 0)
     }
 
     /// 获取所有服务统计信息
@@ -1755,5 +1821,123 @@ mod tests {
 
         let results = registry.find_by_actr_type(&target_type);
         assert!(results.is_empty(), "version mismatch must not match");
+    }
+
+    #[tokio::test]
+    async fn test_restore_service_from_storage_preserves_actor_version() {
+        let actor_id = ActrId {
+            serial_number: 914_562_612_010_752,
+            realm: actr_protocol::Realm {
+                realm_id: 33_554_433,
+            },
+            r#type: ActrType {
+                manufacturer: "goaskaway".to_string(),
+                name: "BotService".to_string(),
+                version: "4.0.0".to_string(),
+            },
+        };
+        let service = ServiceInfo {
+            actor_id: actor_id.clone(),
+            service_name: "goaskaway:BotService".to_string(),
+            message_types: vec!["goaskaway.Ask".to_string()],
+            capabilities: None,
+            status: ServiceStatus::Available,
+            last_heartbeat_time_secs: current_timestamp(),
+            service_spec: None,
+            acl: None,
+            service_availability_state: None,
+            power_reserve: None,
+            mailbox_backlog: None,
+            worst_dependency_health_state: None,
+            geo_location: None,
+            is_exact_match: false,
+            sticky_client_ids: vec![],
+            ws_address: None,
+            is_restored_from_storage: false,
+        };
+
+        let storage = Arc::new(
+            ServiceRegistryStorage::new(":memory:", Some(3600))
+                .await
+                .unwrap(),
+        );
+        storage.save_service(&service).await.unwrap();
+
+        let mut registry = ServiceRegistry::new();
+        registry.set_storage(storage);
+
+        assert!(
+            registry
+                .restore_service_from_storage(&actor_id)
+                .await
+                .unwrap()
+        );
+        registry
+            .update_load_metrics(&actor_id, 0, 0.75, 0.1)
+            .unwrap();
+
+        registry.unregister_actor_memory_only(&actor_id);
+        assert!(registry.find_by_actr_type(&actor_id.r#type).is_empty());
+
+        assert!(
+            registry
+                .restore_service_from_storage(&actor_id)
+                .await
+                .unwrap()
+        );
+        registry
+            .update_load_metrics(&actor_id, 0, 0.75, 0.1)
+            .unwrap();
+
+        let candidates = registry.find_by_actr_type(&actor_id.r#type);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].actor_id, actor_id);
+        assert_eq!(candidates[0].power_reserve, Some(0.75));
+
+        assert!(
+            !registry
+                .restore_service_from_storage(&actor_id)
+                .await
+                .unwrap(),
+            "a repeated restore with no index changes must report false"
+        );
+        let candidates_after_retry = registry.find_by_actr_type(&actor_id.r#type);
+        assert_eq!(candidates_after_retry.len(), 1);
+        assert_eq!(candidates_after_retry[0].power_reserve, Some(0.75));
+
+        let services_by_message = registry.discover_by_message_type("goaskaway.Ask");
+        assert_eq!(services_by_message.len(), 1);
+        assert_eq!(
+            registry.get_message_type_stats().get("goaskaway.Ask"),
+            Some(&1)
+        );
+
+        registry
+            .register_service_full(
+                actor_id.clone(),
+                service.service_name.clone(),
+                service.message_types.clone(),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let candidates_after_registration = registry.find_by_actr_type(&actor_id.r#type);
+        assert_eq!(candidates_after_registration.len(), 1);
+        assert_eq!(candidates_after_registration[0].actor_id, actor_id);
+        assert!(!candidates_after_registration[0].is_restored_from_storage);
+
+        let services_by_message = registry.discover_by_message_type("goaskaway.Ask");
+        assert_eq!(services_by_message.len(), 1);
+        assert_eq!(
+            registry.get_message_type_stats().get("goaskaway.Ask"),
+            Some(&1)
+        );
+        assert_eq!(
+            registry.actor_index.get(&actor_id),
+            Some(&vec![service.service_name])
+        );
     }
 }

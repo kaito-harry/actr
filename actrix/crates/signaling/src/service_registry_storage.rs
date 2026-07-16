@@ -19,7 +19,10 @@ use actr_protocol::{Acl, ActrId, ServiceSpec};
 use anyhow::{Context, Result};
 use prost::Message as ProstMessage;
 use serde_json;
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use sqlx::{
+    Row,
+    sqlite::{SqlitePool, SqlitePoolOptions},
+};
 use std::{
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
@@ -81,6 +84,7 @@ impl ServiceRegistryStorage {
                 actor_realm_id INTEGER NOT NULL,
                 actor_manufacturer TEXT NOT NULL,
                 actor_device_name TEXT NOT NULL,
+                actor_version TEXT NOT NULL,
 
                 -- 服务基本信息
                 service_name TEXT NOT NULL,
@@ -174,6 +178,7 @@ impl ServiceRegistryStorage {
             r#"
             INSERT INTO service_registry (
                 actor_serial_number, actor_realm_id, actor_manufacturer, actor_device_name,
+                actor_version,
                 service_name, message_types, capabilities_json, status,
                 service_spec_blob, acl_blob,
                 service_availability_state, power_reserve, mailbox_backlog,
@@ -183,16 +188,20 @@ impl ServiceRegistryStorage {
                 registered_at, last_heartbeat_at, expires_at
             ) VALUES (
                 ?1, ?2, ?3, ?4,
-                ?5, ?6, ?7, ?8,
-                ?9, ?10,
-                ?11, ?12, ?13,
-                ?14,
-                ?15, ?16, ?17,
-                ?18, ?19,
-                ?20, ?21, ?22
+                ?5,
+                ?6, ?7, ?8, ?9,
+                ?10, ?11,
+                ?12, ?13, ?14,
+                ?15,
+                ?16, ?17, ?18,
+                ?19, ?20,
+                ?21, ?22, ?23
             )
             ON CONFLICT(actor_serial_number, actor_realm_id, service_name)
             DO UPDATE SET
+                actor_manufacturer = excluded.actor_manufacturer,
+                actor_device_name = excluded.actor_device_name,
+                actor_version = excluded.actor_version,
                 message_types = excluded.message_types,
                 capabilities_json = excluded.capabilities_json,
                 status = excluded.status,
@@ -215,6 +224,7 @@ impl ServiceRegistryStorage {
         .bind(actor_realm.realm_id as i64)
         .bind(&actor_type.manufacturer)
         .bind(&actor_type.name)
+        .bind(&actor_type.version)
         .bind(&service.service_name)
         .bind(&message_types_json)
         .bind(capabilities_json.as_deref())
@@ -310,6 +320,7 @@ impl ServiceRegistryStorage {
             r#"
             SELECT
                 actor_serial_number, actor_realm_id, actor_manufacturer, actor_device_name,
+                actor_version,
                 service_name, message_types, capabilities_json, status,
                 service_spec_blob, acl_blob,
                 service_availability_state, power_reserve, mailbox_backlog,
@@ -363,6 +374,7 @@ impl ServiceRegistryStorage {
             r#"
             SELECT
                 actor_serial_number, actor_realm_id, actor_manufacturer, actor_device_name,
+                actor_version,
                 service_name, message_types, capabilities_json, status,
                 service_spec_blob, acl_blob,
                 service_availability_state, power_reserve, mailbox_backlog,
@@ -371,14 +383,20 @@ impl ServiceRegistryStorage {
                 sticky_client_ids, ws_address,
                 last_heartbeat_at
             FROM service_registry
-            WHERE actor_serial_number = ?1 
-              AND actor_realm_id = ?2 
-              AND expires_at > ?3
+            WHERE actor_serial_number = ?1
+              AND actor_realm_id = ?2
+              AND actor_manufacturer = ?3
+              AND actor_device_name = ?4
+              AND actor_version = ?5
+              AND expires_at > ?6
             ORDER BY service_name
             "#,
         )
         .bind(actor_id.serial_number as i64)
         .bind(actor_id.realm.realm_id as i64)
+        .bind(&actor_id.r#type.manufacturer)
+        .bind(&actor_id.r#type.name)
+        .bind(&actor_id.r#type.version)
         .bind(now as i64)
         .fetch_all(&self.pool)
         .await?;
@@ -432,7 +450,7 @@ impl ServiceRegistryStorage {
 
     /// 将数据库行转换为 ServiceInfo
     fn row_to_service_info(&self, row: sqlx::sqlite::SqliteRow) -> Result<ServiceInfo> {
-        use sqlx::Row;
+        let actor_version: String = row.get("actor_version");
 
         // ActorId
         let actor_id = ActrId {
@@ -443,7 +461,7 @@ impl ServiceRegistryStorage {
             r#type: actr_protocol::ActrType {
                 manufacturer: row.get("actor_manufacturer"),
                 name: row.get("actor_device_name"),
-                version: String::new(),
+                version: actor_version,
             },
         };
 
@@ -623,7 +641,33 @@ mod tests {
         let loaded = storage.load_all_services().await.unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].service_name, "test-service");
-        assert_eq!(loaded[0].actor_id.serial_number, 1);
+        assert_eq!(loaded[0].actor_id, service.actor_id);
+
+        let loaded_by_actor = storage
+            .load_services_by_actor_id(&service.actor_id)
+            .await
+            .unwrap();
+        assert_eq!(loaded_by_actor.len(), 1);
+        assert_eq!(loaded_by_actor[0].actor_id, service.actor_id);
+    }
+
+    #[tokio::test]
+    async fn test_load_by_actor_requires_exact_type() {
+        let storage = ServiceRegistryStorage::new(":memory:", Some(3600))
+            .await
+            .unwrap();
+
+        let service = create_test_service(1, "test-service");
+        storage.save_service(&service).await.unwrap();
+
+        let mut wrong_version = service.actor_id.clone();
+        wrong_version.r#type.version = "2.0.0".to_string();
+
+        let loaded = storage
+            .load_services_by_actor_id(&wrong_version)
+            .await
+            .unwrap();
+        assert!(loaded.is_empty());
     }
 
     #[tokio::test]
