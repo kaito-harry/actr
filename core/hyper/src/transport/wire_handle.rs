@@ -45,6 +45,16 @@ pub trait WireHandle: Send + Sync + std::fmt::Debug {
     /// Close connection
     async fn close(&self) -> NetworkResult<()>;
 
+    /// Close connection without waiting for graceful transport draining.
+    ///
+    /// Recovery paths call this after receiving a terminal close event, where
+    /// waiting for an already-unusable transport can delay upper-layer cleanup.
+    /// Transports without a distinct immediate-close mode retain the normal
+    /// close behavior by default.
+    async fn close_immediately(&self) -> NetworkResult<()> {
+        self.close().await
+    }
+
     /// Get or create DataLane (with caching)
     async fn get_lane(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>>;
 

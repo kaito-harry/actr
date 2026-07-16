@@ -74,12 +74,26 @@ struct BackgroundTasks {
     handles: Vec<tokio::task::JoinHandle<()>>,
 }
 
+impl BackgroundTasks {
+    async fn shutdown(mut self) {
+        for handle in self.handles.drain(..) {
+            handle.abort();
+            let _ = handle.await;
+        }
+    }
+}
+
 impl Drop for BackgroundTasks {
     fn drop(&mut self) {
         for handle in &self.handles {
             handle.abort();
         }
     }
+}
+
+async fn shutdown_scenario(harness: TestHarness, background_tasks: BackgroundTasks) {
+    background_tasks.shutdown().await;
+    harness.shutdown().await;
 }
 
 fn init_tracing() {
@@ -635,7 +649,7 @@ async fn submit_mobile_event(
 
 async fn inflight_short_offline_recovers_original_request(case: RoleCase) {
     for direction in case.directions() {
-        let (harness, _bg_tasks) =
+        let (harness, background_tasks) =
             setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
         let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
         let request_id = format!("{}_{}_inflight_short_offline", case.name, direction.name);
@@ -672,12 +686,13 @@ async fn inflight_short_offline_recovers_original_request(case: RoleCase) {
 
         assert_payload_integrity(&request_id, &response, &data, &hash);
         assert_pending_empty(&harness, direction.from_serial, &request_id).await;
+        shutdown_scenario(harness, background_tasks).await;
     }
 }
 
 async fn inflight_network_type_switch_recovers_or_retries_once(case: RoleCase) {
     for direction in case.directions() {
-        let (harness, _bg_tasks) =
+        let (harness, background_tasks) =
             setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
         let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
         let request_id = format!(
@@ -745,12 +760,13 @@ async fn inflight_network_type_switch_recovers_or_retries_once(case: RoleCase) {
                 "network type switch request should succeed or time out before one retry: {err}"
             ),
         }
+        shutdown_scenario(harness, background_tasks).await;
     }
 }
 
 async fn inflight_long_offline_fails_bounded_then_retries(case: RoleCase) {
     for direction in case.directions() {
-        let (harness, _bg_tasks) =
+        let (harness, background_tasks) =
             setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
         let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
         let request_id = format!("{}_{}_inflight_long_offline", case.name, direction.name);
@@ -817,12 +833,14 @@ async fn inflight_long_offline_fails_bounded_then_retries(case: RoleCase) {
             Duration::from_secs(25),
         )
         .await;
+        drop(release_send);
+        shutdown_scenario(harness, background_tasks).await;
     }
 }
 
 async fn inflight_short_background_survives_foreground_restore(case: RoleCase) {
     for direction in case.directions() {
-        let (harness, _bg_tasks) =
+        let (harness, background_tasks) =
             setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
         let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
         let request_id = format!("{}_{}_inflight_short_background", case.name, direction.name);
@@ -872,12 +890,13 @@ async fn inflight_short_background_survives_foreground_restore(case: RoleCase) {
             Duration::from_secs(30),
         )
         .await;
+        shutdown_scenario(harness, background_tasks).await;
     }
 }
 
 async fn inflight_long_background_is_bounded_and_retries(case: RoleCase) {
     for direction in case.directions() {
-        let (harness, _bg_tasks) =
+        let (harness, background_tasks) =
             setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
         let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
         let request_id = format!("{}_{}_inflight_long_background", case.name, direction.name);
@@ -931,12 +950,13 @@ async fn inflight_long_background_is_bounded_and_retries(case: RoleCase) {
             Duration::from_secs(25),
         )
         .await;
+        shutdown_scenario(harness, background_tasks).await;
     }
 }
 
 async fn mobile_large_message_baseline_after_recovery(case: RoleCase) {
     for direction in case.directions() {
-        let (harness, _bg_tasks) =
+        let (harness, background_tasks) =
             setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
         let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
         let request_id = format!("{}_{}_mobile_large_baseline", case.name, direction.name);
@@ -951,12 +971,13 @@ async fn mobile_large_message_baseline_after_recovery(case: RoleCase) {
             Duration::from_secs(30),
         )
         .await;
+        shutdown_scenario(harness, background_tasks).await;
     }
 }
 
 async fn mobile_data_chunk_channel_close_emits_delivery_uncertain_hook(case: RoleCase) {
     for direction in case.directions() {
-        let (harness, _bg_tasks) =
+        let (harness, background_tasks) =
             setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
         let target_id = harness.peer(direction.to_serial).id.clone();
 
@@ -1064,12 +1085,13 @@ async fn mobile_data_chunk_channel_close_emits_delivery_uncertain_hook(case: Rol
             }
             other => panic!("unexpected hook event: {other:?}"),
         }
+        shutdown_scenario(harness, background_tasks).await;
     }
 }
 
 async fn inflight_data_chunk_long_offline_is_bounded_or_delivery_uncertain(case: RoleCase) {
     for direction in case.directions() {
-        let (harness, _bg_tasks) =
+        let (harness, background_tasks) =
             setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
         let target_id = harness.peer(direction.to_serial).id.clone();
 
@@ -1185,6 +1207,7 @@ async fn inflight_data_chunk_long_offline_is_bounded_or_delivery_uncertain(case:
             Duration::from_secs(25),
         )
         .await;
+        shutdown_scenario(harness, background_tasks).await;
     }
 }
 
@@ -1193,7 +1216,7 @@ async fn mobile_event_storm_during_call_and_data_chunk_does_not_hang() {
     init_tracing();
 
     for case in ROLE_CASES {
-        let (harness, _bg_tasks) =
+        let (harness, background_tasks) =
             setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
         let server_id = harness.peer(case.server_serial).id.clone();
         let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
@@ -1280,6 +1303,7 @@ async fn mobile_event_storm_during_call_and_data_chunk_does_not_hang() {
             Duration::from_secs(30),
         )
         .await;
+        shutdown_scenario(harness, background_tasks).await;
     }
 }
 

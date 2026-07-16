@@ -268,8 +268,11 @@ pub trait SignalingClient: Send + Sync {
     /// This is required before re-registration when the credential has expired.
     async fn clear_identity(&self);
 
-    /// Set a lifecycle hook callback that will be invoked (and awaited)
-    /// whenever signaling state changes (connect/disconnect).
+    /// Set a lifecycle hook callback for signaling state changes.
+    ///
+    /// State-transition paths normally await the callback. Envelope send
+    /// failures dispatch it asynchronously because their callers may hold a
+    /// peer signaling commit gate that re-entrant cleanup also needs.
     /// Default implementation is a no-op for clients that don't support hooks.
     fn set_hook_callback(&self, _cb: HookCallback) {}
 }
@@ -305,6 +308,10 @@ pub enum DisconnectReason {
     PongTimeout,
     /// Failed to send a WebSocket Ping frame.
     PingSendFailed,
+    /// Failed to send a signaling envelope on the active WebSocket.
+    SendFailed,
+    /// Timed out waiting for the signaling sink or sending an envelope.
+    SendTimeout,
     /// Credential expired (heartbeat 401).
     CredentialExpired,
     /// Explicit disconnect() call or external trigger.
@@ -370,10 +377,10 @@ pub enum HookEvent {
     },
 }
 
-/// Callback closure that is awaited when a hook event occurs.
+/// Callback closure used when a hook event occurs.
 ///
-/// Set once via `set_hook_callback()`. All state-change paths invoke this
-/// closure and `.await` its result before proceeding.
+/// Set once via `set_hook_callback()`. State-change paths normally await it;
+/// see [`SignalingClient::set_hook_callback`] for the send-failure exception.
 pub type HookCallback =
     Arc<dyn Fn(HookEvent) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
@@ -503,6 +510,57 @@ impl WebSocketSignalingClient {
         }
 
         true
+    }
+
+    /// Invalidate an unusable signaling socket after an envelope send failure.
+    ///
+    /// The envelope outcome is indeterminate once the send has failed or timed
+    /// out, so callers must not retry it in place. Stop the old socket tasks,
+    /// publish one disconnected transition, and wake the reconnect manager so
+    /// a later negotiation can use a fresh signaling session.
+    async fn handle_envelope_send_failure(&self, reason: DisconnectReason) {
+        self.stats.errors.fetch_add(1, Ordering::Relaxed);
+
+        let was_connected = self.connected.swap(false, Ordering::AcqRel);
+        if !was_connected {
+            return;
+        }
+
+        // Prevent tasks belonging to the failed socket from observing a later
+        // reconnect and mutating the new connection's shared state.
+        if let Some(handle) = self.ping_task.lock().await.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.receiver_task.lock().await.take() {
+            handle.abort();
+        }
+
+        // The timed-out operation has normally released the sink lock already.
+        // Avoid extending the public five-second send bound if another operation
+        // still owns it; the next successful connect will replace the old sink.
+        if let Ok(mut sink_guard) = self.ws_sink.try_lock() {
+            sink_guard.take();
+        }
+
+        self.drop_pending_replies("signaling envelope send failure")
+            .await;
+        self.drop_pending_pongs("signaling envelope send failure")
+            .await;
+
+        self.stats.disconnections.fetch_add(1, Ordering::Relaxed);
+        let _ = self.event_tx.send(SignalingEvent::Disconnected { reason });
+        if self.config.reconnect_config.enabled {
+            self.reconnect_notify.notify_one();
+        }
+
+        // send_envelope() may be called while a peer signaling commit gate is
+        // held. Run the externally supplied hook after this method returns so
+        // a re-entrant cleanup from the hook cannot wait on that same gate.
+        if let Some(cb) = self.hook_callback.get().cloned() {
+            tokio::spawn(async move {
+                cb(HookEvent::SignalingDisconnected).await;
+            });
+        }
     }
 
     pub fn start_reconnect_manager(self: &Arc<Self>) {
@@ -1973,34 +2031,58 @@ impl SignalingClient for WebSocketSignalingClient {
             ));
         }
 
-        let mut sink_guard = self.ws_sink.lock().await;
-
-        if let Some(sink) = sink_guard.as_mut() {
-            // using protobuf binary serialization
-            let mut buf = Vec::new();
-            envelope.encode(&mut buf)?;
-            let msg = tokio_tungstenite::tungstenite::Message::Binary(buf.into());
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(SIGNALING_SEND_TIMEOUT_SECS),
-                sink.send(msg),
-            )
-            .await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => return Err(e.into()),
-                Err(_) => {
-                    self.connected.store(false, Ordering::Release);
+        // Bound the complete commit, including contention on the shared sink
+        // mutex. Timing out only `sink.send()` still permits an unbounded wait
+        // before the send future is ever created.
+        let mut buf = Vec::new();
+        envelope.encode(&mut buf)?;
+        let msg = tokio_tungstenite::tungstenite::Message::Binary(buf.into());
+        let send_result = tokio::time::timeout(
+            std::time::Duration::from_secs(SIGNALING_SEND_TIMEOUT_SECS),
+            async {
+                let mut sink_guard = self.ws_sink.lock().await;
+                if !self.connected.load(Ordering::Acquire) {
                     return Err(NetworkError::ConnectionError(
-                        "Signaling WebSocket send timed out".to_string(),
+                        "Cannot send: WebSocket disconnected while waiting for sink".to_string(),
                     ));
                 }
-            }
+                match sink_guard.as_mut() {
+                    Some(sink) => sink.send(msg).await.map_err(NetworkError::from),
+                    None => Err(NetworkError::ConnectionError("Not connected".to_string())),
+                }
+            },
+        )
+        .await;
 
-            self.stats.messages_sent.fetch_add(1, Ordering::Relaxed);
-            tracing::debug!("Stats: {:?}", self.stats.snapshot());
-            Ok(())
-        } else {
-            Err(NetworkError::ConnectionError("Not connected".to_string()))
+        match send_result {
+            Ok(Ok(())) => {
+                if !self.connected.load(Ordering::Acquire) {
+                    self.stats.errors.fetch_add(1, Ordering::Relaxed);
+                    return Err(NetworkError::ConnectionError(
+                        "Signaling send completed after the WebSocket was invalidated".to_string(),
+                    ));
+                }
+                self.stats.messages_sent.fetch_add(1, Ordering::Relaxed);
+                tracing::debug!("Stats: {:?}", self.stats.snapshot());
+                Ok(())
+            }
+            Ok(Err(err)) => {
+                tracing::warn!("Signaling envelope send failed: {err}");
+                self.handle_envelope_send_failure(DisconnectReason::SendFailed)
+                    .await;
+                Err(err)
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Signaling WebSocket sink lock/send timed out after {}s",
+                    SIGNALING_SEND_TIMEOUT_SECS
+                );
+                self.handle_envelope_send_failure(DisconnectReason::SendTimeout)
+                    .await;
+                Err(NetworkError::ConnectionError(
+                    "Signaling WebSocket sink lock/send timed out".to_string(),
+                ))
+            }
         }
     }
 

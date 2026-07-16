@@ -393,6 +393,30 @@ impl TestHarness {
         self.vnet.as_ref().is_some_and(|v| v.is_blocked())
     }
 
+    /// Stop every resource owned by the harness and wait for background tasks
+    /// to terminate. Long-running recovery tests create several harnesses in a
+    /// single process, so relying on `Drop` would leave signaling reconnect
+    /// loops alive after their mock server has gone away.
+    pub async fn shutdown(mut self) {
+        for handle in self._bg_tasks.drain(..) {
+            handle.abort();
+            let _ = handle.await;
+        }
+
+        for peer in self.peers.values() {
+            peer.coordinator.shutdown_background_tasks().await;
+        }
+
+        for peer in self.peers.values() {
+            let _ = peer.transport_manager.close_all().await;
+            let _ = peer.coordinator.close_all_peers().await;
+            let _ = peer.signaling_client.disconnect().await;
+        }
+        self.peers.clear();
+
+        self.server.shutdown().await;
+    }
+
     /// Wait until the signaling server's ICE restart count increases beyond `min_count`.
     ///
     /// # Arguments

@@ -161,6 +161,108 @@ async fn probe_alive_times_out_when_sink_lock_is_stalled() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn send_envelope_times_out_while_waiting_for_sink_lock() {
+    let client = make_ws_client(make_config());
+    client.connected.store(true, Ordering::Release);
+    let mut events = client.subscribe_events();
+    let _sink_guard = client.ws_sink.lock().await;
+
+    let send_task = {
+        let client = Arc::clone(&client);
+        tokio::spawn(async move { client.send_envelope(SignalingEnvelope::default()).await })
+    };
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(SIGNALING_SEND_TIMEOUT_SECS + 1)).await;
+
+    let err = send_task
+        .await
+        .expect("send task should join")
+        .expect_err("stalled sink lock should time out");
+    assert!(
+        err.to_string().contains("sink lock/send timed out"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        !client.is_connected(),
+        "a timed-out signaling commit should mark the socket disconnected"
+    );
+    assert_eq!(client.get_stats().disconnections, 1);
+    assert_eq!(client.get_stats().errors, 1);
+    assert!(matches!(
+        events.recv().await,
+        Ok(SignalingEvent::Disconnected {
+            reason: DisconnectReason::SendTimeout
+        })
+    ));
+    tokio::time::timeout(Duration::from_secs(1), client.reconnect_notify.notified())
+        .await
+        .expect("send timeout should wake the reconnect manager");
+}
+
+#[tokio::test]
+async fn send_envelope_failure_publishes_disconnect_and_requests_reconnect() {
+    let client = make_ws_client(make_config());
+    client.connected.store(true, Ordering::Release);
+    let mut events = client.subscribe_events();
+
+    let err = client
+        .send_envelope(SignalingEnvelope::default())
+        .await
+        .expect_err("a connected flag without a WebSocket sink should fail");
+    assert!(
+        err.to_string().contains("Not connected"),
+        "unexpected error: {err}"
+    );
+    assert!(!client.is_connected());
+    assert_eq!(client.get_stats().disconnections, 1);
+    assert_eq!(client.get_stats().errors, 1);
+    assert!(matches!(
+        events.recv().await,
+        Ok(SignalingEvent::Disconnected {
+            reason: DisconnectReason::SendFailed
+        })
+    ));
+    tokio::time::timeout(Duration::from_secs(1), client.reconnect_notify.notified())
+        .await
+        .expect("send failure should wake the reconnect manager");
+}
+
+#[tokio::test]
+async fn send_envelope_failure_does_not_wait_for_reentrant_hook() {
+    let client = make_ws_client(make_config());
+    client.connected.store(true, Ordering::Release);
+
+    let hook_entered = Arc::new(tokio::sync::Notify::new());
+    let hook_release = Arc::new(tokio::sync::Notify::new());
+    let hook_entered_for_cb = hook_entered.clone();
+    let hook_release_for_cb = hook_release.clone();
+    client.set_hook_callback(Arc::new(move |event| {
+        let hook_entered = hook_entered_for_cb.clone();
+        let hook_release = hook_release_for_cb.clone();
+        Box::pin(async move {
+            if matches!(event, HookEvent::SignalingDisconnected) {
+                hook_entered.notify_one();
+                hook_release.notified().await;
+            }
+        })
+    }));
+
+    tokio::time::timeout(
+        Duration::from_millis(250),
+        client.send_envelope(SignalingEnvelope::default()),
+    )
+    .await
+    .expect("send failure must return without waiting for the hook")
+    .expect_err("missing WebSocket sink should fail");
+
+    tokio::time::timeout(Duration::from_millis(250), hook_entered.notified())
+        .await
+        .expect("disconnected hook should still be invoked");
+    hook_release.notify_one();
+    tokio::task::yield_now().await;
+}
+
 #[tokio::test]
 async fn explicit_connect_once_retries_after_concurrent_attempt_fails() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

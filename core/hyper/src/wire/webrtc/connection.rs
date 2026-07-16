@@ -28,6 +28,22 @@ type LaneCache<const N: usize> = Arc<RwLock<[Option<Arc<dyn DataLane>>; N]>>;
 
 const PEER_CONNECTION_CLOSE_TIMEOUT: Duration = Duration::from_millis(500);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WebRtcCloseMode {
+    Graceful,
+    Immediate,
+}
+
+fn should_wait_for_data_channel_drain(
+    close_mode: WebRtcCloseMode,
+    connection_state: RTCPeerConnectionState,
+    buffered_amount: usize,
+) -> bool {
+    close_mode == WebRtcCloseMode::Graceful
+        && buffered_amount > 0
+        && connection_state == RTCPeerConnectionState::Connected
+}
+
 /// WebRtcConnection - WebRTC P2P Connect
 #[derive(Clone)]
 pub(crate) struct WebRtcConnection {
@@ -220,10 +236,18 @@ impl WebRtcConnection {
     ///
     /// Polls `buffered_amount()` up to 50 times with 100 ms intervals (max 5 s total).
     /// Logs a warning if the buffer is still non-zero when the timeout expires.
-    async fn drain_data_channels(&self) {
+    async fn drain_data_channels(&self, close_mode: WebRtcCloseMode) {
         use webrtc::data_channel::data_channel_state::RTCDataChannelState;
         const MAX_POLLS: u32 = 50;
         const POLL_INTERVAL_MS: u64 = 100;
+
+        if close_mode == WebRtcCloseMode::Immediate {
+            tracing::debug!(
+                peer_id = %self.peer_id,
+                "Skipping DataChannel send-buffer drain for immediate WebRTC close"
+            );
+            return;
+        }
 
         // Snapshot open channels first, then release the lock before any async waits.
         let open_channels: Vec<(usize, Arc<RTCDataChannel>)> = {
@@ -260,6 +284,20 @@ impl WebRtcConnection {
                     break;
                 }
 
+                let connection_state = self.peer_connection.connection_state();
+                if !should_wait_for_data_channel_drain(close_mode, connection_state, buffered) {
+                    tracing::warn!(
+                        peer_id = %self.peer_id,
+                        channel = %label,
+                        channel_idx = idx,
+                        connection_state = ?connection_state,
+                        buffered_bytes = buffered,
+                        "Skipping DataChannel send-buffer drain because PeerConnection is not connected; \
+                         data may be lost for the peer",
+                    );
+                    return;
+                }
+
                 if attempt == MAX_POLLS - 1 {
                     tracing::warn!(
                         peer_id = %self.peer_id,
@@ -280,7 +318,7 @@ impl WebRtcConnection {
     ///
     /// This method is idempotent: only the first call performs the actual close.
     /// Subsequent calls return Ok(()) immediately.
-    pub async fn close(&self) -> NetworkResult<()> {
+    async fn close_with_mode(&self, close_mode: WebRtcCloseMode) -> NetworkResult<()> {
         // Idempotent: only execute once per session
         if !self.session.try_close() {
             tracing::debug!(
@@ -301,8 +339,10 @@ impl WebRtcConnection {
         );
         *self.connected.write().await = false;
 
-        // Drain DataChannel send buffers before closing (graceful shutdown).
-        self.drain_data_channels().await;
+        // Forced recovery must not infer transport liveness from a potentially
+        // stale PeerConnection::Connected snapshot. Only explicitly graceful
+        // shutdowns wait for DataChannel buffers to drain.
+        self.drain_data_channels(close_mode).await;
 
         // Notify upper layers before awaiting RTCPeerConnection::close().
         // Mobile background/resume paths can stall inside the lower-level close
@@ -407,6 +447,20 @@ impl WebRtcConnection {
         }
 
         Ok(())
+    }
+
+    /// Gracefully close the WebRTC connection, draining queued DataChannel data
+    /// while the PeerConnection still reports a usable transport.
+    pub async fn close(&self) -> NetworkResult<()> {
+        self.close_with_mode(WebRtcCloseMode::Graceful).await
+    }
+
+    /// Close without waiting for DataChannel buffers.
+    ///
+    /// Recovery and abnormal cleanup paths use this because WebRTC state can
+    /// remain `Connected` after the underlying mobile network path is gone.
+    pub(crate) async fn close_immediately(&self) -> NetworkResult<()> {
+        self.close_with_mode(WebRtcCloseMode::Immediate).await
     }
 
     /// based on PayloadType configuration DataChannel
@@ -1052,6 +1106,10 @@ impl WireHandle for WebRtcConnection {
 
     async fn close(&self) -> NetworkResult<()> {
         Self::close(self).await
+    }
+
+    async fn close_immediately(&self) -> NetworkResult<()> {
+        Self::close_immediately(self).await
     }
 
     async fn get_lane(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {

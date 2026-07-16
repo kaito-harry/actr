@@ -4,6 +4,7 @@
 
 use crate::lifecycle::CredentialState;
 use crate::transport::NetworkResult;
+use actr_protocol::IceCandidate;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
@@ -564,21 +565,36 @@ impl WebRtcNegotiator {
     ///
     /// # Arguments
     /// - `peer_connection`: PeerConnection
-    /// - `candidate`: ICE Candidate string
+    /// - `candidate`: ICE Candidate and its ICE-generation metadata
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(level = "trace", skip_all, fields(candidate_len = candidate.len()))
+        tracing::instrument(
+            level = "trace",
+            skip_all,
+            fields(candidate_len = candidate.candidate.len())
+        )
     )]
     pub async fn add_ice_candidate(
         &self,
         peer_connection: &RTCPeerConnection,
-        candidate: String,
+        candidate: IceCandidate,
     ) -> NetworkResult<()> {
         use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 
+        let sdp_mline_index = candidate
+            .sdp_mline_index
+            .map(u16::try_from)
+            .transpose()
+            .map_err(|_| {
+                crate::transport::NetworkError::InvalidArgument(
+                    "ICE candidate sdp_mline_index exceeds u16".to_string(),
+                )
+            })?;
         let ice_candidate = RTCIceCandidateInit {
-            candidate,
-            ..Default::default()
+            candidate: candidate.candidate,
+            sdp_mid: candidate.sdp_mid,
+            sdp_mline_index,
+            username_fragment: candidate.username_fragment,
         };
 
         peer_connection.add_ice_candidate(ice_candidate).await?;

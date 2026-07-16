@@ -425,6 +425,36 @@ async fn run_hard_rebind(
     let _old = session.commit_hard_rebind(new_snapshot.clone()).await;
 
     if let Some(handles) = hard_rebind_handles {
+        let _cleanup_guard = handles
+            .webrtc_coordinator
+            .as_ref()
+            .map(|coordinator| coordinator.cleanup_guard());
+
+        // Stop ingress on the old authenticated socket before draining peer
+        // state. Otherwise a delayed old-identity Offer or RoleAssignment can
+        // recreate a peer between close-all and disconnect.
+        if let Err(err) = handles.signaling_client.disconnect().await {
+            tracing::warn!(error = %err, "hard rebind signaling disconnect failed");
+        }
+
+        if let Some(coordinator) = handles.webrtc_coordinator.as_ref()
+            && let Err(err) = coordinator.close_all_peers_immediately().await
+        {
+            tracing::warn!(error = %err, "hard rebind failed to close old WebRTC peers");
+        }
+        if let Some(peer_transport) = handles.peer_transport.as_ref()
+            && let Err(err) = peer_transport.close_all().await
+        {
+            tracing::warn!(error = %err, "hard rebind failed to close old peer transports");
+        }
+        // Finalize after cancelling PeerTransport creators that may have
+        // crossed the first coordinator drain.
+        if let Some(coordinator) = handles.webrtc_coordinator.as_ref()
+            && let Err(err) = coordinator.close_all_peers_immediately().await
+        {
+            tracing::warn!(error = %err, "hard rebind failed to finalize WebRTC peer cleanup");
+        }
+
         handles
             .credential_state
             .update(
@@ -443,25 +473,13 @@ async fn run_hard_rebind(
             .set_credential_state(handles.credential_state.clone())
             .await;
 
-        if let Some(coordinator) = handles.webrtc_coordinator {
+        if let Some(coordinator) = handles.webrtc_coordinator.as_ref() {
             coordinator
                 .set_local_id(new_snapshot.actor_id.clone())
                 .await;
-            if let Err(err) = coordinator.close_all_peers().await {
-                tracing::warn!(error = %err, "hard rebind failed to close old WebRTC peers");
-            }
         }
-        if let Some(gate) = handles.webrtc_gate {
+        if let Some(gate) = handles.webrtc_gate.as_ref() {
             gate.set_local_id(new_snapshot.actor_id.clone()).await;
-        }
-        if let Some(peer_transport) = handles.peer_transport
-            && let Err(err) = peer_transport.close_all().await
-        {
-            tracing::warn!(error = %err, "hard rebind failed to close old peer transports");
-        }
-
-        if let Err(err) = handles.signaling_client.disconnect().await {
-            tracing::warn!(error = %err, "hard rebind signaling disconnect failed");
         }
         match handles.signaling_client.connect_once().await {
             Ok(()) => session.set_active().await,

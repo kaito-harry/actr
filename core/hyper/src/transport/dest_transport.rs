@@ -291,7 +291,7 @@ impl DestTransport {
     /// the same peer should remain alive (e.g. for response routing).
     pub(crate) async fn close_connection(&self, conn_type: ConnType) -> NetworkResult<()> {
         if let Some(conn) = self.conn_mgr.get_connection(conn_type).await {
-            if let Err(e) = conn.close().await {
+            if let Err(e) = conn.close_immediately().await {
                 tracing::warn!("Failed to close {:?} connection: {}", conn_type, e);
             } else {
                 tracing::debug!("Closed {:?} connection", conn_type);

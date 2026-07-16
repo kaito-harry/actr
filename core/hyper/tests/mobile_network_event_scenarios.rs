@@ -69,6 +69,15 @@ struct BackgroundTasks {
     handles: Vec<tokio::task::JoinHandle<()>>,
 }
 
+impl BackgroundTasks {
+    async fn shutdown(mut self) {
+        for handle in self.handles.drain(..) {
+            handle.abort();
+            let _ = handle.await;
+        }
+    }
+}
+
 impl Drop for BackgroundTasks {
     fn drop(&mut self) {
         for handle in &self.handles {
@@ -1227,6 +1236,7 @@ async fn test_mobile_app_kill_cleanup_then_restart_online_recovers_bidirectional
 
         let mobile_router = bg_tasks.handles.remove(0);
         mobile_router.abort();
+        let _ = mobile_router.await;
         assert!(
             !harness
                 .peer(case.mobile_serial)
@@ -1308,6 +1318,9 @@ async fn test_mobile_app_kill_cleanup_then_restart_online_recovers_bidirectional
             0,
             "{label} server should not leak pending requests after restart"
         );
+
+        bg_tasks.shutdown().await;
+        harness.shutdown().await;
     }
 }
 
@@ -1344,6 +1357,7 @@ async fn test_mobile_app_kill_restart_offline_bounds_server_send_until_online_re
 
         let mobile_router = bg_tasks.handles.remove(0);
         mobile_router.abort();
+        let _ = mobile_router.await;
         wait_for_transport_dest_count(
             &harness,
             case.mobile_serial,
@@ -1435,6 +1449,9 @@ async fn test_mobile_app_kill_restart_offline_bounds_server_send_until_online_re
             0,
             "{label} server should not leak pending requests after online restore"
         );
+
+        bg_tasks.shutdown().await;
+        harness.shutdown().await;
     }
 }
 
@@ -1445,7 +1462,7 @@ async fn test_complex_mobile_event_storms_with_real_network_outage() {
     init_tracing();
 
     for case in ROLE_CASES {
-        let (harness, _bg_tasks) = setup_bidirectional_mobile_server_harness(case).await;
+        let (harness, bg_tasks) = setup_bidirectional_mobile_server_harness(case).await;
         harness.reset_counters();
 
         harness.simulate_disconnect();
@@ -1534,6 +1551,9 @@ async fn test_complex_mobile_event_storms_with_real_network_outage() {
             Duration::from_secs(15),
         )
         .await;
+
+        bg_tasks.shutdown().await;
+        harness.shutdown().await;
     }
 }
 
@@ -1544,7 +1564,7 @@ async fn test_mobile_network_event_handle_storm_then_call_and_data_chunk_are_bou
     init_tracing();
 
     for case in ROLE_CASES {
-        let (harness, _bg_tasks) = setup_bidirectional_mobile_server_harness(case).await;
+        let (harness, bg_tasks) = setup_bidirectional_mobile_server_harness(case).await;
         harness.reset_counters();
 
         let processor: Arc<dyn NetworkEventProcessor> =
@@ -1624,5 +1644,7 @@ async fn test_mobile_network_event_handle_storm_then_call_and_data_chunk_are_bou
         reconciler
             .await
             .expect("network event reconciler should not panic");
+        bg_tasks.shutdown().await;
+        harness.shutdown().await;
     }
 }

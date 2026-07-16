@@ -735,55 +735,85 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
     /// - Intended for app lifecycle management, not network event response
     async fn cleanup_connections(&self) -> Result<(), String> {
         let _cleanup_guard = self.lifecycle_barrier();
+        let mut cleanup_error = None;
+        let mut initial_coordinator_close_failed = false;
 
         tracing::info!("🧹 Manually cleaning up all connections...");
 
-        // Step 1: Clear pending ICE restart attempts
-        if let Some(ref coordinator) = self.webrtc_coordinator {
-            tracing::info!("♻️  Clearing pending ICE restart attempts...");
-            coordinator.clear_pending_restarts().await;
-        }
-
-        // Step 2: Cancel PeerTransport singleflight and close established transports.
-        if let Some(ref peer_transport) = self.peer_transport {
-            tracing::info!("🔻 Closing all PeerTransport connections...");
-            if let Err(e) = peer_transport.close_all().await {
-                let err_msg = format!("Failed to close peer transports: {}", e);
-                tracing::warn!("⚠️  {}", err_msg);
-                // Do not fail the whole cleanup; continue releasing other resources.
-            } else {
-                tracing::info!("✅ All PeerTransport connections closed");
-            }
-        }
-
-        // Step 3: Close all WebRTC peer connections
-        if let Some(ref coordinator) = self.webrtc_coordinator {
-            tracing::info!("🔻 Closing all WebRTC peer connections...");
-            if let Err(e) = coordinator.close_all_peers().await {
-                let err_msg = format!("Failed to close all peers: {}", e);
-                tracing::warn!("⚠️  {}", err_msg);
-                // Do not fail the whole cleanup; continue releasing other resources.
-            } else {
-                tracing::info!("✅ All WebRTC peer connections closed");
-            }
-        }
-
-        // Step 4: Proactively disconnect the WebSocket.
-        tracing::info!("🔌 Disconnecting WebSocket...");
+        // Step 1: Stop old signaling ingress before reopening any peer
+        // lifecycle. Disconnect resets the inbound queue, so delayed Offer,
+        // RoleAssignment, and ICE messages cannot repopulate state after drain.
+        tracing::info!("🔌 Disconnecting WebSocket before peer cleanup...");
         match self.signaling_client.disconnect().await {
             Ok(_) => {
                 tracing::info!("✅ WebSocket disconnected successfully");
             }
             Err(e) => {
-                let err_msg = format!("Failed to disconnect WebSocket: {}", e);
+                let err_msg = format!("Failed to disconnect WebSocket before cleanup: {e}");
                 tracing::warn!("⚠️  {}", err_msg);
-                // Do not fail the whole cleanup; continue releasing other resources.
+                cleanup_error = Some(err_msg);
             }
         }
 
-        tracing::info!("✅ Connection cleanup completed");
+        // Step 2: Clear pending ICE restart attempts.
+        if let Some(ref coordinator) = self.webrtc_coordinator {
+            tracing::info!("♻️  Clearing pending ICE restart attempts...");
+            coordinator.clear_pending_restarts().await;
+        }
 
-        Ok(())
+        // Step 3: Remove coordinator-owned peer sessions first and force-close
+        // them without draining DataChannels. On mobile, WebRTC may continue to
+        // report Connected after the OS route has disappeared, so a graceful
+        // drain here can only wait for data that can no longer be delivered.
+        if let Some(ref coordinator) = self.webrtc_coordinator {
+            tracing::info!("🔻 Force-closing all WebRTC peer connections...");
+            if let Err(e) = coordinator.close_all_peers_immediately().await {
+                let err_msg = format!("Failed to close all peers: {}", e);
+                tracing::warn!("⚠️  {}", err_msg);
+                initial_coordinator_close_failed = true;
+            } else {
+                tracing::info!("✅ All WebRTC peer connections closed");
+            }
+        }
+
+        // Step 4: Cancel PeerTransport singleflight and close any remaining
+        // established transport handles after the coordinator sessions are gone.
+        if let Some(ref peer_transport) = self.peer_transport {
+            tracing::info!("🔻 Closing all PeerTransport connections...");
+            if let Err(e) = peer_transport.close_all().await {
+                let err_msg = format!("Failed to close peer transports: {}", e);
+                tracing::warn!("⚠️  {}", err_msg);
+                cleanup_error.get_or_insert(err_msg);
+            } else {
+                tracing::info!("✅ All PeerTransport connections closed");
+            }
+        }
+
+        // Step 5: A cancelled PeerTransport creator may have crossed the first
+        // drain before observing its token. The signaling socket is already
+        // down, so this final authoritative sweep closes anything it handed to
+        // the coordinator without opening another ingress window.
+        if let Some(ref coordinator) = self.webrtc_coordinator {
+            tracing::info!("🔻 Finalizing WebRTC coordinator cleanup...");
+            if let Err(e) = coordinator.close_all_peers_immediately().await {
+                let err_msg = format!("Failed to finalize peer cleanup: {e}");
+                tracing::warn!("⚠️  {}", err_msg);
+                cleanup_error.get_or_insert(err_msg);
+            } else if initial_coordinator_close_failed {
+                tracing::info!("✅ Final WebRTC cleanup recovered the initial close failure");
+            }
+        }
+
+        if let Some(err) = cleanup_error {
+            tracing::warn!(
+                error = %err,
+                "Connection cleanup released remaining resources but did not fully quiesce"
+            );
+            Err(err)
+        } else {
+            tracing::info!("✅ Connection cleanup completed");
+            Ok(())
+        }
     }
 
     async fn probe_connectivity(&self) -> Result<(), String> {
