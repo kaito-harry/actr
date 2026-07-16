@@ -56,7 +56,7 @@ type LocalServiceMetadata = {
   methods: MethodMetadata[];
 };
 
-const VERSION = "0.5.1";
+const VERSION = "0.5.2";
 
 const plugin = createEcmaScriptPlugin<PluginParams>({
   name: "protoc-gen-actrframework-typescript",

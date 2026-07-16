@@ -23,7 +23,7 @@ fun main(args: Array<String>) {
     if (args.isNotEmpty()) {
         when (args[0]) {
             "--version", "-V" -> {
-                println("protoc-gen-actrframework-kotlin 0.5.1")
+                println("protoc-gen-actrframework-kotlin 0.5.2")
                 return
             }
             "--help", "-h" -> {
@@ -38,7 +38,7 @@ fun main(args: Array<String>) {
                 println("    Version info:     protoc-gen-actrframework-kotlin --version")
                 println()
                 println("VERSION:")
-                println("    0.5.1")
+                println("    0.5.2")
                 return
             }
         }
