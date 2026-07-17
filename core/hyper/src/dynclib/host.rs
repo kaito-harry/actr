@@ -5,10 +5,11 @@
 //! - `actr_init(vtable, init_ptr, init_len) -> i32`
 //! - `actr_handle(req_ptr, req_len, resp_out, resp_len_out) -> i32`
 //! - `actr_free_response(ptr, len)`
+//! - `actr_shutdown() -> i32`
 //!
 //! The guest library calls back into the host through a `HostVTable` passed at
 //! init time. VTable trampolines bridge the synchronous C ABI with the async
-//! Rust host ABI bridge via thread-local storage and `tokio::runtime::Handle`.
+//! Rust host ABI bridge through retained per-invocation tokens.
 //!
 //! Each loaded shared-library image currently supports exactly one logical actor
 //! instance. If the host wants to run two actors from the same dynclib package,
@@ -20,30 +21,14 @@
 //! explicit instance design at the ABI/runtime boundary instead of relying on
 //! module-global guest state.
 
-use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::Path;
 use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use actr_framework::guest::dynclib_abi::{self as guest_abi, AbiReply, InitPayloadV1};
 use libloading::Library;
-
-/// Wrapper around a raw pointer that is `Send`.
-///
-/// Safety: the caller must guarantee that the pointed-to value outlives the
-/// `SendPtr` and that no data races occur (i.e. exclusive or shared access
-/// rules are upheld externally).
-struct SendPtr<T>(*const T);
-
-// Safety: we ensure the pointed-to host ABI closure outlives the
-// `spawn_blocking` task by awaiting the task's completion before the
-// reference goes out of scope.
-unsafe impl<T> Send for SendPtr<T> {}
-
-impl<T> SendPtr<T> {
-    fn as_ptr(&self) -> *const T {
-        self.0
-    }
-}
 
 use actr_framework::guest::vtable::HostVTable;
 use actr_protocol::{ActrId, DataChunk};
@@ -78,28 +63,85 @@ type HandleFn = unsafe extern "C" fn(
 /// `actr_free_response(ptr: *mut u8, len: usize)`
 type FreeResponseFn = unsafe extern "C" fn(ptr: *mut u8, len: usize);
 
+/// `actr_shutdown() -> i32`
+type ShutdownFn = unsafe extern "C" fn() -> i32;
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Thread-local state for VTable trampolines
+// Retained host bridge registry
 // ─────────────────────────────────────────────────────────────────────────────
 
-thread_local! {
-    /// Pointer to the active `HostAbiFn` for the current dispatch.
-    static CURRENT_EXECUTOR: RefCell<Option<*const HostAbiFn>> = const { RefCell::new(None) };
-
-    /// Tokio runtime handle used by trampolines to block on async futures.
-    static TOKIO_HANDLE: RefCell<Option<tokio::runtime::Handle>> = const { RefCell::new(None) };
+struct BridgeEntry {
+    executor: HostAbiFn,
+    runtime: tokio::runtime::Handle,
+    retain_count: usize,
 }
 
-/// Install thread-local state before calling into the guest SO.
-fn install_thread_locals(executor: *const HostAbiFn, handle: tokio::runtime::Handle) {
-    CURRENT_EXECUTOR.with(|cell| *cell.borrow_mut() = Some(executor));
-    TOKIO_HANDLE.with(|cell| *cell.borrow_mut() = Some(handle));
+fn bridge_registry() -> &'static Mutex<HashMap<u64, BridgeEntry>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<u64, BridgeEntry>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Clear thread-local state after the guest SO returns.
-fn clear_thread_locals() {
-    CURRENT_EXECUTOR.with(|cell| *cell.borrow_mut() = None);
-    TOKIO_HANDLE.with(|cell| *cell.borrow_mut() = None);
+fn register_bridge(executor: &HostAbiFn, runtime: tokio::runtime::Handle) -> u64 {
+    static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
+    let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
+    bridge_registry()
+        .lock()
+        .expect("dynclib bridge registry poisoned")
+        .insert(
+            token,
+            BridgeEntry {
+                executor: executor.clone(),
+                runtime,
+                retain_count: 1,
+            },
+        );
+    token
+}
+
+fn retain_bridge(token: u64) -> bool {
+    let Ok(mut registry) = bridge_registry().lock() else {
+        return false;
+    };
+    let Some(entry) = registry.get_mut(&token) else {
+        return false;
+    };
+    entry.retain_count += 1;
+    true
+}
+
+fn release_bridge(token: u64) {
+    let Ok(mut registry) = bridge_registry().lock() else {
+        return;
+    };
+    let should_remove = match registry.get_mut(&token) {
+        Some(entry) if entry.retain_count > 1 => {
+            entry.retain_count -= 1;
+            false
+        }
+        Some(_) => true,
+        None => false,
+    };
+    if should_remove {
+        registry.remove(&token);
+    }
+}
+
+struct BridgeRegistration {
+    token: u64,
+}
+
+impl BridgeRegistration {
+    fn new(executor: &HostAbiFn) -> Self {
+        Self {
+            token: register_bridge(executor, tokio::runtime::Handle::current()),
+        }
+    }
+}
+
+impl Drop for BridgeRegistration {
+    fn drop(&mut self) {
+        release_bridge(self.token);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -133,44 +175,27 @@ unsafe fn host_alloc_and_write(data: &[u8], out_ptr: *mut *mut u8, out_len: *mut
     }
 }
 
-/// Execute a host operation through the thread-local `HostAbiFn`.
-///
-/// This blocks the current (blocking) thread by calling `Handle::block_on`
-/// on the tokio runtime handle saved in thread-local storage.
-///
-/// Returns the host operation result or an error code if the thread-local state is missing.
-fn trampoline_execute(pending: HostOperation) -> HostOperationResult {
-    let maybe_result = TOKIO_HANDLE.with(|h_cell| {
-        let h_borrow = h_cell.borrow();
-        let handle = match h_borrow.as_ref() {
-            Some(h) => h,
-            None => {
-                tracing::error!("dynclib trampoline: TOKIO_HANDLE not set");
-                return None;
-            }
-        };
-
-        CURRENT_EXECUTOR.with(|e_cell| {
-            let e_borrow = e_cell.borrow();
-            let executor_ptr = match *e_borrow {
-                Some(p) => p,
-                None => {
-                    tracing::error!("dynclib trampoline: CURRENT_EXECUTOR not set");
-                    return None;
-                }
-            };
-
-            // Safety: the pointer is valid for the duration of the dispatch
-            // (set in `DynclibInstance::handle` and cleared after the guest
-            // call returns).
-            let executor: &HostAbiFn = unsafe { &*executor_ptr };
-            let future = executor(pending);
-            // Block on the async future. This is safe because we are running
-            // inside `spawn_blocking`, not on a tokio worker thread.
-            Some(handle.block_on(future))
-        })
+/// Execute a host operation through a retained bridge token.
+fn trampoline_execute(token: u64, pending: HostOperation) -> HostOperationResult {
+    let bridge = bridge_registry().lock().ok().and_then(|registry| {
+        registry
+            .get(&token)
+            .map(|entry| (entry.executor.clone(), entry.runtime.clone()))
     });
-    maybe_result.unwrap_or(HostOperationResult::Error(guest_abi::code::GENERIC_ERROR))
+    let Some((executor, runtime)) = bridge else {
+        tracing::error!(token, "dynclib trampoline: bridge token not found");
+        return HostOperationResult::Error(guest_abi::code::GENERIC_ERROR);
+    };
+
+    let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+    runtime.spawn(async move {
+        let result = executor(pending).await;
+        let _ = result_tx.send(result);
+    });
+    result_rx.recv().unwrap_or_else(|_| {
+        tracing::error!(token, "dynclib trampoline: host executor stopped");
+        HostOperationResult::Error(guest_abi::code::GENERIC_ERROR)
+    })
 }
 
 /// Read bytes from raw pointer + length, returning an empty Vec on null/zero.
@@ -187,7 +212,20 @@ unsafe fn read_raw_bytes(ptr: *const u8, len: usize) -> Vec<u8> {
 
 use crate::workload::decode_host_operation;
 
+unsafe extern "C" fn vtable_retain_context(token: u64) -> i32 {
+    if retain_bridge(token) {
+        guest_abi::code::SUCCESS
+    } else {
+        guest_abi::code::GENERIC_ERROR
+    }
+}
+
+unsafe extern "C" fn vtable_release_context(token: u64) {
+    release_bridge(token);
+}
+
 unsafe extern "C" fn vtable_invoke(
+    token: u64,
     frame_ptr: *const u8,
     frame_len: usize,
     resp_ptr_out: *mut *mut u8,
@@ -208,7 +246,7 @@ unsafe extern "C" fn vtable_invoke(
         Err(code) => return code,
     };
 
-    let reply = match trampoline_execute(pending) {
+    let reply = match trampoline_execute(token, pending) {
         HostOperationResult::Bytes(bytes) => AbiReply {
             abi_version: guest_abi::version::V1,
             status: guest_abi::code::SUCCESS,
@@ -250,6 +288,8 @@ unsafe extern "C" fn vtable_free_host_buf(ptr: *mut u8, len: usize) {
 
 /// Static VTable instance with all trampolines wired up.
 static HOST_VTABLE: HostVTable = HostVTable {
+    retain_context: vtable_retain_context,
+    release_context: vtable_release_context,
     invoke: vtable_invoke,
     free_host_buf: vtable_free_host_buf,
 };
@@ -275,6 +315,7 @@ pub struct DynclibHost {
     init_fn: InitFn,
     handle_fn: HandleFn,
     free_response_fn: FreeResponseFn,
+    shutdown_fn: ShutdownFn,
 }
 
 impl std::fmt::Debug for DynclibHost {
@@ -293,7 +334,8 @@ impl DynclibHost {
     /// Load a shared library from the given filesystem path.
     ///
     /// Resolves the required ABI symbols (`actr_init`, `actr_handle`,
-    /// `actr_free_response`). Returns an error if any symbol is missing.
+    /// `actr_free_response`, `actr_shutdown`). Returns an error if any symbol
+    /// is missing.
     pub fn load(path: impl AsRef<Path>) -> DynclibResult<Self> {
         let path = path.as_ref();
         tracing::info!(path = %path.display(), "loading dynclib actor");
@@ -340,6 +382,16 @@ impl DynclibHost {
             *sym
         };
 
+        let shutdown_fn: ShutdownFn = unsafe {
+            let sym = library.get::<ShutdownFn>(b"actr_shutdown\0").map_err(|e| {
+                DynclibError::MissingSymbol {
+                    symbol: "actr_shutdown".into(),
+                    detail: e.to_string(),
+                }
+            })?;
+            *sym
+        };
+
         tracing::info!(path = %path.display(), "dynclib symbols resolved successfully");
 
         Ok(Self {
@@ -347,6 +399,7 @@ impl DynclibHost {
             init_fn,
             handle_fn,
             free_response_fn,
+            shutdown_fn,
         })
     }
 
@@ -381,6 +434,8 @@ impl DynclibHost {
         Ok(DynclibInstance {
             handle_fn: self.handle_fn,
             free_response_fn: self.free_response_fn,
+            shutdown_fn: self.shutdown_fn,
+            is_shutdown: false,
         })
     }
 }
@@ -398,6 +453,8 @@ impl DynclibHost {
 pub(crate) struct DynclibInstance {
     handle_fn: HandleFn,
     free_response_fn: FreeResponseFn,
+    shutdown_fn: ShutdownFn,
+    is_shutdown: bool,
 }
 
 impl std::fmt::Debug for DynclibInstance {
@@ -433,35 +490,19 @@ impl DynclibInstance {
     /// Dispatch a request through the guest actor.
     ///
     /// This method:
-    /// 1. Installs thread-local state (executor, context, tokio handle)
-    /// 2. Calls the guest's `actr_handle` on a blocking thread
-    /// 3. Copies the response, frees the guest-allocated buffer
-    /// 4. Clears thread-local state
-    ///
-    /// The guest SO may call VTable trampolines synchronously during
-    /// `actr_handle`. Those trampolines use `Handle::block_on` to execute the
-    /// async `call_executor` — this is safe because `actr_handle` runs inside
-    /// `spawn_blocking` (off the tokio worker pool).
-    async fn handle_encoded_request(
-        &mut self,
-        request_owned: Vec<u8>,
-        call_executor: &HostAbiFn,
-    ) -> DynclibResult<Vec<u8>> {
+    /// 1. Calls the guest's `actr_handle` on a blocking thread
+    /// 2. Copies the response and frees the guest-allocated buffer
+    /// 3. Leaves retained bridge tokens alive for any spawned guest tasks
+    async fn handle_encoded_request(&mut self, request_owned: Vec<u8>) -> DynclibResult<Vec<u8>> {
+        if self.is_shutdown {
+            return Err(DynclibError::DispatchFailed(
+                "dynclib instance is shut down".into(),
+            ));
+        }
         let handle_fn = self.handle_fn;
         let free_response_fn = self.free_response_fn;
 
-        // Obtain a handle to the current tokio runtime so trampolines can
-        // block on async futures from the blocking thread.
-        let rt_handle = tokio::runtime::Handle::current();
-
-        // Erase lifetime: the pointer is valid for the duration of the
-        // `spawn_blocking` task because we await its completion below.
-        let executor_ptr = SendPtr(call_executor as *const HostAbiFn);
-
         let result = tokio::task::spawn_blocking(move || {
-            // Install thread-local state for VTable trampolines.
-            install_thread_locals(executor_ptr.as_ptr(), rt_handle);
-
             // Prepare output pointers.
             let mut resp_ptr: *mut u8 = ptr::null_mut();
             let mut resp_len: usize = 0;
@@ -493,9 +534,6 @@ impl DynclibInstance {
             } else {
                 Vec::new()
             };
-
-            // Clear thread-local state.
-            clear_thread_locals();
 
             if code != 0 {
                 tracing::warn!(code, "actr_handle returned error");
@@ -536,11 +574,14 @@ impl DynclibInstance {
         ctx: InvocationContext,
         call_executor: &HostAbiFn,
     ) -> DynclibResult<Vec<u8>> {
-        let request_owned = encode_guest_handle_request(request_bytes, ctx).map_err(|code| {
-            DynclibError::DispatchFailed(format!("guest handle frame serialization failed: {code}"))
-        })?;
-        self.handle_encoded_request(request_owned, call_executor)
-            .await
+        let bridge = BridgeRegistration::new(call_executor);
+        let request_owned =
+            encode_guest_handle_request(request_bytes, ctx, bridge.token).map_err(|code| {
+                DynclibError::DispatchFailed(format!(
+                    "guest handle frame serialization failed: {code}"
+                ))
+            })?;
+        self.handle_encoded_request(request_owned).await
     }
 
     pub(crate) async fn handle_data_chunk(
@@ -549,14 +590,14 @@ impl DynclibInstance {
         sender: ActrId,
         call_executor: &HostAbiFn,
     ) -> DynclibResult<()> {
-        let request_owned = encode_guest_data_chunk_request(chunk, sender).map_err(|code| {
-            DynclibError::DispatchFailed(format!(
-                "guest data stream frame serialization failed: {code}"
-            ))
-        })?;
-        self.handle_encoded_request(request_owned, call_executor)
-            .await
-            .map(|_| ())
+        let bridge = BridgeRegistration::new(call_executor);
+        let request_owned =
+            encode_guest_data_chunk_request(chunk, sender, bridge.token).map_err(|code| {
+                DynclibError::DispatchFailed(format!(
+                    "guest data stream frame serialization failed: {code}"
+                ))
+            })?;
+        self.handle_encoded_request(request_owned).await.map(|_| ())
     }
 
     pub(crate) async fn handle_lifecycle(
@@ -565,14 +606,14 @@ impl DynclibInstance {
         ctx: InvocationContext,
         call_executor: &HostAbiFn,
     ) -> DynclibResult<()> {
-        let request_owned = encode_guest_lifecycle_request(hook, ctx).map_err(|code| {
-            DynclibError::DispatchFailed(format!(
-                "guest lifecycle frame serialization failed: {code}"
-            ))
-        })?;
-        self.handle_encoded_request(request_owned, call_executor)
-            .await
-            .map(|_| ())
+        let bridge = BridgeRegistration::new(call_executor);
+        let request_owned =
+            encode_guest_lifecycle_request(hook, ctx, bridge.token).map_err(|code| {
+                DynclibError::DispatchFailed(format!(
+                    "guest lifecycle frame serialization failed: {code}"
+                ))
+            })?;
+        self.handle_encoded_request(request_owned).await.map(|_| ())
     }
 
     pub(crate) async fn handle_hook_event(
@@ -581,12 +622,56 @@ impl DynclibInstance {
         ctx: InvocationContext,
         call_executor: &HostAbiFn,
     ) -> DynclibResult<()> {
-        let request_owned = encode_guest_hook_request(event, ctx).map_err(|code| {
-            DynclibError::DispatchFailed(format!("guest hook frame serialization failed: {code}"))
-        })?;
-        self.handle_encoded_request(request_owned, call_executor)
+        let bridge = BridgeRegistration::new(call_executor);
+        let request_owned =
+            encode_guest_hook_request(event, ctx, bridge.token).map_err(|code| {
+                DynclibError::DispatchFailed(format!(
+                    "guest hook frame serialization failed: {code}"
+                ))
+            })?;
+        self.handle_encoded_request(request_owned).await.map(|_| ())
+    }
+
+    async fn shutdown(&mut self) -> DynclibResult<()> {
+        if self.is_shutdown {
+            return Ok(());
+        }
+
+        let shutdown_fn = self.shutdown_fn;
+        let code = tokio::task::spawn_blocking(move || unsafe { shutdown_fn() })
             .await
-            .map(|_| ())
+            .map_err(|error| {
+                DynclibError::DispatchFailed(format!("actr_shutdown panicked: {error}"))
+            })?;
+        if code != guest_abi::code::SUCCESS {
+            return Err(DynclibError::DispatchFailed(format!(
+                "actr_shutdown returned error code {code}"
+            )));
+        }
+        self.is_shutdown = true;
+        Ok(())
+    }
+}
+
+impl Drop for DynclibInstance {
+    fn drop(&mut self) {
+        if self.is_shutdown {
+            return;
+        }
+
+        let shutdown_fn = self.shutdown_fn;
+        let result = std::thread::Builder::new()
+            .name("actr-dynclib-shutdown".into())
+            .spawn(move || unsafe { shutdown_fn() })
+            .and_then(|thread| {
+                thread
+                    .join()
+                    .map_err(|_| std::io::Error::other("actr_shutdown panicked"))
+            });
+        if let Err(error) = result {
+            tracing::error!(%error, "failed to shut down dynclib before unload");
+        }
+        self.is_shutdown = true;
     }
 }
 
@@ -638,9 +723,12 @@ impl DynClibWorkload {
         ctx: InvocationContext,
         call_executor: &HostAbiFn,
     ) -> DynclibResult<()> {
-        self.instance
+        let hook_result = self
+            .instance
             .handle_lifecycle(guest_abi::lifecycle_hook::ON_STOP, ctx, call_executor)
-            .await
+            .await;
+        let shutdown_result = self.instance.shutdown().await;
+        hook_result.and(shutdown_result)
     }
 
     pub(crate) async fn call_hook_event(
@@ -653,6 +741,18 @@ impl DynClibWorkload {
             .handle_hook_event(event, ctx, call_executor)
             .await
     }
+
+    pub(crate) async fn shutdown(&mut self) -> DynclibResult<()> {
+        self.instance.shutdown().await
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+pub(crate) fn active_bridge_count() -> usize {
+    bridge_registry()
+        .lock()
+        .map(|registry| registry.len())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

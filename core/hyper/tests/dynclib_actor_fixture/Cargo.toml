@@ -18,3 +18,4 @@ actr-framework = { path = "../../../../core/framework" }
 actr-protocol = { path = "../../../../core/protocol" }
 async-trait = "0.1"
 bytes = "1.10"
+tokio = { version = "1.48", features = ["time"] }

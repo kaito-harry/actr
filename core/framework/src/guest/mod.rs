@@ -109,7 +109,7 @@ pub mod __wasm_macro_support {
 ///   Only the 17 `#[wasm_bindgen]` entry points generated inside
 ///   `actr-web-abi::host` are exported to the Service Worker host.
 /// - `#[cfg(feature = "cdylib")]` — expands to the legacy
-///   `actr_init` / `actr_handle` / `actr_free_response` C-ABI exports
+///   `actr_init` / `actr_handle` / `actr_shutdown` / `actr_free_response` C-ABI exports
 ///   used by native shared-library hosts.
 ///
 /// # Arguments
@@ -365,8 +365,8 @@ macro_rules! entry {
 
         // ── cdylib ABI exports ────────────────────────────────────────────
         //
-        // Unchanged from pre-Phase-1; the Component Model rewrite is WASM-
-        // only and does not touch the native shared-library path.
+        // The dynclib owns a Tokio runtime so guest futures and background
+        // tasks keep executing without borrowing the host's executor stack.
         #[cfg(feature = "cdylib")]
         const _: () = {
             static mut __ACTR_WORKLOAD: Option<$workload_type> = None;
@@ -403,6 +403,10 @@ macro_rules! entry {
                 .is_err()
                 {
                     return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR;
+                }
+
+                if $crate::guest::dynclib::initialize().is_err() {
+                    return $crate::guest::dynclib_abi::code::INIT_FAILED;
                 }
 
                 let workload: $workload_type = $init_expr;
@@ -452,8 +456,13 @@ macro_rules! entry {
                         Err(_) => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
                     };
 
+                    let bridge_token = payload.bridge_token;
                     let ctx = match unsafe {
-                        $crate::guest::dynclib::context::DynclibContext::from_invocation(vtable, payload.ctx)
+                        $crate::guest::dynclib::context::DynclibContext::from_invocation(
+                            vtable,
+                            payload.ctx,
+                            bridge_token,
+                        )
                     } {
                         Ok(c) => c,
                         Err(_) => return $crate::guest::dynclib_abi::code::HANDLE_FAILED,
@@ -468,39 +477,30 @@ macro_rules! entry {
 
                     let lifecycle_result = match payload.hook {
                         $crate::guest::dynclib_abi::lifecycle_hook::ON_START => {
-                            let fut = workload.on_start(&ctx);
-                            let waker = std::task::Waker::noop();
-                            let mut cx = std::task::Context::from_waker(waker);
-                            let mut pinned = std::pin::pin!(fut);
-                            match pinned.as_mut().poll(&mut cx) {
-                                std::task::Poll::Ready(v) => v,
-                                std::task::Poll::Pending => {
-                                    return $crate::guest::dynclib_abi::code::HANDLE_FAILED;
-                                }
+                            match $crate::guest::dynclib::block_on(
+                                bridge_token,
+                                workload.on_start(&ctx),
+                            ) {
+                                Ok(result) => result,
+                                Err(_) => return $crate::guest::dynclib_abi::code::HANDLE_FAILED,
                             }
                         }
                         $crate::guest::dynclib_abi::lifecycle_hook::ON_READY => {
-                            let fut = workload.on_ready(&ctx);
-                            let waker = std::task::Waker::noop();
-                            let mut cx = std::task::Context::from_waker(waker);
-                            let mut pinned = std::pin::pin!(fut);
-                            match pinned.as_mut().poll(&mut cx) {
-                                std::task::Poll::Ready(v) => v,
-                                std::task::Poll::Pending => {
-                                    return $crate::guest::dynclib_abi::code::HANDLE_FAILED;
-                                }
+                            match $crate::guest::dynclib::block_on(
+                                bridge_token,
+                                workload.on_ready(&ctx),
+                            ) {
+                                Ok(result) => result,
+                                Err(_) => return $crate::guest::dynclib_abi::code::HANDLE_FAILED,
                             }
                         }
                         $crate::guest::dynclib_abi::lifecycle_hook::ON_STOP => {
-                            let fut = workload.on_stop(&ctx);
-                            let waker = std::task::Waker::noop();
-                            let mut cx = std::task::Context::from_waker(waker);
-                            let mut pinned = std::pin::pin!(fut);
-                            match pinned.as_mut().poll(&mut cx) {
-                                std::task::Poll::Ready(v) => v,
-                                std::task::Poll::Pending => {
-                                    return $crate::guest::dynclib_abi::code::HANDLE_FAILED;
-                                }
+                            match $crate::guest::dynclib::block_on(
+                                bridge_token,
+                                workload.on_stop(&ctx),
+                            ) {
+                                Ok(result) => result,
+                                Err(_) => return $crate::guest::dynclib_abi::code::HANDLE_FAILED,
                             }
                         }
                         _ => return $crate::guest::dynclib_abi::code::UNSUPPORTED_OP,
@@ -545,8 +545,13 @@ macro_rules! entry {
                         Err(_) => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
                     };
 
+                    let bridge_token = payload.bridge_token;
                     let ctx = match unsafe {
-                        $crate::guest::dynclib::context::DynclibContext::from_invocation(vtable, payload.ctx)
+                        $crate::guest::dynclib::context::DynclibContext::from_invocation(
+                            vtable,
+                            payload.ctx,
+                            bridge_token,
+                        )
                     } {
                         Ok(c) => c,
                         Err(_) => return $crate::guest::dynclib_abi::code::HANDLE_FAILED,
@@ -561,15 +566,8 @@ macro_rules! entry {
 
                     macro_rules! __actr_poll_unit {
                         ($future:expr) => {{
-                            let fut = $future;
-                            let waker = std::task::Waker::noop();
-                            let mut cx = std::task::Context::from_waker(waker);
-                            let mut pinned = std::pin::pin!(fut);
-                            match pinned.as_mut().poll(&mut cx) {
-                                std::task::Poll::Ready(()) => {}
-                                std::task::Poll::Pending => {
-                                    return $crate::guest::dynclib_abi::code::HANDLE_FAILED;
-                                }
+                            if $crate::guest::dynclib::block_on(bridge_token, $future).is_err() {
+                                return $crate::guest::dynclib_abi::code::HANDLE_FAILED;
                             }
                         }};
                     }
@@ -749,8 +747,13 @@ macro_rules! entry {
                     Err(_) => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
                 };
 
+                let bridge_token = handle.bridge_token;
                 let ctx = match unsafe {
-                    $crate::guest::dynclib::context::DynclibContext::from_invocation(vtable, handle.ctx)
+                    $crate::guest::dynclib::context::DynclibContext::from_invocation(
+                        vtable,
+                        handle.ctx,
+                        bridge_token,
+                    )
                 } {
                     Ok(c) => c,
                     Err(_) => return $crate::guest::dynclib_abi::code::HANDLE_FAILED,
@@ -767,21 +770,12 @@ macro_rules! entry {
                 // Route and execute via MessageDispatcher
                 type Dispatcher = <$workload_type as Workload>::Dispatcher;
 
-                // cdylib is native environment, can use tokio or synchronous execution
-                // Here we use the same single-threaded poll strategy as the old WASM path:
-                // All host callbacks (vtable function pointers) are synchronous, Future
-                // completes in one poll.
-                let resp_result = {
-                    let fut = Dispatcher::dispatch(workload, envelope, &ctx);
-                    let waker = std::task::Waker::noop();
-                    let mut cx = std::task::Context::from_waker(waker);
-                    let mut pinned = std::pin::pin!(fut);
-                    match pinned.as_mut().poll(&mut cx) {
-                        std::task::Poll::Ready(v) => v,
-                        std::task::Poll::Pending => {
-                            return $crate::guest::dynclib_abi::code::HANDLE_FAILED;
-                        }
-                    }
+                let resp_result = match $crate::guest::dynclib::block_on(
+                    bridge_token,
+                    Dispatcher::dispatch(workload, envelope, &ctx),
+                ) {
+                    Ok(result) => result,
+                    Err(_) => return $crate::guest::dynclib_abi::code::HANDLE_FAILED,
                 };
 
                 let resp_bytes = match resp_result {
@@ -816,6 +810,22 @@ macro_rules! entry {
                 }
 
                 $crate::guest::dynclib_abi::code::SUCCESS
+            }
+
+            /// Stop background work before the host unloads this library.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn actr_shutdown() -> i32 {
+                let shutdown_result = $crate::guest::dynclib::shutdown();
+                $crate::guest::dynclib::context::clear_stream_callbacks();
+                unsafe {
+                    __ACTR_WORKLOAD = None;
+                    __ACTR_VTABLE = None;
+                }
+
+                match shutdown_result {
+                    Ok(()) => $crate::guest::dynclib_abi::code::SUCCESS,
+                    Err(_) => $crate::guest::dynclib_abi::code::GENERIC_ERROR,
+                }
             }
 
             /// Free guest-allocated response buffer

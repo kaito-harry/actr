@@ -16,9 +16,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// cdylib guest-side actor execution context.
-#[derive(Clone)]
 pub struct DynclibContext {
     vtable: *const HostVTable,
+    bridge_token: u64,
+    retained: bool,
     self_id: ActrId,
     caller_id: Option<ActrId>,
     request_id: String,
@@ -51,14 +52,13 @@ pub fn dispatch_registered_stream(payload: GuestDataChunkV1) -> ActorResult<()> 
     };
 
     let fut = callback(payload.chunk, payload.sender);
-    let waker = std::task::Waker::noop();
-    let mut cx = std::task::Context::from_waker(waker);
-    let mut pinned = std::pin::pin!(fut);
-    match pinned.as_mut().poll(&mut cx) {
-        std::task::Poll::Ready(result) => result,
-        std::task::Poll::Pending => Err(ActrError::Internal(
-            "dynclib stream callback returned Pending".into(),
-        )),
+    crate::guest::dynclib::block_on(payload.bridge_token, fut)?
+}
+
+#[doc(hidden)]
+pub fn clear_stream_callbacks() {
+    if let Ok(mut callbacks) = stream_callbacks().lock() {
+        callbacks.clear();
     }
 }
 
@@ -71,13 +71,23 @@ impl DynclibContext {
     pub unsafe fn from_invocation(
         vtable: *const HostVTable,
         ctx: InvocationContextV1,
+        bridge_token: u64,
     ) -> Result<Self, ActrError> {
         if vtable.is_null() {
             return Err(ActrError::Internal("HostVTable pointer is null".into()));
         }
 
+        let retain_code = unsafe { ((*vtable).retain_context)(bridge_token) };
+        if retain_code != abi::code::SUCCESS {
+            return Err(ActrError::Internal(format!(
+                "failed to retain dynclib bridge token {bridge_token}: {retain_code}"
+            )));
+        }
+
         Ok(Self {
             vtable,
+            bridge_token,
+            retained: true,
             self_id: ctx.self_id,
             caller_id: ctx.caller_id,
             request_id: ctx.request_id,
@@ -93,8 +103,11 @@ impl DynclibContext {
         let mut reply_ptr: *mut u8 = std::ptr::null_mut();
         let mut reply_len: usize = 0;
 
+        let bridge_token =
+            crate::guest::dynclib::runtime::active_bridge_token().unwrap_or(self.bridge_token);
         let code = unsafe {
             (self.vt().invoke)(
+                bridge_token,
                 frame_bytes.as_ptr(),
                 frame_bytes.len(),
                 &mut reply_ptr,
@@ -115,6 +128,36 @@ impl DynclibContext {
         };
 
         abi::decode_message::<AbiReply>(&bytes).map_err(abi_error_to_actr)
+    }
+}
+
+impl Clone for DynclibContext {
+    fn clone(&self) -> Self {
+        let code = unsafe { (self.vt().retain_context)(self.bridge_token) };
+        if code != abi::code::SUCCESS {
+            tracing::error!(
+                bridge_token = self.bridge_token,
+                code,
+                "failed to retain dynclib context during clone"
+            );
+        }
+
+        Self {
+            vtable: self.vtable,
+            bridge_token: self.bridge_token,
+            retained: code == abi::code::SUCCESS,
+            self_id: self.self_id.clone(),
+            caller_id: self.caller_id.clone(),
+            request_id: self.request_id.clone(),
+        }
+    }
+}
+
+impl Drop for DynclibContext {
+    fn drop(&mut self) {
+        if self.retained {
+            unsafe { (self.vt().release_context)(self.bridge_token) };
+        }
     }
 }
 

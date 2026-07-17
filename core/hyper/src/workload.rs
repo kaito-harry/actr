@@ -770,10 +770,12 @@ pub(crate) fn decode_host_operation(frame: guest_abi::AbiFrame) -> Result<HostOp
 pub(crate) fn encode_guest_handle_request(
     request_bytes: &[u8],
     ctx: InvocationContext,
+    bridge_token: u64,
 ) -> Result<Vec<u8>, i32> {
     let request = GuestHandleV1 {
         ctx,
         rpc_envelope: request_bytes.to_vec(),
+        bridge_token,
     };
     let frame = request.to_frame()?;
     guest_abi::encode_message(&frame)
@@ -783,8 +785,13 @@ pub(crate) fn encode_guest_handle_request(
 pub(crate) fn encode_guest_data_chunk_request(
     chunk: DataChunk,
     sender: ActrId,
+    bridge_token: u64,
 ) -> Result<Vec<u8>, i32> {
-    let request = guest_abi::GuestDataChunkV1 { chunk, sender };
+    let request = guest_abi::GuestDataChunkV1 {
+        chunk,
+        sender,
+        bridge_token,
+    };
     let frame = request.to_frame()?;
     guest_abi::encode_message(&frame)
 }
@@ -794,8 +801,13 @@ pub(crate) fn encode_guest_data_chunk_request(
 pub(crate) fn encode_guest_lifecycle_request(
     hook: u32,
     ctx: InvocationContext,
+    bridge_token: u64,
 ) -> Result<Vec<u8>, i32> {
-    let request = guest_abi::GuestLifecycleV1 { ctx, hook };
+    let request = guest_abi::GuestLifecycleV1 {
+        ctx,
+        hook,
+        bridge_token,
+    };
     let frame = request.to_frame()?;
     guest_abi::encode_message(&frame)
 }
@@ -851,6 +863,7 @@ fn backpressure_event_to_v1(event: BackpressureEvent) -> guest_abi::Backpressure
 pub(crate) fn encode_guest_hook_request(
     event: PackageHookEvent,
     ctx: InvocationContext,
+    bridge_token: u64,
 ) -> Result<Vec<u8>, i32> {
     let mut request = GuestHookV1 {
         ctx,
@@ -858,6 +871,7 @@ pub(crate) fn encode_guest_hook_request(
         peer: None,
         credential: None,
         backpressure: None,
+        bridge_token,
     };
 
     match event {
