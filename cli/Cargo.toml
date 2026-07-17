@@ -1,6 +1,6 @@
 [package]
 name = "actr-cli"
-version = "0.4.21"
+version = "0.4.21-rc.1"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -33,34 +33,34 @@ path = "src/main.rs"
 
 [dependencies]
 # Actor-RTC main crate with config feature (includes protocol, config, version)
-actr = { path = "..", version = "0.4.21", features = ["config"] }
+actr = { path = "..", version = "0.4.21-rc.1", features = ["config"] }
 
 # Hyper layer - binary hash computation and manifest embed for dev tooling
-actr-hyper = { path = "../core/hyper", version = "0.4.21" }
+actr-hyper = { path = "../core/hyper", version = "0.4.21-rc.1" }
 
 # Package format (.actr ZIP STORE)
 actr-pack.workspace = true
 
 # Platform provider for native execution
-actr-platform-native = { path = "../core/platform-native", version = "0.4.21" }
+actr-platform-native = { path = "../core/platform-native", version = "0.4.21-rc.1" }
 
 # Key generation for actr dev keygen
 rand.workspace = true
 
 # DLQ storage (for actr dlq subcommand)
-actr-runtime-mailbox = { path = "../core/runtime-mailbox", version = "0.4.21" }
+actr-runtime-mailbox = { path = "../core/runtime-mailbox", version = "0.4.21-rc.1" }
 
 
 # Direct access to config/protocol for CLI-specific types
 # (These have different APIs than actr umbrella re-exports)
-actr-config = { path = "../core/config", version = "0.4.21" }
-actr-protocol = { path = "../core/protocol", version = "0.4.21" }
+actr-config = { path = "../core/config", version = "0.4.21-rc.1" }
+actr-protocol = { path = "../core/protocol", version = "0.4.21-rc.1" }
 
 # Version / fingerprint utilities
-actr-service-compat = { path = "../core/service-compat", version = "0.4.21" }
+actr-service-compat = { path = "../core/service-compat", version = "0.4.21-rc.1" }
 
 # Protoc code generator - CLI specific tool
-actr-framework-protoc-codegen = { path = "../tools/protoc-gen/rust", version = "0.4.21" }
+actr-framework-protoc-codegen = { path = "../tools/protoc-gen/rust", version = "0.4.21-rc.1" }
 
 # Command line interface
 clap = { version = "4.5", features = ["derive", "cargo"] }

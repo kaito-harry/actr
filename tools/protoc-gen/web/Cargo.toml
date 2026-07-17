@@ -1,6 +1,6 @@
 [package]
 name = "actr-web-protoc-codegen"
-version = "0.4.21"
+version = "0.4.21-rc.1"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["kookyleo@gmail.com"]
