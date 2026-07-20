@@ -112,7 +112,6 @@ fn try_build_admin_ui(source_dir: &Path, output_dir: &Path) -> bool {
 
     if let Err(error) = fs::remove_dir_all(build_dir) {
         println!("cargo:warning=Failed to clean Admin UI build directory: {error}");
-        return false;
     }
 
     if build_succeeded {
