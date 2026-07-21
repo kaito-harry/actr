@@ -6,6 +6,7 @@
 //! state so the host can keep the library mapped instead of blocking forever.
 
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -15,6 +16,8 @@ use tokio::task::JoinHandle;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const DEFAULT_WORKER_THREADS: usize = 1;
+const WORKER_THREADS_ENV: &str = "ACTR_DYNCLIB_WORKER_THREADS";
 
 tokio::task_local! {
     static ACTIVE_BRIDGE_TOKEN: u64;
@@ -74,6 +77,31 @@ fn lock_state() -> ActorResult<MutexGuard<'static, RuntimeState>> {
         .map_err(|_| ActrError::Internal("dynclib runtime state lock poisoned".into()))
 }
 
+fn resolve_worker_threads(value: Option<&str>) -> ActorResult<usize> {
+    let Some(value) = value else {
+        return Ok(DEFAULT_WORKER_THREADS);
+    };
+
+    value
+        .parse::<NonZeroUsize>()
+        .map(NonZeroUsize::get)
+        .map_err(|_| {
+            ActrError::InvalidArgument(format!(
+                "{WORKER_THREADS_ENV} must be a positive integer, got `{value}`"
+            ))
+        })
+}
+
+fn configured_worker_threads() -> ActorResult<usize> {
+    match std::env::var(WORKER_THREADS_ENV) {
+        Ok(value) => resolve_worker_threads(Some(&value)),
+        Err(std::env::VarError::NotPresent) => resolve_worker_threads(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(ActrError::InvalidArgument(format!(
+            "{WORKER_THREADS_ENV} must be valid Unicode containing a positive integer"
+        ))),
+    }
+}
+
 /// Initialize the runtime for this shared-library image.
 pub fn initialize() -> ActorResult<()> {
     let _entry_guard = lock_entry()?;
@@ -99,8 +127,9 @@ pub fn initialize() -> ActorResult<()> {
         }
     }
 
+    let worker_threads = configured_worker_threads()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
+        .worker_threads(worker_threads)
         .enable_all()
         .thread_name("actr-dynclib")
         .build()
@@ -298,6 +327,33 @@ mod tests {
     use super::*;
 
     static RUNTIME_SERIAL: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn worker_threads_default_to_one() {
+        assert_eq!(resolve_worker_threads(None).expect("resolve default"), 1);
+    }
+
+    #[test]
+    fn worker_threads_accept_positive_override() {
+        assert_eq!(
+            resolve_worker_threads(Some("4")).expect("resolve override"),
+            4
+        );
+    }
+
+    #[test]
+    fn worker_threads_reject_zero_override() {
+        let error = resolve_worker_threads(Some("0")).expect_err("reject zero");
+        assert!(matches!(&error, ActrError::InvalidArgument(_)));
+        assert!(error.to_string().contains(WORKER_THREADS_ENV));
+    }
+
+    #[test]
+    fn worker_threads_reject_non_numeric_override() {
+        let error = resolve_worker_threads(Some("many")).expect_err("reject non-number");
+        assert!(matches!(&error, ActrError::InvalidArgument(_)));
+        assert!(error.to_string().contains(WORKER_THREADS_ENV));
+    }
 
     #[test]
     fn shutdown_clears_state_for_reinitialize() {
