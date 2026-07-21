@@ -181,24 +181,42 @@ jobs:
         run: |
           cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
           cmp core/framework/wit-v2/actr-workload.wit core/hyper/wit-v2/actr-workload.wit
-      - name: Cache cargo-installed tools
-        id: cargo-tools
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/wasm-pack
-            ~/.cargo/bin/wasm-component-ld
-            ~/.cargo/bin/wasm-tools
-          key: cargo-tools-v1-${{ runner.os }}-wp0.13.1-wcld0.5.22-wt1.249.0
-      - name: Install wasm-pack
-        if: steps.cargo-tools.outputs.cache-hit != 'true'
-        run: cargo install wasm-pack --version 0.15.0 --locked
-      - name: Install wasm Component Model toolchain
-        if: steps.cargo-tools.outputs.cache-hit != 'true'
+      - name: Install prebuilt WebAssembly tools
+        env:
+          WASM_PACK_SHA256: c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a
+          WASM_COMPONENT_LD_SHA256: e5cee677052c0eb6b5d0605f85e3bbc46d076050cd3403406f49b3503f22622c
+          WASM_TOOLS_SHA256: 4e2898f7ca3bd0536218ed9b7b36ff7b86954c57ae0e6272fde69728cbe01088
         run: |
-          cargo install wasm-component-ld --version 0.5.26 --locked
-          cargo install wasm-tools --version 1.253.0 --locked
+          install_binary() {
+            local name="$1"
+            local url="$2"
+            local sha256="$3"
+            local archive="$RUNNER_TEMP/$name.tar.gz"
+            local extract_dir
+            extract_dir=$(mktemp -d "$RUNNER_TEMP/$name.XXXXXX")
+
+            curl --fail --location --retry 3 --retry-all-errors --output "$archive" "$url"
+            echo "$sha256  $archive" | sha256sum --check --status
+            tar --extract --gzip --file "$archive" --strip-components=1 --directory "$extract_dir"
+            install --mode=0755 "$extract_dir/$name" "$HOME/.cargo/bin/$name"
+          }
+
+          install_binary wasm-pack \
+            https://github.com/wasm-bindgen/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz \
+            "$WASM_PACK_SHA256"
+          install_binary wasm-component-ld \
+            https://github.com/bytecodealliance/wasm-component-ld/releases/download/v0.5.26/wasm-component-ld-v0.5.26-x86_64-linux.tar.gz \
+            "$WASM_COMPONENT_LD_SHA256"
+          install_binary wasm-tools \
+            https://github.com/bytecodealliance/wasm-tools/releases/download/v1.253.0/wasm-tools-1.253.0-x86_64-linux.tar.gz \
+            "$WASM_TOOLS_SHA256"
+
+          wasm-pack --version
+          wasm-component-ld --version
+          wasm-tools --version
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
       - name: Generate CLI web runtime assets
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
       - name: Run tests
