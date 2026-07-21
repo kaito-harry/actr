@@ -152,6 +152,8 @@ pub struct GuestHandleV1 {
     pub ctx: InvocationContextV1,
     #[prost(bytes = "vec", tag = "2")]
     pub rpc_envelope: Vec<u8>,
+    #[prost(uint64, tag = "3")]
+    pub bridge_token: u64,
 }
 
 /// Runtime host->guest DataChunk payload.
@@ -161,6 +163,8 @@ pub struct GuestDataChunkV1 {
     pub chunk: DataChunk,
     #[prost(message, required, tag = "2")]
     pub sender: ActrId,
+    #[prost(uint64, tag = "3")]
+    pub bridge_token: u64,
 }
 
 /// Runtime host->guest lifecycle hook payload.
@@ -170,6 +174,8 @@ pub struct GuestLifecycleV1 {
     pub ctx: InvocationContextV1,
     #[prost(uint32, tag = "2")]
     pub hook: u32,
+    #[prost(uint64, tag = "3")]
+    pub bridge_token: u64,
 }
 
 /// Wall-clock timestamp represented as seconds + nanoseconds since Unix epoch.
@@ -223,6 +229,8 @@ pub struct GuestHookV1 {
     pub credential: Option<CredentialEventV1>,
     #[prost(message, optional, tag = "5")]
     pub backpressure: Option<BackpressureEventV1>,
+    #[prost(uint64, tag = "6")]
+    pub bridge_token: u64,
 }
 
 /// ABI-level destination encoding (replaces hand-rolled 0x00/0x01/0x02 byte protocol).

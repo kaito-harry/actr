@@ -1930,6 +1930,9 @@ impl Inner {
                 {
                     tracing::warn!(error = %e, "workload on_stop returned Err");
                 }
+                if let Err(e) = workload.shutdown().await {
+                    tracing::warn!(error = %e, "workload shutdown returned Err");
+                }
             });
             task_handles.push(on_stop_handle);
         }

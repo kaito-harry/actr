@@ -3,6 +3,9 @@
 //! A simple cdylib actor implementing:
 //! - "test/double": reads i32 from payload, calls ctx.call_raw() to get x*2
 //! - "test/echo": returns payload as-is (no outbound calls)
+//! - "test/sleep": awaits a Tokio timer before returning
+//! - "test/spawn": spawns a Tokio task that calls the host after dispatch returns
+//! - "test/spawn-pending": starts a managed task for shutdown verification
 //! - unknown route: returns error
 
 use actr_framework::{Context, MessageDispatcher, Workload, entry};
@@ -94,6 +97,34 @@ impl MessageDispatcher for DoubleDispatcher {
                 let payload = envelope.payload.unwrap_or_default();
                 Ok(Bytes::from(payload))
             }
+            "test/sleep" => {
+                let payload = envelope.payload.unwrap_or_default();
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                Ok(Bytes::from(payload))
+            }
+            "test/spawn" => {
+                let payload = envelope.payload.unwrap_or_default();
+                let background_ctx = ctx.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    let target = background_ctx.self_id().clone();
+                    let _ = background_ctx
+                        .call_raw(&target, "test/spawned", Bytes::from(payload))
+                        .await;
+                });
+                Ok(Bytes::from_static(b"spawned"))
+            }
+            "test/spawn-pending" => {
+                let background_ctx = ctx.clone();
+                actr_framework::guest::dynclib::spawn(async move {
+                    let target = background_ctx.self_id().clone();
+                    let _ = background_ctx
+                        .call_raw(&target, "test/background-started", Bytes::new())
+                        .await;
+                    std::future::pending::<()>().await;
+                })?;
+                Ok(Bytes::from_static(b"spawned"))
+            }
             "test/record_hook" => {
                 let payload = envelope.payload.unwrap_or_default();
                 Ok(Bytes::from(payload))
@@ -150,11 +181,7 @@ impl Workload for DoubleActor {
         record_peer_hook(ctx, "on_websocket_connecting", event).await;
     }
 
-    async fn on_websocket_connected<C: Context>(
-        &self,
-        ctx: &C,
-        event: &actr_framework::PeerEvent,
-    ) {
+    async fn on_websocket_connected<C: Context>(&self, ctx: &C, event: &actr_framework::PeerEvent) {
         record_peer_hook(ctx, "on_websocket_connected", event).await;
     }
 
@@ -166,11 +193,7 @@ impl Workload for DoubleActor {
         record_peer_hook(ctx, "on_websocket_disconnected", event).await;
     }
 
-    async fn on_webrtc_connecting<C: Context>(
-        &self,
-        ctx: &C,
-        event: &actr_framework::PeerEvent,
-    ) {
+    async fn on_webrtc_connecting<C: Context>(&self, ctx: &C, event: &actr_framework::PeerEvent) {
         record_peer_hook(ctx, "on_webrtc_connecting", event).await;
     }
 
@@ -178,11 +201,7 @@ impl Workload for DoubleActor {
         record_peer_hook(ctx, "on_webrtc_connected", event).await;
     }
 
-    async fn on_webrtc_disconnected<C: Context>(
-        &self,
-        ctx: &C,
-        event: &actr_framework::PeerEvent,
-    ) {
+    async fn on_webrtc_disconnected<C: Context>(&self, ctx: &C, event: &actr_framework::PeerEvent) {
         record_peer_hook(ctx, "on_webrtc_disconnected", event).await;
     }
 

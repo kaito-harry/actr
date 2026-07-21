@@ -333,6 +333,12 @@ impl TestPackageHookObserver {
             }
         }
     }
+
+    /// Deterministically stop the owning workload runner and its backend.
+    pub async fn shutdown(&self) {
+        let mut workload = self.observer.workload_dispatch.lock().await;
+        let _ = workload.shutdown().await;
+    }
 }
 
 pub struct TestDedupWaiter {
@@ -573,6 +579,10 @@ impl TestDynclibWorkload {
         self.inner.call_on_stop(ctx, call_executor).await
     }
 
+    pub async fn shutdown(&mut self) -> Result<(), crate::dynclib::DynclibError> {
+        self.inner.shutdown().await
+    }
+
     pub fn into_package_hook_observer(self) -> TestPackageHookObserver {
         TestPackageHookObserver::from_workload(crate::workload::Workload::DynClib(self.inner))
     }
@@ -589,4 +599,9 @@ pub fn instantiate_dynclib_workload(
     Ok(TestDynclibWorkload {
         inner: crate::dynclib::DynClibWorkload::new(host, instance),
     })
+}
+
+#[cfg(feature = "dynclib-engine")]
+pub fn dynclib_active_bridge_count() -> usize {
+    crate::dynclib::active_bridge_count()
 }
