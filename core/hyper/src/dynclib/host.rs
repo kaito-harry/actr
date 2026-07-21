@@ -303,15 +303,16 @@ static HOST_VTABLE: HostVTable = HostVTable {
 /// Loads and holds a single `.so` / `.dylib` / `.dll` image. Resolves ABI
 /// symbols once at load time.
 ///
-/// Under the current guest ABI, a loaded dynclib image supports only one
-/// successful `actr_init` because guest state is module-global and no instance
-/// handle is exposed back to the host. To create multiple independent
-/// `DynClibWorkload`s today, Hyper must load multiple library images.
+/// Under the current guest ABI, a loaded dynclib image supports only one active
+/// actor because guest state is module-global and no instance handle is exposed
+/// back to the host. A successful shutdown permits a new sequential
+/// initialization of the same image. Concurrent independent `DynClibWorkload`s
+/// still require separate library images.
 ///
 /// TODO: Revisit this contract if Dynclib gains a real per-instance ABI.
 pub struct DynclibHost {
     /// Loaded shared library handle. Must outlive all resolved function pointers.
-    _library: Library,
+    _library: Arc<Library>,
     init_fn: InitFn,
     handle_fn: HandleFn,
     free_response_fn: FreeResponseFn,
@@ -343,10 +344,10 @@ impl DynclibHost {
         // Safety: loading a shared library executes its static initialisers,
         // which is inherently unsafe. The caller must ensure the library is
         // trusted (e.g. verified by Hyper's package verification).
-        let library = unsafe {
+        let library = Arc::new(unsafe {
             Library::new(path)
                 .map_err(|e| DynclibError::LoadFailed(format!("{}: {e}", path.display())))?
-        };
+        });
 
         // Safety: we resolve raw symbol pointers and transmute them to typed
         // function pointers. The caller must guarantee that the SO exports
@@ -413,16 +414,28 @@ impl DynclibHost {
         let init_bytes = guest_abi::encode_message(init_payload).map_err(|code| {
             DynclibError::DispatchFailed(format!("init payload encode failed: {code}"))
         })?;
-        let init_ptr = if init_bytes.is_empty() {
-            ptr::null()
-        } else {
-            init_bytes.as_ptr()
-        };
+        let init_fn = self.init_fn;
+        let init_thread = std::thread::Builder::new()
+            .name("actr-dynclib-init".into())
+            .spawn(move || {
+                let init_ptr = if init_bytes.is_empty() {
+                    ptr::null()
+                } else {
+                    init_bytes.as_ptr()
+                };
 
-        // Safety: `actr_init` is a C function resolved from the shared
-        // library. `HOST_VTABLE` is a static with stable address. `init_ptr`
-        // and `init_bytes.len()` describe a valid byte slice (or null/0).
-        let result = unsafe { (self.init_fn)(&HOST_VTABLE, init_ptr, init_bytes.len()) };
+                // Safety: `actr_init` is a C function resolved from the shared
+                // library. `HOST_VTABLE` is a static with stable address.
+                // `init_ptr` and `init_bytes.len()` describe a valid byte slice
+                // (or null/0) for the duration of this call.
+                unsafe { init_fn(&HOST_VTABLE, init_ptr, init_bytes.len()) }
+            })
+            .map_err(|error| {
+                DynclibError::DispatchFailed(format!("failed to start actr_init: {error}"))
+            })?;
+        let result = init_thread.join().map_err(|_| {
+            DynclibError::DispatchFailed("actr_init panicked on the guest thread".into())
+        })?;
 
         if result != 0 {
             tracing::error!(code = result, "actr_init failed");
@@ -436,7 +449,8 @@ impl DynclibHost {
             free_response_fn: self.free_response_fn,
             shutdown_fn: self.shutdown_fn,
             ffi_gate: Arc::new(tokio::sync::Mutex::new(())),
-            is_shutdown: false,
+            library_guard: Arc::clone(&self._library),
+            shutdown_state: ShutdownState::Active,
         })
     }
 }
@@ -444,6 +458,13 @@ impl DynclibHost {
 // ─────────────────────────────────────────────────────────────────────────────
 // DynclibInstance
 // ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ShutdownState {
+    Active,
+    Complete,
+    Failed,
+}
 
 /// Per-actor instance backed by a native shared library.
 ///
@@ -456,7 +477,9 @@ pub(crate) struct DynclibInstance {
     free_response_fn: FreeResponseFn,
     shutdown_fn: ShutdownFn,
     ffi_gate: Arc<tokio::sync::Mutex<()>>,
-    is_shutdown: bool,
+    /// Keeps guest code mapped while any fallback shutdown thread can call it.
+    library_guard: Arc<Library>,
+    shutdown_state: ShutdownState,
 }
 
 impl std::fmt::Debug for DynclibInstance {
@@ -470,9 +493,9 @@ unsafe impl Send for DynclibInstance {}
 
 /// Workload wrapper that keeps the loaded library alive for the lifetime of the actor instance.
 ///
-/// Field order matters: Rust drops fields in declaration order, so `instance`
-/// (which holds raw function pointers into the loaded library) must be dropped
-/// before `_host` (which unloads the library).
+/// Normal lifecycle teardown must call [`Self::call_on_stop`] (or the explicit
+/// shutdown helper) and await it. `Drop` only schedules a best-effort fallback;
+/// it never blocks an async runtime worker.
 #[derive(Debug)]
 pub(crate) struct DynClibWorkload {
     instance: DynclibInstance,
@@ -492,11 +515,11 @@ impl DynclibInstance {
     /// Dispatch a request through the guest actor.
     ///
     /// This method:
-    /// 1. Calls the guest's `actr_handle` on a blocking thread
+    /// 1. Calls the guest's `actr_handle` on a short-lived OS thread
     /// 2. Copies the response and frees the guest-allocated buffer
     /// 3. Leaves retained bridge tokens alive for any spawned guest tasks
     async fn handle_encoded_request(&mut self, request_owned: Vec<u8>) -> DynclibResult<Vec<u8>> {
-        if self.is_shutdown {
+        if self.shutdown_state != ShutdownState::Active {
             return Err(DynclibError::DispatchFailed(
                 "dynclib instance is shut down".into(),
             ));
@@ -505,59 +528,81 @@ impl DynclibInstance {
         let free_response_fn = self.free_response_fn;
         let ffi_guard = Arc::clone(&self.ffi_gate).lock_owned().await;
 
-        let result = tokio::task::spawn_blocking(move || {
-            // Keep shutdown behind this call even if the awaiting future is cancelled.
-            let _ffi_guard = ffi_guard;
+        // Guest entrypoints may register thread-local destructors in the
+        // loaded image. Running them directly on Tokio's persistent blocking
+        // pool can therefore defer `dlclose` until that pool exits. Use a
+        // dedicated guest thread and let the blocking-pool task only join it.
+        let guest_thread = std::thread::Builder::new()
+            .name("actr-dynclib-handle".into())
+            .spawn(move || {
+                // Keep shutdown behind this call even if the awaiting future
+                // is cancelled.
+                let _ffi_guard = ffi_guard;
 
-            // Prepare output pointers.
-            let mut resp_ptr: *mut u8 = ptr::null_mut();
-            let mut resp_len: usize = 0;
+                // Prepare output pointers.
+                let mut resp_ptr: *mut u8 = ptr::null_mut();
+                let mut resp_len: usize = 0;
 
-            // Safety: `handle_fn` is a C function from the loaded SO.
-            // `request_owned` is a valid Vec<u8> and `as_ptr()`/`len()` describe
-            // a valid slice. `resp_ptr` and `resp_len` are stack-local variables
-            // whose addresses are valid for the duration of the call.
-            let code = unsafe {
-                (handle_fn)(
-                    request_owned.as_ptr(),
-                    request_owned.len(),
-                    &mut resp_ptr,
-                    &mut resp_len,
-                )
-            };
+                // Safety: `handle_fn` is a C function from the loaded SO.
+                // `request_owned` is a valid Vec<u8> and `as_ptr()`/`len()`
+                // describe a valid slice. `resp_ptr` and `resp_len` are
+                // stack-local variables whose addresses are valid for the
+                // duration of the call.
+                let code = unsafe {
+                    (handle_fn)(
+                        request_owned.as_ptr(),
+                        request_owned.len(),
+                        &mut resp_ptr,
+                        &mut resp_len,
+                    )
+                };
 
-            // Copy response bytes before freeing the guest buffer.
-            let response = if !resp_ptr.is_null() && resp_len > 0 {
-                // Safety: the guest set resp_ptr/resp_len to describe a valid
-                // allocation. We copy before calling free_response_fn.
-                let data = unsafe { std::slice::from_raw_parts(resp_ptr, resp_len).to_vec() };
+                // Copy response bytes before freeing the guest buffer.
+                let response = if !resp_ptr.is_null() && resp_len > 0 {
+                    // Safety: the guest set resp_ptr/resp_len to describe a
+                    // valid allocation. We copy before calling free_response_fn.
+                    let data = unsafe { std::slice::from_raw_parts(resp_ptr, resp_len).to_vec() };
 
-                // Safety: free the guest-allocated response buffer with the
-                // guest's own free function.
-                unsafe { (free_response_fn)(resp_ptr, resp_len) };
+                    // Safety: free the guest-allocated response buffer with
+                    // the guest's own free function.
+                    unsafe { (free_response_fn)(resp_ptr, resp_len) };
 
-                data
-            } else {
-                Vec::new()
-            };
+                    data
+                } else {
+                    Vec::new()
+                };
 
-            if code != 0 {
-                tracing::warn!(code, "actr_handle returned error");
+                if code != 0 {
+                    tracing::warn!(code, "actr_handle returned error");
+                    return Err(DynclibError::DispatchFailed(format!(
+                        "actr_handle returned error code {code}"
+                    )));
+                }
+
+                tracing::debug!(
+                    req_bytes = request_owned.len(),
+                    resp_bytes = response.len(),
+                    "actr_handle completed"
+                );
+
+                Ok(response)
+            })
+            .map_err(|error| {
+                DynclibError::DispatchFailed(format!("failed to start actr_handle: {error}"))
+            })?;
+        let result = match tokio::task::spawn_blocking(move || guest_thread.join()).await {
+            Ok(Ok(result)) => result?,
+            Ok(Err(_)) => {
+                return Err(DynclibError::DispatchFailed(
+                    "actr_handle panicked on the guest thread".into(),
+                ));
+            }
+            Err(error) => {
                 return Err(DynclibError::DispatchFailed(format!(
-                    "actr_handle returned error code {code}"
+                    "failed to join actr_handle: {error}"
                 )));
             }
-
-            tracing::debug!(
-                req_bytes = request_owned.len(),
-                resp_bytes = response.len(),
-                "actr_handle completed"
-            );
-
-            Ok(response)
-        })
-        .await
-        .map_err(|e| DynclibError::DispatchFailed(format!("spawn_blocking panicked: {e}")))??;
+        };
 
         let reply = guest_abi::decode_message::<AbiReply>(&result).map_err(|code| {
             DynclibError::DispatchFailed(format!(
@@ -639,53 +684,126 @@ impl DynclibInstance {
     }
 
     async fn shutdown(&mut self) -> DynclibResult<()> {
-        if self.is_shutdown {
-            return Ok(());
+        match self.shutdown_state {
+            ShutdownState::Complete => return Ok(()),
+            ShutdownState::Failed => {
+                return Err(DynclibError::DispatchFailed(
+                    "a previous actr_shutdown attempt failed; the dynamic library remains loaded"
+                        .into(),
+                ));
+            }
+            ShutdownState::Active => {}
         }
 
         let shutdown_fn = self.shutdown_fn;
         let ffi_guard = Arc::clone(&self.ffi_gate).lock_owned().await;
-        let code = tokio::task::spawn_blocking(move || {
-            let _ffi_guard = ffi_guard;
-            unsafe { shutdown_fn() }
-        })
-        .await
-        .map_err(|error| {
-            DynclibError::DispatchFailed(format!("actr_shutdown panicked: {error}"))
-        })?;
+        let shutdown_thread = match std::thread::Builder::new()
+            .name("actr-dynclib-shutdown".into())
+            .spawn(move || {
+                let _ffi_guard = ffi_guard;
+                unsafe { shutdown_fn() }
+            }) {
+            Ok(thread) => thread,
+            Err(error) => {
+                self.shutdown_state = ShutdownState::Failed;
+                return Err(DynclibError::DispatchFailed(format!(
+                    "failed to start actr_shutdown: {error}; the dynamic library will remain loaded"
+                )));
+            }
+        };
+        let code = match tokio::task::spawn_blocking(move || shutdown_thread.join()).await {
+            Ok(Ok(code)) => code,
+            Ok(Err(_)) => {
+                self.shutdown_state = ShutdownState::Failed;
+                return Err(DynclibError::DispatchFailed(
+                    "actr_shutdown panicked; the dynamic library will remain loaded".into(),
+                ));
+            }
+            Err(error) => {
+                self.shutdown_state = ShutdownState::Failed;
+                return Err(DynclibError::DispatchFailed(format!(
+                    "failed to join actr_shutdown: {error}; the dynamic library will remain loaded"
+                )));
+            }
+        };
         if code != guest_abi::code::SUCCESS {
+            self.shutdown_state = ShutdownState::Failed;
             return Err(DynclibError::DispatchFailed(format!(
-                "actr_shutdown returned error code {code}"
+                "actr_shutdown returned error code {code}; the dynamic library will remain loaded"
             )));
         }
-        self.is_shutdown = true;
+        self.shutdown_state = ShutdownState::Complete;
         Ok(())
     }
 }
 
 impl Drop for DynclibInstance {
     fn drop(&mut self) {
-        if self.is_shutdown {
-            return;
+        match self.shutdown_state {
+            ShutdownState::Complete => return,
+            ShutdownState::Failed => {
+                tracing::error!(
+                    "dynclib shutdown did not complete; retaining the dynamic library for process lifetime"
+                );
+                std::mem::forget(Arc::clone(&self.library_guard));
+                return;
+            }
+            ShutdownState::Active => {}
         }
 
         let shutdown_fn = self.shutdown_fn;
         let ffi_gate = Arc::clone(&self.ffi_gate);
-        let result = std::thread::Builder::new()
+        let shutdown_thread = std::thread::Builder::new()
             .name("actr-dynclib-shutdown".into())
             .spawn(move || {
                 let _ffi_guard = ffi_gate.blocking_lock();
                 unsafe { shutdown_fn() }
-            })
-            .and_then(|thread| {
-                thread
-                    .join()
-                    .map_err(|_| std::io::Error::other("actr_shutdown panicked"))
             });
-        if let Err(error) = result {
-            tracing::error!(%error, "failed to shut down dynclib before unload");
+        let shutdown_thread = match shutdown_thread {
+            Ok(thread) => thread,
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    "failed to schedule fallback dynclib shutdown; retaining the dynamic library for process lifetime"
+                );
+                std::mem::forget(Arc::clone(&self.library_guard));
+                return;
+            }
+        };
+
+        // The reaper owns the library guard while the shutdown thread runs and
+        // only releases it after that thread has fully exited. This keeps any
+        // guest-owned thread-local destructors mapped during thread teardown.
+        let library_guard = Arc::clone(&self.library_guard);
+        let reaper = std::thread::Builder::new()
+            .name("actr-dynclib-reaper".into())
+            .spawn(move || match shutdown_thread.join() {
+                Ok(guest_abi::code::SUCCESS) => {}
+                Ok(code) => {
+                    tracing::error!(
+                        code,
+                        "fallback actr_shutdown failed; retaining the dynamic library for process lifetime"
+                    );
+                    std::mem::forget(library_guard);
+                }
+                Err(_) => {
+                    tracing::error!(
+                        "fallback actr_shutdown panicked; retaining the dynamic library for process lifetime"
+                    );
+                    std::mem::forget(library_guard);
+                }
+            });
+        if let Err(error) = reaper {
+            tracing::error!(
+                %error,
+                "failed to schedule fallback dynclib reaper; retaining the dynamic library for process lifetime"
+            );
+            std::mem::forget(Arc::clone(&self.library_guard));
+        } else {
+            tracing::warn!(
+                "dynclib dropped without explicit shutdown; scheduled non-blocking fallback teardown"
+            );
         }
-        self.is_shutdown = true;
     }
 }
 
@@ -756,7 +874,6 @@ impl DynClibWorkload {
             .await
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) async fn shutdown(&mut self) -> DynclibResult<()> {
         self.instance.shutdown().await
     }

@@ -313,6 +313,7 @@ async fn dynclib_package_receives_runtime_hook_events() {
     }
 
     assert_recorded_hooks(rx, expected).await;
+    workload.shutdown().await.expect("shutdown dynclib");
 }
 
 #[cfg(feature = "dynclib-engine")]
@@ -333,6 +334,7 @@ async fn dynclib_package_observer_bridge_reaches_guest_hooks() {
     }
 
     assert_recorded_hooks(rx, expected).await;
+    observer.shutdown().await;
     recorder.abort();
 }
 

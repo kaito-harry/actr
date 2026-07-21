@@ -544,6 +544,23 @@ impl std::fmt::Debug for Workload {
 }
 
 impl Workload {
+    /// Release backend-owned execution resources after command intake closes.
+    ///
+    /// The normal dynclib lifecycle reaches this after `on_stop`, whose host
+    /// adapter already performs shutdown. Keeping this idempotent cleanup on
+    /// the runner's explicit `Shutdown` command also covers test harnesses and
+    /// callers that intentionally omit lifecycle hooks.
+    pub(crate) async fn shutdown(&mut self) -> ActorResult<()> {
+        match self {
+            #[cfg(feature = "dynclib-engine")]
+            Workload::DynClib(workload) => workload
+                .shutdown()
+                .await
+                .map_err(|error| ActrError::Internal(format!("workload shutdown failed: {error}"))),
+            _ => Ok(()),
+        }
+    }
+
     /// Invoke the workload's `on_start` lifecycle hook.
     pub(crate) fn on_start<'a>(
         &'a mut self,

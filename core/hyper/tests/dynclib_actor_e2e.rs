@@ -121,6 +121,7 @@ async fn dynclib_unknown_route_returns_error() {
     let result = instance.handle(&req_bytes, test_ctx(), &executor).await;
 
     assert!(result.is_err(), "unknown route should return error");
+    instance.shutdown().await.expect("shutdown dynclib");
 }
 
 /// Echo route -> returns payload without outbound calls
@@ -141,6 +142,7 @@ async fn dynclib_echo_returns_payload() {
         .expect("echo dispatch failed");
 
     assert_eq!(result, payload, "echo should return payload as-is");
+    instance.shutdown().await.expect("shutdown dynclib");
 }
 
 /// Double route -> triggers vtable call trampoline, returns x*2
@@ -191,6 +193,7 @@ async fn dynclib_double_dispatch() {
     assert_eq!(result.len(), 4, "response should be 4 bytes");
     let resp_val = i32::from_le_bytes([result[0], result[1], result[2], result[3]]);
     assert_eq!(resp_val, 14, "response should be 7 * 2 = 14");
+    instance.shutdown().await.expect("shutdown dynclib");
 }
 
 /// Multiple dispatches -> verifies state does not leak between calls
@@ -229,6 +232,8 @@ async fn dynclib_multiple_dispatches() {
         let resp_val = i32::from_le_bytes([result[0], result[1], result[2], result[3]]);
         assert_eq!(resp_val, x * 2, "dispatch({x}) should return {}", x * 2);
     }
+
+    instance.shutdown().await.expect("shutdown dynclib");
 }
 
 /// A future that returns Pending is driven by the guest-owned Tokio runtime.
@@ -337,4 +342,55 @@ async fn dynclib_shutdown_drains_managed_tasks() {
 
     instance.shutdown().await.expect("shutdown dynclib");
     assert_eq!(dynclib_active_bridge_count(), 0);
+}
+
+/// A reloaded image can be re-initialised after the previous instance shut
+/// down, even when the shared library stays mapped across the cycle.
+///
+/// Loading the image twice keeps `dlopen`'s refcount above zero after the
+/// first host is dropped, so the library is not unmapped and module-global
+/// guest state is not reinitialised by the loader. `actr_shutdown` must
+/// therefore reset that state itself — otherwise the second `actr_init` sees
+/// a stale Tokio runtime cell and returns `INIT_FAILED`.
+#[tokio::test]
+async fn dynclib_reinit_after_shutdown_same_image() {
+    let _guard = DYNCLIB_SERIAL.lock().await;
+    let so_path = fixture_so_path();
+
+    // Hold an extra reference so the first host's `dlclose` cannot unmap the
+    // image. This makes the stale-static-state regression deterministic on
+    // every supported native platform.
+    let keeper = DynclibHost::load(&so_path).expect("load keeper SO");
+
+    let mut first = instantiate_dynclib_workload(
+        DynclibHost::load(&so_path).expect("load SO 1"),
+        &test_config(),
+    )
+    .expect("first instantiate");
+    let result = first
+        .handle(
+            &make_envelope("test/echo", b"one".to_vec()),
+            test_ctx(),
+            &noop_executor(),
+        )
+        .await
+        .expect("first dispatch");
+    assert_eq!(result, b"one");
+    first.shutdown().await.expect("first shutdown");
+    drop(first);
+
+    // The image is still mapped through `keeper`, so successful re-init proves
+    // shutdown reset guest runtime state instead of relying on loader teardown.
+    let mut second =
+        instantiate_dynclib_workload(keeper, &test_config()).expect("second instantiate");
+    let result = second
+        .handle(
+            &make_envelope("test/echo", b"two".to_vec()),
+            test_ctx(),
+            &noop_executor(),
+        )
+        .await
+        .expect("second dispatch");
+    assert_eq!(result, b"two");
+    second.shutdown().await.expect("second shutdown");
 }

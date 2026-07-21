@@ -376,7 +376,9 @@ macro_rules! entry {
             ///
             /// Host calls this after dlopen, passing HostVTable and init payload.
             /// Returns 0 on success, negative on error.
-            /// Repeated calls return `INIT_FAILED` (one init per guest instance).
+            /// Repeated calls while an instance is active return `INIT_FAILED`.
+            /// A successful `actr_shutdown` resets the runtime for a subsequent
+            /// sequential initialization of the same loaded image.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn actr_init(
                 vtable: *const $crate::guest::vtable::HostVTable,
@@ -813,6 +815,9 @@ macro_rules! entry {
             }
 
             /// Stop background work before the host unloads this library.
+            ///
+            /// A non-success result means teardown could not prove that guest
+            /// code stopped; the host must keep the library mapped.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn actr_shutdown() -> i32 {
                 let shutdown_result = $crate::guest::dynclib::shutdown();

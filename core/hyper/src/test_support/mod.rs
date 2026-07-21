@@ -333,6 +333,11 @@ impl TestPackageHookObserver {
             }
         }
     }
+
+    /// Deterministically stop the owning workload runner and its backend.
+    pub async fn shutdown(&self) {
+        self.observer.workload_dispatch.shutdown().await;
+    }
 }
 
 pub struct TestDedupWaiter {
