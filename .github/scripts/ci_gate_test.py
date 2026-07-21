@@ -35,11 +35,21 @@ def test_rust_gate_avoids_slow_workspace_tests_and_unused_prewarm() -> None:
     assert "- name: Build release" not in rust_job
     assert "cargo build --release --verbose --all-features" not in rust_job
 
-    # The separate test job (not inside rust) runs cargo test on push to main
+    # The separate test job (not inside rust) runs cargo test for Rust changes.
     assert "  test:" in workflow
     test_job = _job(workflow, "test", "typescript")
     assert "- name: Run tests" in test_job
     assert "cargo test --workspace" in test_job
+
+
+def test_rust_test_gate_restores_cache_before_installing_tools() -> None:
+    workflow = CI_GATE_WORKFLOW.read_text(encoding="utf-8")
+    test_job = _job(workflow, "test", "typescript")
+
+    cache_step = "- uses: Swatinem/rust-cache@v2"
+    install_step = "- name: Install prebuilt WebAssembly tools"
+    assert test_job.index(cache_step) < test_job.index(install_step)
+    assert "cache-targets: false" in test_job
 
 
 def test_pr_gate_excludes_heavy_root_e2e_jobs() -> None:
@@ -599,6 +609,7 @@ def test_service_readiness_waits_for_exact_registration() -> None:
 
 if __name__ == "__main__":
     test_rust_gate_avoids_slow_workspace_tests_and_unused_prewarm()
+    test_rust_test_gate_restores_cache_before_installing_tools()
     test_pr_gate_excludes_heavy_root_e2e_jobs()
     test_scheduled_e2e_runs_root_level_browser_and_stream_e2e()
     test_pr_gate_swift_uses_macos_only_xcframework()
