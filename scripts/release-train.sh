@@ -113,7 +113,7 @@ Options:
   --version <X.Y.Z>  Stable semver used by the monorepo-managed release train (optional in CI).
   --dry-run          Validate the full flow in a disposable worktree without publishing.
   --prepare-only     Update release versions, validate, and commit locally for a release PR.
-  --skip-python      Skip Python package validation, version update, and publishing.
+  --skip-python      Skip Python package validation and publishing.
   --pre-release      Mark this release as a pre-release (e.g. 0.2.2-pre.1).
                      Uses npm tag "pre" and allows pre-release semver versions.
   --branch <branch>  Target release branch (default: main). Maintenance branches
@@ -958,22 +958,21 @@ for path in package_files:
 
     path.write_text("\n".join(lines) + "\n")
 
-if not skip_python:
-    pyproject = repo / "tools/protoc-gen/python/pyproject.toml"
-    py_lines = pyproject.read_text().splitlines()
-    current_section = None
-    for index, line in enumerate(py_lines):
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            current_section = stripped
-            continue
-        if current_section == "[project]" and stripped.startswith("version = "):
-            py_lines[index] = f'version = "{version}"'
-            break
-    else:
-        raise RuntimeError("project version not found in pyproject.toml")
+pyproject = repo / "tools/protoc-gen/python/pyproject.toml"
+py_lines = pyproject.read_text().splitlines()
+current_section = None
+for index, line in enumerate(py_lines):
+    stripped = line.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        current_section = stripped
+        continue
+    if current_section == "[project]" and stripped.startswith("version = "):
+        py_lines[index] = f'version = "{version}"'
+        break
+else:
+    raise RuntimeError("project version not found in pyproject.toml")
 
-    pyproject.write_text("\n".join(py_lines) + "\n")
+pyproject.write_text("\n".join(py_lines) + "\n")
 
 # Bump web and typescript package versions to match the release train version.
 web_packages = [

@@ -1003,7 +1003,13 @@ test_update_versions_syncs_optional_dependencies() {
 
   local temp_dir
   temp_dir=$(mktemp -d)
-  mkdir -p "$temp_dir/bindings/typescript"
+  mkdir -p "$temp_dir/bindings/typescript" "$temp_dir/tools/protoc-gen/python"
+
+  cat >"$temp_dir/tools/protoc-gen/python/pyproject.toml" <<'EOF'
+[project]
+name = "framework-codegen-python"
+version = "0.2.0"
+EOF
 
   # Create a minimal package.json with optionalDependencies.
   cat >"$temp_dir/bindings/typescript/package.json" <<'EOF'
@@ -1098,6 +1104,11 @@ EOF
   local workload_ver
   workload_ver=$(python3 -c "import json; d=json.load(open('$temp_dir/bindings/typescript/actr-workload/package.json')); print(d['version'])")
   assert_eq "0.3.0" "$workload_ver" "actr-workload version"
+
+  assert_eq \
+    'version = "0.3.0"' \
+    "$(grep '^version = ' "$temp_dir/tools/protoc-gen/python/pyproject.toml")" \
+    "Python metadata version with skip-python"
 
   assert_eq \
     'struct Generator { static let version = "0.3.0" }' \
