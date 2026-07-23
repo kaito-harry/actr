@@ -84,7 +84,7 @@ component: $(OUT)
 
 verify: component
 	@echo "==> wasm-tools component wit $(OUT)"
-	$(WASM_TOOLS) component wit $(OUT) > $(WIT_DUMP)
+	$(WASM_TOOLS) component wit $(OUT) | tee $(WIT_DUMP)
 	grep -q "actr:workload/host@0.2.0" $(WIT_DUMP)
 	grep -q "actr:workload/workload@0.2.0" $(WIT_DUMP)
 	$(WASM_TOOLS) validate $(OUT)
