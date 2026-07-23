@@ -7,6 +7,27 @@ import ci_targets
 
 
 class CiTargetsTest(unittest.TestCase):
+    def test_c_and_go_echo_workloads_trigger_component_builds(self) -> None:
+        paths = (
+            "examples/c/echo-workload/src/main.c",
+            "examples/go/echo-workload/build.sh",
+        )
+
+        for path in paths:
+            with self.subTest(path=path):
+                targets, reasons = ci_targets.detect_targets([path], full_run=False)
+
+                self.assertTrue(targets["c_go_workloads"])
+                self.assertIn(f"c_go_workload:{path}", reasons)
+
+    def test_v2_wit_change_rebuilds_c_and_go_components(self) -> None:
+        path = "core/framework/wit-v2/actr-workload.wit"
+        targets, reasons = ci_targets.detect_targets([path], full_run=False)
+
+        self.assertTrue(targets["c_go_workloads"])
+        self.assertTrue(targets["rust_core"])
+        self.assertIn(f"core_dependency:{path}", reasons)
+
     def test_typescript_echo_workload_triggers_workload_checks(self) -> None:
         targets, reasons = ci_targets.detect_targets(
             ["examples/typescript/echo-workload/src/actr_service.ts"],

@@ -2,7 +2,7 @@
 #
 # actr build manifest for the Go echo workload.
 #
-# Compilation is driven by `build.sh` (TinyGo + wit-bindgen-go), so this
+# Compilation is driven by `build.sh` (wit-bindgen + patched Go), so this
 # manifest does **not** declare a `[build]` section. Run packaging with:
 #
 #     ./build.sh                       # produce dist/echo-go-...wasm
@@ -17,7 +17,7 @@ edition = 1
 name = "EchoWorkloadGo"
 manufacturer = "acme"
 version = "0.1.0"
-description = "Echo workload authored in Go (TinyGo + wit-bindgen-go), Component Model guest"
+description = "Go echo workload for the async actr:workload@0.2.0 Component Model ABI"
 license = "Apache-2.0"
 
 # ── Binary artifact ──────────────────────────────────────────────────────────

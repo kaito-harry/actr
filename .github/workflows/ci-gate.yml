@@ -32,6 +32,7 @@ jobs:
       swift_binding: ${{ steps.targets.outputs.swift_binding }}
       kotlin_binding: ${{ steps.targets.outputs.kotlin_binding }}
       web_binding: ${{ steps.targets.outputs.web_binding }}
+      c_go_workloads: ${{ steps.targets.outputs.c_go_workloads }}
       release_related: ${{ steps.targets.outputs.release_related }}
     steps:
       - uses: actions/checkout@v5
@@ -635,6 +636,92 @@ jobs:
       - name: cli/assets sync drift gate
         run: bash bindings/web/scripts/sync-cli-assets.sh --check --skip-sw-host
 
+  c_go_workloads:
+    name: C and Go Workloads
+    needs: determine
+    if: needs.determine.outputs.c_go_workloads == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install pinned native workload toolchains
+        env:
+          WIT_BINDGEN_SHA256: 06b173e5aa3f3a0f5b5597c3502e2885fc9c63300f59a21151971249dda82bf4
+          WASM_TOOLS_SHA256: 4e2898f7ca3bd0536218ed9b7b36ff7b86954c57ae0e6272fde69728cbe01088
+          WASI_SDK_SHA256: c6c38aab56e5de88adf6c1ebc9c3ae8da72f88ec2b656fb024eda8d4167a0bc5
+          GO_SHA256: 63a9efff8601bdf9d3577b1d9d2ddd9b4d7a45dc09d78b73ebf03873e8c23766
+          WASI_ADAPTER_SHA256: 0acb10959bd3c1d2e7903ef82212910bfc156ab5698ef3f2ff669474ba59fb0a
+        run: |
+          tool_root="$RUNNER_TEMP/actr-native-workload-tools"
+          mkdir -p "$tool_root"
+
+          download() {
+            local url="$1"
+            local output="$2"
+            local sha256="$3"
+            curl --fail --location --retry 3 --retry-all-errors \
+              --output "$output" \
+              "$url"
+            echo "$sha256  $output" | sha256sum --check --status
+          }
+
+          download \
+            https://github.com/bytecodealliance/wit-bindgen/releases/download/v0.59.0/wit-bindgen-0.59.0-x86_64-linux.tar.gz \
+            "$tool_root/wit-bindgen.tar.gz" \
+            "$WIT_BINDGEN_SHA256"
+          mkdir "$tool_root/wit-bindgen"
+          tar --extract --gzip --file "$tool_root/wit-bindgen.tar.gz" \
+            --strip-components=1 --directory "$tool_root/wit-bindgen"
+
+          download \
+            https://github.com/bytecodealliance/wasm-tools/releases/download/v1.253.0/wasm-tools-1.253.0-x86_64-linux.tar.gz \
+            "$tool_root/wasm-tools.tar.gz" \
+            "$WASM_TOOLS_SHA256"
+          mkdir "$tool_root/wasm-tools"
+          tar --extract --gzip --file "$tool_root/wasm-tools.tar.gz" \
+            --strip-components=1 --directory "$tool_root/wasm-tools"
+
+          download \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-x86_64-linux.tar.gz \
+            "$tool_root/wasi-sdk.tar.gz" \
+            "$WASI_SDK_SHA256"
+          mkdir "$tool_root/wasi-sdk"
+          tar --extract --gzip --file "$tool_root/wasi-sdk.tar.gz" \
+            --strip-components=1 --directory "$tool_root/wasi-sdk"
+
+          download \
+            https://github.com/dicej/go/releases/download/go1.25.5-wasi-on-idle/go-linux-amd64-bootstrap.tbz \
+            "$tool_root/go.tbz" \
+            "$GO_SHA256"
+          mkdir "$tool_root/go"
+          tar --extract --bzip2 --file "$tool_root/go.tbz" \
+            --strip-components=1 --directory "$tool_root/go"
+
+          download \
+            https://github.com/bytecodealliance/wasmtime/releases/download/v46.0.1/wasi_snapshot_preview1.reactor.wasm \
+            "$tool_root/wasi_snapshot_preview1.reactor.wasm" \
+            "$WASI_ADAPTER_SHA256"
+
+          {
+            echo "WIT_BINDGEN=$tool_root/wit-bindgen/wit-bindgen"
+            echo "WASM_TOOLS=$tool_root/wasm-tools/wasm-tools"
+            echo "WASI_SDK=$tool_root/wasi-sdk"
+            echo "ACTR_GO=$tool_root/go/bin/go"
+            echo "WASI_ADAPTER=$tool_root/wasi_snapshot_preview1.reactor.wasm"
+          } >> "$GITHUB_ENV"
+
+      - name: Build and validate C V2 workload
+        run: >-
+          make -C examples/c/echo-workload verify
+          WIT_BINDGEN="$WIT_BINDGEN"
+          WASM_TOOLS="$WASM_TOOLS"
+          WASI_SDK="$WASI_SDK"
+          WASI_ADAPTER="$WASI_ADAPTER"
+
+      - name: Build and validate Go V2 workload
+        run: bash examples/go/echo-workload/build.sh
+
   gate:
     name: Gate
     runs-on: ubuntu-latest
@@ -650,6 +737,7 @@ jobs:
       - swift
       - kotlin
       - web
+      - c_go_workloads
       - test
     env:
       MODE: ${{ needs.determine.outputs.mode }}
@@ -664,6 +752,7 @@ jobs:
       SWIFT_RESULT: ${{ needs.swift.result }}
       KOTLIN_RESULT: ${{ needs.kotlin.result }}
       WEB_RESULT: ${{ needs.web.result }}
+      C_GO_WORKLOADS_RESULT: ${{ needs.c_go_workloads.result }}
       TEST_RESULT: ${{ needs.test.result }}
     steps:
       - name: Summarize gate
@@ -683,6 +772,7 @@ jobs:
               "swift": os.environ["SWIFT_RESULT"],
               "kotlin": os.environ["KOTLIN_RESULT"],
               "web": os.environ["WEB_RESULT"],
+              "c_go_workloads": os.environ["C_GO_WORKLOADS_RESULT"],
               "test": os.environ["TEST_RESULT"],
           }
 

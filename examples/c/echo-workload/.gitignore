@@ -2,6 +2,7 @@
 gen/
 
 # Build artifacts.
-echo.wasm
+build/
+dist/
 *.wasm
 *.o

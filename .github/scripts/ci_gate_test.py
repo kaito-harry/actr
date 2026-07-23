@@ -75,6 +75,26 @@ def test_pr_gate_excludes_heavy_root_e2e_jobs() -> None:
     assert "web_browser_e2e" not in workflow
 
 
+def test_native_workload_gate_builds_c_and_go_with_pinned_tools() -> None:
+    workflow = CI_GATE_WORKFLOW.read_text(encoding="utf-8")
+    native_job = _job(workflow, "c_go_workloads", "gate")
+
+    for version in (
+        "wit-bindgen-0.59.0-x86_64-linux.tar.gz",
+        "wasm-tools-1.253.0-x86_64-linux.tar.gz",
+        "wasi-sdk-24.0-x86_64-linux.tar.gz",
+        "go1.25.5-wasi-on-idle",
+        "wasi_snapshot_preview1.reactor.wasm",
+    ):
+        assert version in native_job
+
+    assert "sha256sum --check --status" in native_job
+    assert "make -C examples/c/echo-workload verify" in native_job
+    assert "bash examples/go/echo-workload/build.sh" in native_job
+    assert "C_GO_WORKLOADS_RESULT" in workflow
+    assert '"c_go_workloads": os.environ["C_GO_WORKLOADS_RESULT"]' in workflow
+
+
 def test_blocked_typescript_component_e2e_jobs_share_disable_gate() -> None:
     workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
 
@@ -671,6 +691,7 @@ if __name__ == "__main__":
     test_rust_test_gate_restores_cache_before_installing_tools()
     test_msrv_gate_builds_full_workspace_on_pinned_toolchain()
     test_pr_gate_excludes_heavy_root_e2e_jobs()
+    test_native_workload_gate_builds_c_and_go_with_pinned_tools()
     test_blocked_typescript_component_e2e_jobs_share_disable_gate()
     test_typescript_componentize_only_allows_known_upstream_failure()
     test_python_workload_gate_builds_generated_cli_scaffold()

@@ -1,95 +1,113 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# Build the echo Go workload as a Component Model wasm and pack it into
-# a signed `.actr` package.
-#
-# Required tools (versions known to work against this WIT contract):
-#
-#   - tinygo            >= 0.34.0   (wasip2 target, Component Model linker)
-#   - wit-bindgen-go    >= 0.6.0    (Bytecode Alliance Go bindings generator)
-#   - wasm-tools        >= 1.219    (component metadata round-trip + verify)
-#   - go                >= 1.23     (TinyGo dispatches to the system go for deps)
-#
-# Optional (for `actr build --no-compile` packaging):
-#
-#   - actr CLI          (workspace root: cargo run -p actr-cli -- build ...)
-#
-# Usage:
-#   ./build.sh           # generate + compile + verify world
-#   ./build.sh package   # also run `actr build --no-compile` to produce .actr
+# Build the Go echo workload for the async actr:workload@0.2.0 world.
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WIT_FILE="${HERE}/../../../core/framework/wit/actr-workload.wit"
-OUT_WASM="${HERE}/dist/echo-go-0.1.0-wasm32-wasip2.wasm"
+WIT_FILE="${HERE}/../../../core/framework/wit-v2/actr-workload.wit"
+WORLD="actr-workload-guest-v2"
+GEN_DIR="${HERE}/gen"
+BUILD_DIR="${HERE}/build"
+DIST_DIR="${HERE}/dist"
+CORE_WASM="${BUILD_DIR}/echo-go.core.wasm"
+EMBEDDED_WASM="${BUILD_DIR}/echo-go.embedded.wasm"
+OUT_WASM="${DIST_DIR}/echo-go-0.1.0-wasm32-wasip2.wasm"
+WIT_DUMP="${DIST_DIR}/echo-go.wit.txt"
+
+WIT_BINDGEN="${WIT_BINDGEN:-wit-bindgen}"
+ACTR_GO="${ACTR_GO:-go}"
+WASM_TOOLS="${WASM_TOOLS:-wasm-tools}"
+
+WIT_BINDGEN_VERSION="wit-bindgen-cli 0.59.0"
+GO_VERSION="go1.25.5"
+WASM_TOOLS_VERSION="wasm-tools 1.253.0"
+ADAPTER_URL="https://github.com/bytecodealliance/wasmtime/releases/download/v46.0.1/wasi_snapshot_preview1.reactor.wasm"
+ADAPTER_SHA256="0acb10959bd3c1d2e7903ef82212910bfc156ab5698ef3f2ff669474ba59fb0a"
+WASI_ADAPTER="${WASI_ADAPTER:-${HERE}/.cache/wasi_snapshot_preview1.reactor-v46.0.1.wasm}"
+
+require_version() {
+    local actual="$1"
+    local expected="$2"
+    local tool="$3"
+    if [[ "${actual}" != *"${expected}"* ]]; then
+        echo "error: ${tool} must report ${expected}; got: ${actual}" >&2
+        exit 1
+    fi
+}
+
+require_version "$("${WIT_BINDGEN}" --version)" "${WIT_BINDGEN_VERSION}" "wit-bindgen"
+require_version "$("${ACTR_GO}" version)" "${GO_VERSION}" "patched Go"
+require_version "$("${WASM_TOOLS}" --version)" "${WASM_TOOLS_VERSION}" "wasm-tools"
 
 if [[ ! -f "${WIT_FILE}" ]]; then
-    echo "error: WIT contract not found at ${WIT_FILE}" >&2
+    echo "error: V2 WIT contract not found at ${WIT_FILE}" >&2
     exit 1
 fi
 
-# ── 1. Generate Go bindings from WIT ─────────────────────────────────────────
-#
-# wit-bindgen-go drops a tree under `gen/` matching the WIT package shape:
-#
-#   gen/
-#   ├── actr/workload/types/         <- record / variant types
-#   ├── actr/workload/host/          <- imported host functions
-#   ├── actr/workload/workload/      <- exported workload interface
-#   └── actr-workload-guest/         <- world entry-point glue
-#
-# The generator is idempotent — committing `gen/` would also be valid, but
-# we keep it out of the tree (.gitignore) since it is reproducible.
+if [[ ! -f "${WASI_ADAPTER}" ]]; then
+    mkdir -p "$(dirname "${WASI_ADAPTER}")"
+    curl --fail --location --retry 3 --retry-all-errors \
+        --output "${WASI_ADAPTER}" \
+        "${ADAPTER_URL}"
+fi
+echo "${ADAPTER_SHA256}  ${WASI_ADAPTER}" | sha256sum --check --status
 
-echo "[1/4] wit-bindgen-go generate ..."
-rm -rf "${HERE}/gen"
-wit-bindgen-go generate \
-    --world actr-workload-guest \
-    --out "${HERE}/gen" \
+rm -rf "${GEN_DIR}" "${BUILD_DIR}" "${DIST_DIR}"
+mkdir -p \
+    "${GEN_DIR}/export_actr_workload_workload" \
+    "${BUILD_DIR}" \
+    "${DIST_DIR}"
+
+echo "[1/5] Generate async Go bindings ..."
+"${WIT_BINDGEN}" go \
+    --world "${WORLD}" \
+    --out-dir "${GEN_DIR}" \
     "${WIT_FILE}"
+cp \
+    "${HERE}/src/export_actr_workload_workload/workload.go" \
+    "${GEN_DIR}/export_actr_workload_workload/workload.go"
 
-# ── 2. Resolve Go module dependencies ─────────────────────────────────────────
-echo "[2/4] go mod tidy ..."
-( cd "${HERE}" && go mod tidy )
+echo "[2/5] Resolve the generated Go module ..."
+(
+    cd "${GEN_DIR}"
+    "${ACTR_GO}" mod tidy
+)
 
-# ── 3. Compile to wasm32-wasip2 Component ─────────────────────────────────────
-#
-# `tinygo build -target=wasip2` emits a Component directly (TinyGo embeds the
-# wasi:cli + wasi:io WIT and runs wasm-component-ld internally). The output is
-# already a Component Model binary — no separate wasm-tools `component new`
-# step is needed.
+echo "[3/5] Build the wasm32-wasip1 reactor core module ..."
+(
+    cd "${GEN_DIR}"
+    GOOS=wasip1 GOARCH=wasm "${ACTR_GO}" build \
+        -buildmode=c-shared \
+        -ldflags=-checklinkname=0 \
+        -o "${CORE_WASM}"
+)
 
-echo "[3/4] tinygo build (wasip2) ..."
-mkdir -p "${HERE}/dist"
-( cd "${HERE}" && tinygo build \
-    -target=wasip2 \
-    -wit-package "${WIT_FILE}" \
-    -wit-world actr-workload-guest \
-    -o "${OUT_WASM}" \
-    ./... )
+echo "[4/5] Embed V2 WIT and create the Component ..."
+"${WASM_TOOLS}" component embed \
+    --world "${WORLD}" \
+    "${WIT_FILE}" \
+    "${CORE_WASM}" \
+    -o "${EMBEDDED_WASM}"
+"${WASM_TOOLS}" component new \
+    --adapt "${WASI_ADAPTER}" \
+    "${EMBEDDED_WASM}" \
+    -o "${OUT_WASM}"
 
-# ── 4. Verify world / interfaces ─────────────────────────────────────────────
-echo "[4/4] wasm-tools component wit (verify world) ..."
-wasm-tools component wit "${OUT_WASM}" | tee "${HERE}/dist/echo-go.wit.txt"
+echo "[5/5] Validate the V2 component ..."
+"${WASM_TOOLS}" validate "${OUT_WASM}"
+"${WASM_TOOLS}" component wit "${OUT_WASM}" > "${WIT_DUMP}"
+grep -q "actr:workload/host@0.2.0" "${WIT_DUMP}"
+grep -q "actr:workload/workload@0.2.0" "${WIT_DUMP}"
 
-if grep -q "actr-workload-guest" "${HERE}/dist/echo-go.wit.txt"; then
-    echo
-    echo "OK: emitted Component implements world actr-workload-guest"
-else
-    echo "FAIL: world actr-workload-guest not found in component metadata" >&2
-    exit 1
-fi
-
-# ── Optional: pack into .actr ────────────────────────────────────────────────
 if [[ "${1:-}" == "package" ]]; then
-    echo
-    echo "[+] actr build --no-compile ..."
-    ACTR_ROOT="${HERE}/../../.."
-    ( cd "${HERE}" && cargo run --manifest-path "${ACTR_ROOT}/Cargo.toml" -p actr -- \
-        build --no-compile -m manifest.toml )
+    echo "[+] Package with actr ..."
+    (
+        cd "${HERE}"
+        cargo run --manifest-path "${HERE}/../../../Cargo.toml" -p actr-cli -- \
+            build --no-compile -m manifest.toml
+    )
 fi
 
-echo
 echo "Done. Component at: ${OUT_WASM}"

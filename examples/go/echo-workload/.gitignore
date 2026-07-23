@@ -8,7 +8,7 @@ dist/
 *.wasm
 *.actr
 
-# Go build cache (tinygo + go)
+# Downloaded adapter and local Go build cache
 .cache/
 
 # Editor/local
