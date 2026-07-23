@@ -43,7 +43,8 @@ The script:
 2. Copies the checked-in implementation into the generated module.
 3. Builds a wasm32-wasip1 reactor with the patched Go compiler.
 4. Embeds the V2 WIT and adapts Preview 1 into a component.
-5. Validates the component and checks both actr interfaces are version 0.2.0.
+5. Validates the component, checks its async V2 workload export and invocation
+   context, and rejects any V1 interface.
 
 The pinned Wasmtime adapter is downloaded and hash-checked automatically unless
 `WASI_ADAPTER` points to an existing copy. The final component is:
@@ -51,6 +52,9 @@ The pinned Wasmtime adapter is downloaded and hash-checked automatically unless
 ```text
 dist/echo-go-0.1.0-wasm32-wasip2.wasm
 ```
+
+The implementation does not call a host function, so componentization may
+trim the unused `host` import from the inferred component world.
 
 Pass `package` to `build.sh` to additionally invoke
 `actr build --no-compile`.

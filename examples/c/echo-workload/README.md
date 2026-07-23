@@ -47,9 +47,10 @@ The final component is written to:
 dist/echo-c-0.1.0-wasm32-wasip2.wasm
 ```
 
-`make verify` validates the binary and checks that its inferred world imports
-`actr:workload/host@0.2.0` and exports
-`actr:workload/workload@0.2.0`.
+`make verify` validates the binary and checks that its inferred world exports
+`actr:workload/workload@0.2.0`, uses async functions and explicit invocation
+context, and contains no V1 interface. Because this echo implementation does
+not call a host function, componentization trims the unused `host` import.
 
 ## Memory ownership
 
