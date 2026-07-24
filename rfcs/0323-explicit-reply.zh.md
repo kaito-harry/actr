@@ -1,6 +1,6 @@
 # RFC-0323: 显式回复（Explicit Reply）——受理与回复解耦
 
-- 状态（Status）：提案（Proposed）
+- 状态（Status）：已接受（Accepted）
 - 日期（Date）：2026-07-08
 - 修订（Revised）：2026-07-24（按 #289 review 重写，对齐 #337 之后的 main）
 - RFC PR：[Actrium/actr#289](https://github.com/Actrium/actr/pull/289)
