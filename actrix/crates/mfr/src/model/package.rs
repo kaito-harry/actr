@@ -32,6 +32,8 @@ pub struct ActrPackage {
     pub target: String,
     pub manifest: String,
     pub signature: String,
+    /// MFR key that authenticated this package at publish time.
+    pub signing_key_id: Option<String>,
     /// Proto files JSON for filing/audit (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proto_files: Option<String>,
@@ -58,6 +60,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for ActrPackage {
             target: row.try_get("target").unwrap_or_default(),
             manifest: row.try_get("manifest")?,
             signature: row.try_get("signature")?,
+            signing_key_id: row.try_get("signing_key_id").unwrap_or(None),
             proto_files: row.try_get("proto_files").unwrap_or_default(),
             status,
             published_at: row.try_get("published_at")?,
@@ -77,13 +80,14 @@ impl ActrPackage {
         target: &str,
         manifest: &str,
         signature: &str,
+        signing_key_id: &str,
         proto_files: Option<&str>,
     ) -> Result<Self, MfrError> {
         let type_str = format!("{}:{}:{}", manufacturer, name, version);
         let now = Utc::now().timestamp();
         let id = sqlx::query(
-            "INSERT INTO mfr_package (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, proto_files, status, published_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)",
+            "INSERT INTO mfr_package (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, signing_key_id, proto_files, status, published_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)",
         )
         .bind(mfr_id)
         .bind(manufacturer)
@@ -93,6 +97,7 @@ impl ActrPackage {
         .bind(target)
         .bind(manifest)
         .bind(signature)
+        .bind(signing_key_id)
         .bind(proto_files)
         .bind(now)
         .execute(pool)
@@ -135,6 +140,25 @@ impl ActrPackage {
     ) -> Result<Option<Self>, MfrError> {
         Ok(sqlx::query_as::<_, ActrPackage>(
             "SELECT * FROM mfr_package WHERE type_str = ? AND target = ? AND status = 'active'",
+        )
+        .bind(type_str)
+        .bind(target)
+        .fetch_optional(pool)
+        .await?)
+    }
+
+    /// Lookup a package tuple regardless of lifecycle status.
+    ///
+    /// AIS uses this to distinguish a package that was never published from a
+    /// package that was explicitly revoked. A revoked tuple must not fall
+    /// through to unpublished-package authentication.
+    pub async fn get_by_type_and_target_any_status(
+        pool: &SqlitePool,
+        type_str: &str,
+        target: &str,
+    ) -> Result<Option<Self>, MfrError> {
+        Ok(sqlx::query_as::<_, ActrPackage>(
+            "SELECT * FROM mfr_package WHERE type_str = ? AND target = ?",
         )
         .bind(type_str)
         .bind(target)

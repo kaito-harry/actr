@@ -699,9 +699,8 @@ impl AIdIssuer {
         match auth_mode {
             actr_protocol::RegisterAuthMode::Unspecified
             | actr_protocol::RegisterAuthMode::Package => {
-                // verify MFR identity (check mfr_package table; pass if registered and active (published package))
-                // otherwise try signature verification (own package, not yet published)
-                // otherwise reject
+                // Verify MFR identity through a published package, or through
+                // signatures for an unpublished package.
                 self.verify_mfr_identity(request).await
             }
             actr_protocol::RegisterAuthMode::Linked => {
@@ -741,8 +740,10 @@ impl AIdIssuer {
 
     /// verify MFR identity
     ///
-    /// Path 1: check mfr_package table; pass if registered and active (published package)
-    /// Path 2: not in table, try signature verification (own package, not yet published)
+    /// Path 1: an existing package tuple is authoritative. Active packages must
+    /// still have an active MFR and a non-revoked signing key; revoked packages
+    /// are terminal and cannot fall through.
+    /// Path 2: only a never-published tuple may use manifest and request signatures.
     /// Otherwise reject
     async fn verify_mfr_identity(&self, request: &RegisterRequest) -> Result<(), AidError> {
         let actr_type = &request.actr_type;
@@ -785,13 +786,36 @@ impl AIdIssuer {
                 AidError::InvalidFormat
             })?;
 
-        let published_pkg =
-            actrix_mfr::model::ActrPackage::get_by_type_and_target(&pool, &type_str, target_ref)
-                .await
-                .map_err(|e| AidError::GenerationFailed(format!("MFR lookup failed: {e}")))?;
+        let published_pkg = actrix_mfr::model::ActrPackage::get_by_type_and_target_any_status(
+            &pool, &type_str, target_ref,
+        )
+        .await
+        .map_err(|e| AidError::GenerationFailed(format!("MFR lookup failed: {e}")))?;
 
         if let Some(pkg) = published_pkg {
             use sha2::{Digest, Sha256};
+
+            if pkg.status == actrix_mfr::model::PkgStatus::Revoked {
+                platform::recording::warn!(
+                    "MFR table lookup rejected: package revoked, type_str={}, target={}",
+                    type_str,
+                    target_ref
+                );
+                return Err(AidError::PackageRevoked);
+            }
+
+            if pkg.manufacturer != actr_type.manufacturer
+                || pkg.name != actr_type.name
+                || pkg.version != actr_type.version
+                || pkg.target != target_ref
+            {
+                platform::recording::warn!(
+                    "MFR table lookup rejected: package identity mismatch, type_str={}, target={}",
+                    type_str,
+                    target_ref
+                );
+                return Err(AidError::ManufacturerNotVerified);
+            }
 
             let request_manifest_hash = Sha256::digest(request_manifest.as_ref());
             let stored_manifest_hash = Sha256::digest(pkg.manifest.as_bytes());
@@ -807,10 +831,17 @@ impl AIdIssuer {
                 return Err(AidError::ManufacturerNotVerified);
             }
 
+            let manager = actrix_mfr::MfrManager::new(pool.clone());
+            let signing_key_id = manager
+                .verify_published_package_signing_key(&pkg)
+                .await
+                .map_err(Self::map_mfr_verification_error)?;
+
             platform::recording::debug!(
-                "MFR table lookup passed, type_str={}, target={}",
+                "MFR table lookup passed, type_str={}, target={}, signing_key_id={}",
                 type_str,
-                target_ref
+                target_ref,
+                signing_key_id
             );
             return Ok(());
         }
@@ -894,25 +925,7 @@ impl AIdIssuer {
         let mfr_info = manager
             .resolve_key_by_id(mfr_name, &signing_key_id)
             .await
-            .map_err(|e| {
-                // Distinguish revoked keys from other lookup failures:
-                // KeyRevoked → clear rejection, not an internal error
-                if matches!(e, actrix_mfr::MfrError::KeyRevoked(_)) {
-                    platform::recording::warn!(
-                        "MFR signing key has been revoked: manufacturer={}, key_id={}",
-                        mfr_name,
-                        signing_key_id
-                    );
-                    return AidError::ManufacturerNotVerified;
-                }
-                platform::recording::warn!(
-                    "MFR public key lookup failed: manufacturer={}, key_id={}, err={}",
-                    mfr_name,
-                    signing_key_id,
-                    e
-                );
-                AidError::GenerationFailed(format!("MFR lookup failed: {e}"))
-            })?;
+            .map_err(Self::map_mfr_verification_error)?;
 
         // Verify package manifest signature using the manufacturer's public key.
         let sig_b64 = base64::prelude::BASE64_STANDARD.encode(mfr_signature.as_ref());
@@ -1049,6 +1062,26 @@ impl AIdIssuer {
             type_str
         );
         Ok(())
+    }
+
+    fn map_mfr_verification_error(error: actrix_mfr::MfrError) -> AidError {
+        let message = error.to_string();
+        match error {
+            actrix_mfr::MfrError::NotFound
+            | actrix_mfr::MfrError::KeyRevoked(_)
+            | actrix_mfr::MfrError::InvalidStatus(_)
+            | actrix_mfr::MfrError::CertificateExpired
+            | actrix_mfr::MfrError::InvalidSignature
+            | actrix_mfr::MfrError::Unauthorized
+            | actrix_mfr::MfrError::InvalidRequest(_) => {
+                platform::recording::warn!("MFR verification rejected: {}", message);
+                AidError::ManufacturerNotVerified
+            }
+            other => {
+                platform::recording::warn!("MFR verification failed internally: {}", other);
+                AidError::GenerationFailed(format!("MFR verification failed: {other}"))
+            }
+        }
     }
 
     fn unix_now_secs() -> Result<u64, AidError> {

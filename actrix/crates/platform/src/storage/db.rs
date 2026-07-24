@@ -170,6 +170,7 @@ impl Database {
                 target       TEXT    NOT NULL,
                 manifest     TEXT    NOT NULL,
                 signature    TEXT    NOT NULL,
+                signing_key_id TEXT,
                 status       TEXT    NOT NULL DEFAULT 'active',
                 published_at INTEGER NOT NULL,
                 revoked_at   INTEGER,
@@ -198,6 +199,12 @@ impl Database {
 
         // Migrate: add proto_files column for proto filing (JSON text, nullable)
         let _ = sqlx::query("ALTER TABLE mfr_package ADD COLUMN proto_files TEXT")
+            .execute(&self.pool)
+            .await; // intentionally ignore error (column may already exist)
+
+        // Migrate: record the MFR key that authenticated each newly published package.
+        // Existing rows remain nullable and are resolved from their signed manifest.
+        let _ = sqlx::query("ALTER TABLE mfr_package ADD COLUMN signing_key_id TEXT")
             .execute(&self.pool)
             .await; // intentionally ignore error (column may already exist)
 

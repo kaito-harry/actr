@@ -1,6 +1,9 @@
 use crate::{
     MfrError, crypto, github,
-    model::{ActrPackage, GitHubRepoChallenge, Manufacturer, MfrStatus, PkgStatus, PublishNonce},
+    model::{
+        ActrPackage, GitHubRepoChallenge, Manufacturer, MfrKeyHistory, MfrStatus, PkgStatus,
+        PublishNonce, key_history::KeyHistoryStatus,
+    },
     reserved,
 };
 use serde::{Deserialize, Serialize};
@@ -32,6 +35,8 @@ pub struct MfrCertificate {
     pub mfr_name: String,
     pub mfr_pubkey: String,
     pub issued_at: i64,
+    /// End of this key's authority to publish new packages. Natural expiry
+    /// does not invalidate signatures made by this key.
     pub expires_at: i64,
 }
 
@@ -155,22 +160,32 @@ impl MfrManager {
         &self.pool
     }
 
+    fn validate_publish_authority(mfr: &Manufacturer) -> Result<(), MfrError> {
+        if mfr.status != MfrStatus::Active {
+            return Err(MfrError::InvalidStatus(format!(
+                "MFR '{}' is not active",
+                mfr.name
+            )));
+        }
+
+        let key_expires_at = mfr.key_expires_at.ok_or(MfrError::CertificateExpired)?;
+        if chrono::Utc::now().timestamp() >= key_expires_at {
+            return Err(MfrError::CertificateExpired);
+        }
+
+        Ok(())
+    }
+
     // ========== Publish Nonce Challenge-Response ==========
 
     /// Request a one-time nonce for publish authentication.
     ///
     /// Also performs lazy cleanup of old nonce records.
     pub async fn request_nonce(&self, manufacturer: &str) -> Result<Vec<u8>, MfrError> {
-        // Validate manufacturer exists and is active
         let mfr = Manufacturer::get_by_name(&self.pool, manufacturer)
             .await?
             .ok_or(MfrError::NotFound)?;
-        if mfr.status != MfrStatus::Active {
-            return Err(MfrError::InvalidStatus(format!(
-                "MFR '{}' is not active",
-                manufacturer
-            )));
-        }
+        Self::validate_publish_authority(&mfr)?;
 
         // Lazy cleanup of old nonces
         let cleaned = PublishNonce::cleanup(&self.pool, self.nonce_retain_secs).await?;
@@ -368,6 +383,12 @@ impl MfrManager {
         let mfr = Manufacturer::get_by_name(&self.pool, name)
             .await?
             .ok_or(MfrError::NotFound)?;
+        if mfr.status != MfrStatus::Active {
+            return Err(MfrError::InvalidStatus(format!(
+                "MFR '{}' is not active",
+                name
+            )));
+        }
 
         // Is it the current key?
         if mfr.key_id == key_id {
@@ -394,6 +415,98 @@ impl MfrManager {
             public_key: history.public_key,
             certificate: cert,
         })
+    }
+
+    /// Verify the MFR key that authenticated a published package.
+    ///
+    /// Natural expiration and normal retirement do not invalidate an existing
+    /// package. Explicitly revoked keys do. New packages store signing_key_id
+    /// directly; legacy rows fall back to the signed manifest or, if needed,
+    /// cryptographic identification across the MFR's non-revoked keys.
+    pub async fn verify_published_package_signing_key(
+        &self,
+        package: &ActrPackage,
+    ) -> Result<String, MfrError> {
+        let mfr = Manufacturer::get(&self.pool, package.mfr_id)
+            .await?
+            .ok_or(MfrError::NotFound)?;
+        if mfr.name != package.manufacturer {
+            return Err(MfrError::InvalidRequest(
+                "package manufacturer does not match its MFR record".to_string(),
+            ));
+        }
+        if mfr.status != MfrStatus::Active {
+            return Err(MfrError::InvalidStatus(format!(
+                "MFR '{}' is not active",
+                mfr.name
+            )));
+        }
+
+        let manifest_key_id = package
+            .manifest
+            .parse::<toml::Value>()
+            .ok()
+            .and_then(|manifest| {
+                manifest
+                    .get("signing_key_id")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned)
+            });
+
+        if let (Some(stored), Some(manifest)) = (
+            package.signing_key_id.as_deref(),
+            manifest_key_id.as_deref(),
+        ) && stored != manifest
+        {
+            return Err(MfrError::InvalidSignature);
+        }
+
+        if let Some(key_id) = package
+            .signing_key_id
+            .as_deref()
+            .or(manifest_key_id.as_deref())
+        {
+            let key = self.resolve_key_by_id(&mfr.name, key_id).await?;
+            let valid = crypto::verify_signature(
+                package.manifest.as_bytes(),
+                &package.signature,
+                &key.public_key,
+            )?;
+            return if valid {
+                Ok(key.key_id)
+            } else {
+                Err(MfrError::InvalidSignature)
+            };
+        }
+
+        // Legacy package: identify the signing key by verifying the stored
+        // signature against the current key and all non-revoked historical keys.
+        if !mfr.key_id.is_empty() && !mfr.public_key.is_empty() {
+            let valid = crypto::verify_signature(
+                package.manifest.as_bytes(),
+                &package.signature,
+                &mfr.public_key,
+            )?;
+            if valid {
+                return Ok(mfr.key_id);
+            }
+        }
+
+        for history in MfrKeyHistory::list_by_mfr(&self.pool, mfr.id).await? {
+            if history.status == KeyHistoryStatus::Revoked {
+                continue;
+            }
+            let valid = crypto::verify_signature(
+                package.manifest.as_bytes(),
+                &package.signature,
+                &history.public_key,
+            )?;
+            if valid {
+                return Ok(history.key_id);
+            }
+        }
+
+        Err(MfrError::InvalidSignature)
     }
 
     /// Admin: Rotate the signing key for a manufacturer.
@@ -446,19 +559,7 @@ impl MfrManager {
         let mfr = Manufacturer::get_by_name(&self.pool, &req.manufacturer)
             .await?
             .ok_or(MfrError::NotFound)?;
-        if mfr.status != MfrStatus::Active {
-            return Err(MfrError::InvalidStatus(format!(
-                "MFR '{}' is not active",
-                req.manufacturer
-            )));
-        }
-
-        // Check if signing key has expired — None means key_expires_at was not set,
-        // which is treated as invalid (not "never expires")
-        let key_expires = mfr.key_expires_at.ok_or(MfrError::CertificateExpired)?;
-        if chrono::Utc::now().timestamp() > key_expires {
-            return Err(MfrError::CertificateExpired);
-        }
+        Self::validate_publish_authority(&mfr)?;
 
         // --- Challenge-Response nonce verification ---
         // Flow: find_pending → verify nonce_sig over the full signable request body
@@ -575,6 +676,20 @@ impl MfrManager {
             )));
         }
 
+        // If a modern manifest declares its signing key, it must identify the
+        // current publish-authority key. The database field remains
+        // authoritative so legacy manifests without this field stay publishable.
+        if let Some(manifest_key_id) = manifest_toml
+            .get("signing_key_id")
+            .and_then(|value| value.as_str())
+            && manifest_key_id != mfr.key_id
+        {
+            return Err(MfrError::InvalidRequest(format!(
+                "manifest signing_key_id '{}' != current MFR key '{}'",
+                manifest_key_id, mfr.key_id
+            )));
+        }
+
         // Check target (nested under [binary])
         let t = manifest_toml
             .get("binary")
@@ -602,6 +717,7 @@ impl MfrManager {
             &req.target,
             &req.manifest,
             &req.signature,
+            &mfr.key_id,
             proto_files_str.as_deref(),
         )
         .await?;

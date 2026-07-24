@@ -78,6 +78,7 @@ async fn setup_test_pool() -> SqlitePool {
             key_id INTEGER NOT NULL DEFAULT 1,
             manifest TEXT NOT NULL,
             signature TEXT NOT NULL,
+            signing_key_id TEXT,
             proto_files TEXT,
             status TEXT NOT NULL DEFAULT 'active',
             published_at INTEGER NOT NULL,
@@ -618,6 +619,7 @@ async fn test_package_publish_and_get() {
         "wasm32-wasip1",
         "manifest content",
         "sig123",
+        &mfr.key_id,
         None,
     )
     .await
@@ -660,6 +662,7 @@ async fn test_package_duplicate_rejected() {
         "wasm32-wasip1",
         "m",
         "s",
+        &mfr.key_id,
         None,
     )
     .await
@@ -673,6 +676,7 @@ async fn test_package_duplicate_rejected() {
         "wasm32-wasip1",
         "m2",
         "s2",
+        &mfr.key_id,
         None,
     )
     .await;
@@ -697,6 +701,7 @@ async fn test_package_revoke() {
         "wasm32-wasip1",
         "m",
         "s",
+        &mfr.key_id,
         None,
     )
     .await
@@ -713,6 +718,13 @@ async fn test_package_revoke() {
         found.is_none(),
         "revoked package should not be found by get_by_type"
     );
+
+    let found_any_status =
+        ActrPackage::get_by_type_and_target_any_status(&pool, "revpkg:svc:1.0.0", "wasm32-wasip1")
+            .await
+            .unwrap()
+            .expect("revoked package must remain visible to lifecycle-aware callers");
+    assert_eq!(found_any_status.status, PkgStatus::Revoked);
 }
 
 #[tokio::test]
@@ -730,6 +742,7 @@ async fn test_package_list_by_mfr() {
         "wasm32-wasip1",
         "m",
         "s",
+        &mfr.key_id,
         None,
     )
     .await
@@ -743,6 +756,7 @@ async fn test_package_list_by_mfr() {
         "wasm32-wasip1",
         "m",
         "s",
+        &mfr.key_id,
         None,
     )
     .await
@@ -767,6 +781,7 @@ async fn test_package_get_by_id() {
         "wasm32-wasip1",
         "m",
         "s",
+        &mfr.key_id,
         None,
     )
     .await
@@ -775,6 +790,61 @@ async fn test_package_get_by_id() {
     let found = ActrPackage::get_by_id(&pool, pkg.id).await.unwrap();
     assert!(found.is_some());
     assert_eq!(found.unwrap().type_str, "idpkg:svc:1.0.0");
+}
+
+#[tokio::test]
+async fn test_verify_legacy_package_without_signing_key_id_after_expiry() {
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand::rngs::OsRng;
+
+    let pool = setup_test_pool().await;
+    let key = SigningKey::generate(&mut OsRng);
+    let public_key =
+        base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_bytes());
+    let mut mfr = Manufacturer::create(&pool, "legacypkg", None)
+        .await
+        .unwrap();
+    mfr.activate(&pool, public_key).await.unwrap();
+
+    let manifest = test_manifest("legacypkg", "svc", "1.0.0", "wasm32-wasip1");
+    let signature =
+        base64::engine::general_purpose::STANDARD.encode(key.sign(manifest.as_bytes()).to_bytes());
+    let package = ActrPackage::publish(
+        &pool,
+        mfr.id,
+        "legacypkg",
+        "svc",
+        "1.0.0",
+        "wasm32-wasip1",
+        &manifest,
+        &signature,
+        &mfr.key_id,
+        None,
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE mfr_package SET signing_key_id = NULL WHERE id = ?")
+        .bind(package.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE mfr SET key_expires_at = ? WHERE id = ?")
+        .bind(chrono::Utc::now().timestamp() - 1)
+        .bind(mfr.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let legacy_package = ActrPackage::get_by_id(&pool, package.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let resolved_key_id = MfrManager::new(pool)
+        .verify_published_package_signing_key(&legacy_package)
+        .await
+        .expect("legacy package signature should remain verifiable");
+    assert_eq!(resolved_key_id, mfr.key_id);
 }
 
 // ─── manager.rs 测试（需 DB）─────────────────────────────────────────────────
@@ -824,6 +894,7 @@ async fn test_lookup_package_active() {
         "wasm32-wasip1",
         "m",
         "s",
+        &mfr.key_id,
         None,
     )
     .await
@@ -857,6 +928,7 @@ async fn test_lookup_package_revoked() {
         "wasm32-wasip1",
         "m",
         "s",
+        &mfr.key_id,
         None,
     )
     .await
@@ -1550,7 +1622,7 @@ async fn test_key_rotation_historical_key_resolved() {
     use rand::rngs::OsRng;
 
     let pool = setup_test_pool().await;
-    let manager = MfrManager::new(pool);
+    let manager = MfrManager::new(pool.clone());
 
     // Apply + approve with key_A
     let (mfr, _) = manager.apply("histkey", None).await.unwrap();
@@ -1583,6 +1655,17 @@ async fn test_key_rotation_historical_key_resolved() {
         .resolve_key_by_id("histkey", "mfr-nonexistent")
         .await;
     assert!(matches!(result, Err(MfrError::NotFound)));
+
+    sqlx::query("UPDATE mfr SET status = 'suspended' WHERE id = ?")
+        .bind(mfr.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let result = manager.resolve_key_by_id("histkey", &key_id_a).await;
+    assert!(
+        matches!(result, Err(MfrError::InvalidStatus(_))),
+        "historical keys must not bypass manufacturer suspension: {result:?}"
+    );
 }
 
 // ─── Error path tests ────────────────────────────────────────────────────────
@@ -1632,6 +1715,34 @@ async fn test_publish_with_expired_key_rejected() {
     assert!(
         matches!(result, Err(MfrError::CertificateExpired)),
         "expired key should be rejected: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_request_nonce_with_expired_key_rejected() {
+    use base64::Engine as _;
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    let pool = setup_test_pool().await;
+    let key = SigningKey::generate(&mut OsRng);
+    let pub_b64 = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_bytes());
+    let mut mfr = Manufacturer::create(&pool, "expirednonce", None)
+        .await
+        .unwrap();
+    mfr.activate(&pool, pub_b64).await.unwrap();
+
+    sqlx::query("UPDATE mfr SET key_expires_at = ? WHERE id = ?")
+        .bind(chrono::Utc::now().timestamp())
+        .bind(mfr.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let result = MfrManager::new(pool).request_nonce("expirednonce").await;
+    assert!(
+        matches!(result, Err(MfrError::CertificateExpired)),
+        "an expired key must not obtain a publish nonce: {result:?}"
     );
 }
 

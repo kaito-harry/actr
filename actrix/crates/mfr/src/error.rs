@@ -58,7 +58,9 @@ impl IntoResponse for MfrError {
             MfrError::VerificationFailed(_) | MfrError::ChallengeNotFound => {
                 (StatusCode::BAD_REQUEST, self.to_string())
             }
-            MfrError::CertificateExpired => (StatusCode::FORBIDDEN, self.to_string()),
+            MfrError::KeyRevoked(_) | MfrError::CertificateExpired => {
+                (StatusCode::FORBIDDEN, self.to_string())
+            }
             _ => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal error".to_string(),

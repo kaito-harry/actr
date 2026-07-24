@@ -200,19 +200,51 @@ fn linked_register_request() -> RegisterRequest {
     }
 }
 
+fn package_register_request(
+    manufacturer: &str,
+    name: &str,
+    version: &str,
+    realm_id: u32,
+    target: &str,
+    manifest: Vec<u8>,
+    manifest_signature: Option<Vec<u8>>,
+) -> RegisterRequest {
+    RegisterRequest {
+        actr_type: ActrType {
+            manufacturer: manufacturer.to_string(),
+            name: name.to_string(),
+            version: version.to_string(),
+        },
+        realm: Realm { realm_id },
+        service_spec: None,
+        acl: None,
+        service: None,
+        ws_address: None,
+        manifest_raw: Some(prost::bytes::Bytes::from(manifest)),
+        mfr_signature: manifest_signature.map(prost::bytes::Bytes::from),
+        target: Some(target.to_string()),
+        auth_mode: Some(RegisterAuthMode::Package as i32),
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
+    }
+}
+
 async fn create_test_router(env: &TestEnv) -> Router {
+    create_router(AISState::new(create_test_issuer(env).await))
+}
+
+async fn create_test_issuer(env: &TestEnv) -> AIdIssuer {
     let signer_client = create_signer_client(&env.signer_config, &env.shared_key)
         .await
         .expect("signer client");
-    let issuer = AIdIssuer::new(
+    AIdIssuer::new(
         signer_client,
         default_issuer_config(&env.issuer_temp_dir),
         tokio_util::sync::CancellationToken::new(),
     )
     .await
-    .expect("issuer");
-
-    create_router(AISState::new(issuer))
+    .expect("issuer")
 }
 
 async fn seed_realm(realm_id: u32, name: &str, secret: Option<&str>) {
@@ -257,34 +289,35 @@ async fn seed_active_package(
     version: &str,
     target: &str,
 ) -> Vec<u8> {
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    let signing_key = SigningKey::generate(&mut OsRng);
+    seed_active_package_with_key(manufacturer, name, version, target, &signing_key).await
+}
+
+async fn seed_active_package_with_key(
+    manufacturer: &str,
+    name: &str,
+    version: &str,
+    target: &str,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> Vec<u8> {
     let pool = platform::storage::db::get_database().get_pool();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
-    let manifest = test_registry_manifest(manufacturer, name, version, target);
+    let (mfr_id, signing_key_id) = seed_mfr_with_key(pool, manufacturer, signing_key).await;
+    let (manifest, signature) =
+        build_signed_manifest(signing_key, manufacturer, name, version, target);
     let manifest_str = std::str::from_utf8(&manifest).expect("test manifest is UTF-8");
-
-    sqlx::query(
-        "INSERT OR IGNORE INTO mfr (name, public_key, status, created_at)
-         VALUES (?, '', 'active', ?)",
-    )
-    .bind(manufacturer)
-    .bind(now)
-    .execute(pool)
-    .await
-    .expect("seed mfr");
-
-    let mfr_id: i64 = sqlx::query_scalar("SELECT id FROM mfr WHERE name = ?")
-        .bind(manufacturer)
-        .fetch_one(pool)
-        .await
-        .expect("get mfr id");
+    let signature_b64 = base64::prelude::BASE64_STANDARD.encode(signature);
 
     sqlx::query(
         "INSERT OR REPLACE INTO mfr_package
-         (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, status, published_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, '', 'active', ?)",
+         (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, signing_key_id, status, published_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)",
     )
     .bind(mfr_id)
     .bind(manufacturer)
@@ -293,6 +326,8 @@ async fn seed_active_package(
     .bind(format!("{manufacturer}:{name}:{version}"))
     .bind(target)
     .bind(manifest_str)
+    .bind(signature_b64)
+    .bind(signing_key_id)
     .bind(now)
     .execute(pool)
     .await
@@ -536,7 +571,7 @@ async fn test_register_route_published_package_without_target_is_rejected() {
 #[tokio::test]
 #[serial]
 async fn test_published_package_manifest_hash_mismatch_does_not_fall_back_to_path2() {
-    use ed25519_dalek::SigningKey;
+    use ed25519_dalek::{Signer, SigningKey};
     use rand::rngs::OsRng;
 
     let env = setup_test_environment().await;
@@ -552,27 +587,28 @@ async fn test_published_package_manifest_hash_mismatch_does_not_fall_back_to_pat
     .expect("issuer");
 
     seed_realm(22007, "published-package-manifest-mismatch", None).await;
-    let pool = platform::storage::db::get_database().get_pool();
     let key = SigningKey::generate(&mut OsRng);
-    let (_mfr_id, _key_id) = seed_mfr_with_key(pool, "publishedmismatch", &key).await;
-    seed_active_package(
+    seed_active_package_with_key(
         "publishedmismatch",
         "MismatchService",
         "1.0.0",
         "wasm32-wasip1",
+        &key,
     )
     .await;
 
     // This manifest is validly signed and would pass Path 2, but it is not the
     // same manifest registered in mfr_package. A published package hash mismatch
     // must be rejected immediately instead of falling through to Path 2.
-    let (manifest_bytes, sig_bytes) = build_signed_manifest(
+    let (mut manifest_bytes, _) = build_signed_manifest(
         &key,
         "publishedmismatch",
         "MismatchService",
         "1.0.0",
         "wasm32-wasip1",
     );
+    manifest_bytes.extend_from_slice(b"\n# different, but still valid, manifest bytes\n");
+    let sig_bytes = key.sign(&manifest_bytes).to_bytes().to_vec();
     let mut request = RegisterRequest {
         actr_type: ActrType {
             manufacturer: "publishedmismatch".to_string(),
@@ -610,6 +646,321 @@ async fn test_published_package_manifest_hash_mismatch_does_not_fall_back_to_pat
             panic!("published package manifest hash mismatch should not fall back to Path 2")
         }
     }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_expired_mfr_key_allows_existing_package_and_path2_registration() {
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    let env = setup_test_environment().await;
+    let issuer = create_test_issuer(&env).await;
+    let realm_id = 22008;
+    seed_realm(realm_id, "expired-mfr-runtime-verification", None).await;
+
+    let pool = platform::storage::db::get_database().get_pool();
+    let key = SigningKey::generate(&mut OsRng);
+    let published_manifest = seed_active_package_with_key(
+        "expiredruntime",
+        "ExistingService",
+        "1.0.0",
+        "wasm32-wasip1",
+        &key,
+    )
+    .await;
+    sqlx::query("UPDATE mfr SET key_expires_at = ? WHERE name = ?")
+        .bind(test_unix_now_secs() as i64 - 1)
+        .bind("expiredruntime")
+        .execute(pool)
+        .await
+        .expect("expire MFR publish authority");
+
+    let path1_request = package_register_request(
+        "expiredruntime",
+        "ExistingService",
+        "1.0.0",
+        realm_id,
+        "wasm32-wasip1",
+        published_manifest,
+        None,
+    );
+    let path1_response = issuer
+        .issue_credential(&path1_request)
+        .await
+        .expect("issue Path 1 credential");
+    assert!(
+        matches!(
+            &path1_response.result,
+            Some(register_response::Result::Success(_))
+        ),
+        "natural key expiry must not invalidate an existing package: {path1_response:?}"
+    );
+
+    let (path2_manifest, path2_signature) = build_signed_manifest(
+        &key,
+        "expiredruntime",
+        "UnpublishedService",
+        "1.0.0",
+        "wasm32-wasip1",
+    );
+    let mut path2_request = package_register_request(
+        "expiredruntime",
+        "UnpublishedService",
+        "1.0.0",
+        realm_id,
+        "wasm32-wasip1",
+        path2_manifest.clone(),
+        Some(path2_signature),
+    );
+    sign_manufacturer_request_at(
+        &mut path2_request,
+        &key,
+        &path2_manifest,
+        test_unix_now_secs(),
+        vec![0x58; 32],
+    );
+    let path2_response = issuer
+        .issue_credential(&path2_request)
+        .await
+        .expect("issue Path 2 credential");
+    assert!(
+        matches!(
+            &path2_response.result,
+            Some(register_response::Result::Success(_))
+        ),
+        "natural key expiry must not disable Path 2 verification: {path2_response:?}"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_revoked_published_package_does_not_fall_back_to_path2() {
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand::rngs::OsRng;
+
+    let env = setup_test_environment().await;
+    let issuer = create_test_issuer(&env).await;
+    let realm_id = 22009;
+    seed_realm(realm_id, "revoked-package-terminal", None).await;
+
+    let pool = platform::storage::db::get_database().get_pool();
+    let key = SigningKey::generate(&mut OsRng);
+    let manifest = seed_active_package_with_key(
+        "revokedterminal",
+        "RevokedService",
+        "1.0.0",
+        "wasm32-wasip1",
+        &key,
+    )
+    .await;
+    sqlx::query(
+        "UPDATE mfr_package SET status = 'revoked', revoked_at = ? \
+         WHERE type_str = ? AND target = ?",
+    )
+    .bind(test_unix_now_secs() as i64)
+    .bind("revokedterminal:RevokedService:1.0.0")
+    .bind("wasm32-wasip1")
+    .execute(pool)
+    .await
+    .expect("revoke package");
+
+    let manifest_signature = key.sign(&manifest).to_bytes().to_vec();
+    let mut request = package_register_request(
+        "revokedterminal",
+        "RevokedService",
+        "1.0.0",
+        realm_id,
+        "wasm32-wasip1",
+        manifest.clone(),
+        Some(manifest_signature),
+    );
+    sign_manufacturer_request_at(
+        &mut request,
+        &key,
+        &manifest,
+        test_unix_now_secs(),
+        vec![0x59; 32],
+    );
+
+    let response = issuer.issue_credential(&request).await.expect("issue");
+    match response.result.expect("result") {
+        register_response::Result::Error(err) => {
+            assert_eq!(err.code, 403);
+            assert!(err.message.contains("revoked"));
+        }
+        register_response::Result::Success(_) => {
+            panic!("a revoked package must be terminal and must not fall back to Path 2")
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_suspended_mfr_rejects_path1_and_path2() {
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    let env = setup_test_environment().await;
+    let issuer = create_test_issuer(&env).await;
+    let realm_id = 22010;
+    seed_realm(realm_id, "suspended-mfr-runtime-verification", None).await;
+
+    let pool = platform::storage::db::get_database().get_pool();
+    let key = SigningKey::generate(&mut OsRng);
+    let published_manifest = seed_active_package_with_key(
+        "suspendedruntime",
+        "ExistingService",
+        "1.0.0",
+        "wasm32-wasip1",
+        &key,
+    )
+    .await;
+    sqlx::query("UPDATE mfr SET status = 'suspended' WHERE name = ?")
+        .bind("suspendedruntime")
+        .execute(pool)
+        .await
+        .expect("suspend MFR");
+
+    let path1_request = package_register_request(
+        "suspendedruntime",
+        "ExistingService",
+        "1.0.0",
+        realm_id,
+        "wasm32-wasip1",
+        published_manifest,
+        None,
+    );
+    let path1_response = issuer
+        .issue_credential(&path1_request)
+        .await
+        .expect("issue Path 1 credential");
+    assert!(
+        matches!(
+            &path1_response.result,
+            Some(register_response::Result::Error(error)) if error.code == 403
+        ),
+        "suspended MFR must reject Path 1: {path1_response:?}"
+    );
+
+    let (path2_manifest, path2_signature) = build_signed_manifest(
+        &key,
+        "suspendedruntime",
+        "UnpublishedService",
+        "1.0.0",
+        "wasm32-wasip1",
+    );
+    let mut path2_request = package_register_request(
+        "suspendedruntime",
+        "UnpublishedService",
+        "1.0.0",
+        realm_id,
+        "wasm32-wasip1",
+        path2_manifest.clone(),
+        Some(path2_signature),
+    );
+    sign_manufacturer_request_at(
+        &mut path2_request,
+        &key,
+        &path2_manifest,
+        test_unix_now_secs(),
+        vec![0x5A; 32],
+    );
+    let path2_response = issuer
+        .issue_credential(&path2_request)
+        .await
+        .expect("issue Path 2 credential");
+    assert!(
+        matches!(
+            &path2_response.result,
+            Some(register_response::Result::Error(error)) if error.code == 403
+        ),
+        "suspended MFR must reject Path 2: {path2_response:?}"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_published_package_retired_key_survives_until_explicit_revocation() {
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    let env = setup_test_environment().await;
+    let issuer = create_test_issuer(&env).await;
+    let realm_id = 22011;
+    seed_realm(realm_id, "revoked-history-path1", None).await;
+
+    let pool = platform::storage::db::get_database().get_pool();
+    let old_key = SigningKey::generate(&mut OsRng);
+    let manifest = seed_active_package_with_key(
+        "revokedhistory",
+        "ExistingService",
+        "1.0.0",
+        "wasm32-wasip1",
+        &old_key,
+    )
+    .await;
+    let (mfr_id, old_key_id): (i64, String) =
+        sqlx::query_as("SELECT id, key_id FROM mfr WHERE name = ?")
+            .bind("revokedhistory")
+            .fetch_one(pool)
+            .await
+            .expect("load MFR current key");
+    let old_public_key =
+        base64::prelude::BASE64_STANDARD.encode(old_key.verifying_key().to_bytes());
+    archive_key_to_history(pool, mfr_id, &old_key_id, &old_public_key, "retired").await;
+
+    let new_key = SigningKey::generate(&mut OsRng);
+    let new_key_id = actrix_mfr::crypto::compute_key_id(&new_key.verifying_key().to_bytes());
+    let new_public_key =
+        base64::prelude::BASE64_STANDARD.encode(new_key.verifying_key().to_bytes());
+    sqlx::query("UPDATE mfr SET public_key = ?, key_id = ? WHERE id = ?")
+        .bind(new_public_key)
+        .bind(new_key_id)
+        .bind(mfr_id)
+        .execute(pool)
+        .await
+        .expect("rotate current MFR key");
+
+    let request = package_register_request(
+        "revokedhistory",
+        "ExistingService",
+        "1.0.0",
+        realm_id,
+        "wasm32-wasip1",
+        manifest,
+        None,
+    );
+    let retired_response = issuer
+        .issue_credential(&request)
+        .await
+        .expect("issue with retired key");
+    assert!(
+        matches!(
+            &retired_response.result,
+            Some(register_response::Result::Success(_))
+        ),
+        "ordinary key retirement must not invalidate an existing package: {retired_response:?}"
+    );
+
+    sqlx::query("UPDATE mfr_key_history SET status = 'revoked' WHERE mfr_id = ? AND key_id = ?")
+        .bind(mfr_id)
+        .bind(&old_key_id)
+        .execute(pool)
+        .await
+        .expect("revoke historical key");
+
+    let response = issuer
+        .issue_credential(&request)
+        .await
+        .expect("issue with revoked key");
+    assert!(
+        matches!(
+            &response.result,
+            Some(register_response::Result::Error(error)) if error.code == 403
+        ),
+        "key revocation must invalidate packages signed by that key: {response:?}"
+    );
 }
 
 #[tokio::test]
@@ -1320,6 +1671,51 @@ async fn test_path2_missing_manufacturer_auth_signature_rejected() {
             panic!("Path 2 without manufacturer_auth_signature should be rejected")
         }
     }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_path2_missing_mfr_record_returns_forbidden() {
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    let env = setup_test_environment().await;
+    let issuer = create_test_issuer(&env).await;
+    seed_realm(22012, "missing-mfr-path2", None).await;
+
+    let key = SigningKey::generate(&mut OsRng);
+    let (manifest, signature) = build_signed_manifest(
+        &key,
+        "missingpath2mfr",
+        "UnpublishedService",
+        "1.0.0",
+        "wasm32-wasip1",
+    );
+    let mut request = package_register_request(
+        "missingpath2mfr",
+        "UnpublishedService",
+        "1.0.0",
+        22012,
+        "wasm32-wasip1",
+        manifest.clone(),
+        Some(signature),
+    );
+    sign_manufacturer_request_at(
+        &mut request,
+        &key,
+        &manifest,
+        test_unix_now_secs(),
+        vec![0x5B; 32],
+    );
+
+    let response = issuer.issue_credential(&request).await.expect("issue");
+    assert!(
+        matches!(
+            &response.result,
+            Some(register_response::Result::Error(error)) if error.code == 403
+        ),
+        "a missing MFR record is an authorization rejection, not an internal error: {response:?}"
+    );
 }
 
 /// Path 2: a manifest that does not declare `binary.target` is rejected.
